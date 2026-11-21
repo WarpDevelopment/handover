@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+release/
+.env
+.env.*
+*.log
+.DS_Store
+.warp/
+.venv/
+__pycache__/
+coverage/
