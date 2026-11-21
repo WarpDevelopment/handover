@@ -1,12 +1,21 @@
-node_modules/
-dist/
-out/
-release/
-.env
-.env.*
+node_modules
+dist
+dist-electron
+out
+release
+.compliance
+.compliance-cache
+.compliance-review
+coverage
 *.log
 .DS_Store
+.env
+.env.*
 .warp/
 .venv/
 __pycache__/
-coverage/
+
+# Eval run outputs (timestamped result logs)
+evals/results/
+# Opt-in OCR eval's downloaded traineddata cache
+evals/.cache/
