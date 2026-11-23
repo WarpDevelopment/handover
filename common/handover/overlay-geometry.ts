@@ -29,6 +29,18 @@ export function overlayCssSize(d: OverlayDisplay): [number, number] {
   return [Math.round(d.sizeDpx[0] / d.scaleFactor), Math.round(d.sizeDpx[1] / d.scaleFactor)];
 }
 
+/**
+ * The window rectangle for a display's freeze overlay: its bounds in DIP, rounded to whole units.
+ * Electron places and sizes windows in DIP on both platforms, so the overlay covers exactly one
+ * display and never a union of displays.
+ */
+export function overlayBounds(display: {
+  bounds: { x: number; y: number; width: number; height: number };
+}): { x: number; y: number; width: number; height: number } {
+  const b = display.bounds;
+  return { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) };
+}
+
 /** Keep at most `max` points of a freehand stroke, always the first and the last. */
 export function thinPoints<T>(points: readonly T[], max: number): T[] {
   if (points.length <= max) return [...points];

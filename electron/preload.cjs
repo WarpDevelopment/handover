@@ -52,6 +52,16 @@ const IPC = {
   closeLibrary: "ui:close-library",
   recordingControlsExpanded: "ui:recording-controls-expanded",
   fitRecorderHeight: "ui:fit-recorder-height",
+  pause: "recorder:pause",
+  resume: "recorder:resume",
+  explain: "recorder:explain",
+  freezeInit: "freeze:init",
+  freezeState: "freeze:state",
+  freezeDone: "freeze:done",
+  freezeCancel: "freeze:cancel",
+  reviewLoad: "review:load",
+  reviewImage: "review:image",
+  reviewEdit: "review:edit",
 };
 
 let recordingPrivacyWarningPending = false;
@@ -166,4 +176,14 @@ contextBridge.exposeInMainWorld("handover", {
   setRecordingControlsExpanded: (expanded) =>
     ipcRenderer.invoke(IPC.recordingControlsExpanded, expanded),
   fitRecorderHeight: (height) => ipcRenderer.send(IPC.fitRecorderHeight, height),
+  pause: () => ipcRenderer.invoke(IPC.pause),
+  resume: () => ipcRenderer.invoke(IPC.resume),
+  explain: () => ipcRenderer.invoke(IPC.explain),
+  freezeInit: () => ipcRenderer.invoke(IPC.freezeInit),
+  freezeState: (state) => ipcRenderer.send(IPC.freezeState, state),
+  freezeDone: () => ipcRenderer.invoke(IPC.freezeDone),
+  freezeCancel: () => ipcRenderer.invoke(IPC.freezeCancel),
+  reviewLoad: (sessionId) => ipcRenderer.invoke(IPC.reviewLoad, sessionId),
+  reviewImage: (sessionId, path) => ipcRenderer.invoke(IPC.reviewImage, sessionId, path),
+  reviewEdit: (sessionId, edit) => ipcRenderer.invoke(IPC.reviewEdit, sessionId, edit),
 });

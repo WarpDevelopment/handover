@@ -246,6 +246,36 @@ export interface ExportPackageResult {
   validationErrors?: string[];
 }
 
+/** Result of pause, resume and starting an Explain freeze. */
+export interface ActionResult {
+  ok: boolean;
+  error?: string;
+}
+
+/** What one freeze overlay window needs to draw: its display's frozen frame and geometry. */
+export interface FreezeInit {
+  displayId: number;
+  /** The frozen frame as a data URL. */
+  frame: string;
+  /** Display physical size in px; saved shapes use these pixels. */
+  sizeDpx: [number, number];
+  scaleFactor: number;
+  /** The drawing surface in CSS px (the window's content size). */
+  cssSize: [number, number];
+  /** 1-based position of this display among the frozen ones, and how many there are. */
+  index: number;
+  count: number;
+  /** True for the display that opens focused (the one under the pointer). */
+  primary: boolean;
+}
+
+/** Result of loading a session for review. */
+export interface ReviewLoadResult {
+  ok: boolean;
+  error?: string;
+  data?: import("./handover/review").ReviewData;
+}
+
 /** Which foreground-window provider is available on this platform. */
 export interface ActiveWindowInfo {
   ok: boolean;
@@ -347,6 +377,16 @@ export const IPC = {
   closeLibrary: "ui:close-library",
   recordingControlsExpanded: "ui:recording-controls-expanded",
   fitRecorderHeight: "ui:fit-recorder-height",
+  pause: "recorder:pause",
+  resume: "recorder:resume",
+  explain: "recorder:explain",
+  freezeInit: "freeze:init",
+  freezeState: "freeze:state",
+  freezeDone: "freeze:done",
+  freezeCancel: "freeze:cancel",
+  reviewLoad: "review:load",
+  reviewImage: "review:image",
+  reviewEdit: "review:edit",
 } as const;
 
 /** Shape exposed on `window.handover` by the preload bridge. */
@@ -430,4 +470,26 @@ export interface HandoverApi {
   /** Fit the compact recorder window to its rendered content height (fire-and-forget)
    *  so the fixed-width HUD never shows dead space or clips a revealed row. */
   fitRecorderHeight(height: number): void;
+  /** Pause the recording; nothing is captured until {@link resume}. */
+  pause(): Promise<ActionResult>;
+  resume(): Promise<ActionResult>;
+  /** Freeze the screen so items on it can be highlighted and commented on. */
+  explain(): Promise<ActionResult>;
+  /** Freeze overlay only: the frozen frame and geometry for this window's display. */
+  freezeInit(): Promise<FreezeInit | null>;
+  /** Freeze overlay only: report the shapes and comment drawn so far on this display. */
+  freezeState(state: import("./handover/explain").ExplainResult): void;
+  /** Freeze overlay only: save everything drawn on every display and unfreeze. */
+  freezeDone(): Promise<ActionResult>;
+  /** Freeze overlay only: throw it all away and unfreeze. */
+  freezeCancel(): Promise<ActionResult>;
+  /** Library: build a recording's steps (with its stored edits) for review. */
+  reviewLoad(sessionId: string): Promise<ReviewLoadResult>;
+  /** Library: a step image from the last load, as a data URL. */
+  reviewImage(sessionId: string, path: string): Promise<string | null>;
+  /** Library: append one edit and return the rebuilt steps. */
+  reviewEdit(
+    sessionId: string,
+    edit: import("./handover/review").ReviewEditInput,
+  ): Promise<ReviewLoadResult>;
 }

@@ -9,6 +9,7 @@ import {
   initialRecordingControlsBounds,
   resizeRecordingControlsBounds,
 } from "./recording-controls-bounds";
+import { overlayBounds } from "../common/handover/overlay-geometry";
 import { RECORDER_WINDOW_WIDTH } from "./recorder-window-sizing";
 import { windowIcon } from "./icons";
 export { fitRecorderHeight } from "./recorder-window-sizing";
@@ -120,6 +121,47 @@ export function createRecordingControlsWindow(): BrowserWindow {
   win.on("resize", rememberPosition);
   rememberPosition();
   loadRoute(win, "recording-controls");
+  return win;
+}
+
+/**
+ * One opaque, frameless window over one display, showing that display's frozen frame for the
+ * Explain tool. It sits above everything (`screen-saver` level) and is excluded from screen capture.
+ * Created from `screen.getAllDisplays()` bounds; one window per display, never one across displays.
+ */
+export function createFreezeOverlay(display: Electron.Display): BrowserWindow {
+  const bounds = overlayBounds(display);
+  const win = new BrowserWindow({
+    ...bounds,
+    show: false,
+    frame: false,
+    transparent: false,
+    backgroundColor: "#000000",
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    enableLargerThanScreen: true,
+    title: "Handover: Explain",
+    webPreferences: {
+      preload: path.join(dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      backgroundThrottling: false,
+    },
+  });
+  win.setAlwaysOnTop(true, "screen-saver");
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  win.setContentProtection(true);
+  // A window created on a display with a different scale factor can come up at the wrong size on
+  // Windows; setting the bounds again once it exists puts it on the right display at the right size.
+  win.setBounds(bounds);
+  registerDevelopmentDevToolsShortcut(win);
+  loadRoute(win, `freeze/${display.id}`);
   return win;
 }
 
