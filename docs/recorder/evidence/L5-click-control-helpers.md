@@ -1,6 +1,6 @@
 # L5 click-control-helpers: evidence
 
-Branch `lane/L5-click-control-helpers`, cut from BASE_SHA `6d0c0d3`. Final CI runs (both green on the code HEAD `3fb04d6` plus this file):
+Branch `lane/L5-click-control-helpers`, cut from BASE_SHA `6d0c0d3`. The last code commit is `56159d5`; everything after it is docs only. CI runs on that code commit, both green (a run on the docs-only HEAD follows and is quoted in the hand-off message):
 
 - Windows x64: https://github.com/WarpDevelopment/handover/actions/runs/45221861362 (artifact `handover-windows-x64`)
 - macOS arm64: https://github.com/WarpDevelopment/handover/actions/runs/45221860541 (artifact `handover-macos-arm64`)
