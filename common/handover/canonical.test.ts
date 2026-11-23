@@ -98,7 +98,8 @@ test("blurRect changes pixels only inside the rectangle", async () => {
 });
 
 test("the handoff Rules section is the text of package-spec.md §12, character for character", async () => {
-  const spec = await readFile(path.resolve(here, "../../docs/recorder/package-spec.md"), "utf8");
+  // Windows checkouts may convert the spec to CRLF; the comparison is about the words.
+  const spec = (await readFile(path.resolve(here, "../../docs/recorder/package-spec.md"), "utf8")).replace(/\r\n/g, "\n");
   const template = spec.slice(spec.indexOf("## 12. CLAUDE_HANDOFF.md template"), spec.indexOf("## 13."));
   const start = template.indexOf("## Rules\n");
   const end = template.indexOf("\n## Produce", start);
