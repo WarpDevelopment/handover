@@ -30,7 +30,7 @@ const DISPLAYS: DisplayLike[] = [
   { id: 22, bounds: { x: 1536, y: 0, width: 2560, height: 1440 }, size: { width: 2560, height: 1440 }, scaleFactor: 1.5 },
 ];
 
-function setup(opts: { begin?: BeginExplainResult; cursor?: number } = {}) {
+function setup(opts: { begin?: BeginExplainResult; cursor?: number; failOpenAt?: number; order?: string[] } = {}) {
   const windows: FakeWindow[] = [];
   const ended: unknown[] = [];
   let activated = 0;
@@ -50,8 +50,13 @@ function setup(opts: { begin?: BeginExplainResult; cursor?: number } = {}) {
     },
     getDisplays: () => DISPLAYS,
     cursorDisplayId: () => opts.cursor ?? 22,
-    readFrame: async (_dir, f) => `data:image/jpeg;base64,${f.file}`,
+    readFrame: async (_dir, f) => {
+      opts.order?.push(`read ${f.displayId}`);
+      return `data:image/jpeg;base64,${f.file}`;
+    },
     openWindow: (display) => {
+      opts.order?.push(`open ${display.id}`);
+      if (opts.failOpenAt !== undefined && windows.length === opts.failOpenAt) throw new Error("no window for you");
       const w = new FakeWindow(100 + windows.length, display);
       windows.push(w);
       return w;
@@ -158,6 +163,41 @@ test("when every window disappears without Done or Esc (a display was unplugged)
   windows[1].closeFromOutside();
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(ended, [{ cancelled: true, annotations: [] }]);
+});
+
+test("if a window cannot be opened after the recorder froze, the freeze is ended and nothing stays open", async () => {
+  const { freeze, windows, ended } = setup({ failOpenAt: 1 });
+  const res = await freeze.begin();
+  assert.deepEqual(res, { ok: false, error: "Could not show the frozen screen." });
+  assert.equal(windows.length, 1, "the first window had opened");
+  assert.ok(windows[0].destroyed, "and was closed again");
+  assert.deepEqual(ended, [{ cancelled: true }], "the recorder is told, so clicks are recorded again");
+  assert.equal(freeze.active, false);
+  assert.equal(freeze.init(100), null);
+  // A later freeze works.
+  const again = setup();
+  assert.deepEqual(await again.freeze.begin(), { ok: true });
+});
+
+test("a failing beginExplain leaves nothing open and no freeze to end", async () => {
+  const deps: FreezeDeps = {
+    beginExplain: async () => { throw new Error("boom"); },
+    endExplain: async () => { throw new Error("must not be called"); },
+    getDisplays: () => DISPLAYS,
+    cursorDisplayId: () => 11,
+    readFrame: async () => "",
+    openWindow: () => { throw new Error("must not be called"); },
+  };
+  const freeze = new FreezeCoordinator(deps);
+  assert.deepEqual(await freeze.begin(), { ok: false, error: "Could not freeze the screen." });
+  assert.equal(freeze.active, false);
+});
+
+test("every frame is read before any window is opened", async () => {
+  const order: string[] = [];
+  const { freeze } = setup({ order });
+  await freeze.begin();
+  assert.deepEqual(order, ["read 11", "read 22", "open 11", "open 22"]);
 });
 
 test("frames for a display that is gone are skipped; with none left the freeze is ended", async () => {

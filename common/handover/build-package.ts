@@ -29,7 +29,7 @@ import { renderAnnotated, type RenderableHighlight } from "./annotation-render";
 import { renderHandoffMd } from "./handoff-md";
 import { blurPng, blurRect, clampRect, decode, renderCrop, renderFull } from "./images";
 import { renderProcessMd } from "./process-md";
-import { buildSteps, groundingOf, layoutAt, type StepDraft } from "./steps";
+import { buildSteps, clickLookupMs, groundingOf, layoutAt, type StepDraft } from "./steps";
 import {
   SCHEMA_VERSION,
   TEST_BUILD_BANNER,
@@ -204,20 +204,41 @@ const FROZEN_DROPPED_TYPES: ReadonlySet<string> = new Set([
   "browser.url",
 ]);
 
+/** A click whose resolved control belongs to Handover itself (its bar or its overlay). */
+export function isOwnAppClick(click: PointerClickPayload): boolean {
+  const name = click.target?.app?.name?.trim().toLowerCase() ?? "";
+  const proc = (click.target?.app?.process ?? "").trim().toLowerCase().replace(/\.exe$/, "");
+  return name === "handover" || proc === "handover";
+}
+
 /**
- * Events with the collector events that fall inside a freeze removed. Clicks on the overlay are on
- * Handover's own windows and must never become steps, and the overlay taking focus is not an app
- * switch by the user. The interval is half-open: `[explain.start, explain.end)`.
+ * Events with the ones that cannot be the user's own work removed:
+ * - collector events inside a freeze (`[explain.start, explain.end)`) or a pause: clicks on the
+ *   overlay are on Handover's own windows, and the overlay taking focus is not an app switch;
+ * - a `pointer.click` is judged by when the user acted, not when the helper reported it: the helper
+ *   reports up to 300 ms after the mouse-down (`lookupMs`), so the click on the overlay's Done button
+ *   or on Resume can arrive just after the freeze or pause has ended;
+ * - a click on a Handover control (the recording bar's own buttons).
  */
 export function withoutFrozenCollectorEvents(
   events: readonly RecEvent[],
   durationMs = Infinity,
 ): RecEvent[] {
-  const intervals = explainIntervals(events, durationMs);
-  if (intervals.length === 0) return [...events];
-  return events.filter(
-    (e) => !(FROZEN_DROPPED_TYPES.has(e.type) && intervals.some((i) => e.t >= i.start && e.t < i.end)),
-  );
+  const freezes = explainIntervals(events, durationMs);
+  const pauses = resolveGaps(events, durationMs)
+    .filter((g) => g.reason === "user_paused")
+    .map((g) => ({ start: g.start, end: g.end }));
+  const quiet = [...freezes, ...pauses];
+  return events.filter((e) => {
+    if (e.type === "pointer.click") {
+      const click = e.payload as unknown as PointerClickPayload;
+      if (isOwnAppClick(click)) return false;
+      const acted = e.t - clickLookupMs(click);
+      return !quiet.some((i) => acted >= i.start && acted < i.end);
+    }
+    if (!FROZEN_DROPPED_TYPES.has(e.type)) return true;
+    return !freezes.some((i) => e.t >= i.start && e.t < i.end);
+  });
 }
 
 export interface BuiltPackage {

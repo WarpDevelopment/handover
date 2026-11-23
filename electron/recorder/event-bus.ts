@@ -30,6 +30,12 @@ export class EventBus {
   private store: SessionStore | null = null;
   private readonly listeners = new Set<EventListener>();
   private blocked = false;
+  private drop: ((input: EventInput) => boolean) | null = null;
+
+  /** Events this returns true for are never recorded (for example a click on Handover's own bar). */
+  setFilter(drop: ((input: EventInput) => boolean) | null): void {
+    this.drop = drop;
+  }
 
   attach(store: SessionStore): void {
     this.store = store;
@@ -53,6 +59,7 @@ export class EventBus {
   publish(input: EventInput): RecEvent | null {
     if (!this.store) return null;
     if (this.blocked && PAUSE_BLOCKED_TYPES.has(input.type)) return null;
+    if (this.drop?.(input)) return null;
     const ev = this.store.append(input.type, input.source, input.payload);
     for (const listener of this.listeners) listener(ev);
     return ev;

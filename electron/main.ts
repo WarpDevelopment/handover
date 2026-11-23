@@ -18,6 +18,8 @@ import { displaysPayload } from "../common/handover/displays";
 import { helperStatusFrom } from "../common/handover/helper";
 import { helperTracker } from "./collectors/helper-status";
 import { IPC, type ActionResult, type RecorderStatus, type StartResult } from "../common/ipc";
+import type { PointerClickPayload } from "../common/events";
+import { pointInBounds } from "../common/handover/overlay-geometry";
 import type { ReviewEditInput } from "../common/handover/review";
 import type {
   SupportedShellId,
@@ -143,7 +145,20 @@ function currentDisplays() {
   });
 }
 
+/** A click on Handover's own recording bar (Explain, Pause, Resume, Done…) is not part of the user's work. */
+function isOwnBarClick(click: PointerClickPayload): boolean {
+  const bar = recordingControlsWindow;
+  if (!bar || bar.isDestroyed() || !bar.isVisible()) return false;
+  // Window bounds are in DIP; Windows click positions are in physical px of the virtual screen.
+  const point =
+    click.space === "windows_virtual_px"
+      ? screen.screenToDipPoint({ x: click.x, y: click.y })
+      : { x: click.x, y: click.y };
+  return pointInBounds(point, bar.getBounds());
+}
+
 const recorder = new RecorderController({
+  isOwnWindowClick: isOwnBarClick,
   getDisplays: currentDisplays,
   getHelperStatus: () => helperStatusFrom(helperTracker.report()),
   resolveConfig: () => ({ ...FULL_CAPTURE }),
@@ -181,9 +196,15 @@ function overlayWindow(display: Electron.Display): OverlayWindow {
   const reveal = () => {
     if (revealed || win.isDestroyed()) return;
     revealed = true;
-    win.show();
+    // Only the display under the pointer takes the keyboard; the others appear without stealing it,
+    // whichever of them finishes loading last.
+    if (wantFocus) {
+      win.show();
+      win.focus();
+    } else {
+      win.showInactive();
+    }
     win.moveTop();
-    if (wantFocus) win.focus();
   };
   overlayReveal.set(senderId, reveal);
   const timer = setTimeout(reveal, OVERLAY_REVEAL_TIMEOUT_MS);

@@ -41,6 +41,14 @@ export function overlayBounds(display: {
   return { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) };
 }
 
+/** True when a point lies inside a window's bounds (left and top edges in, right and bottom edges out). */
+export function pointInBounds(
+  p: { x: number; y: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+}
+
 /** Keep at most `max` points of a freehand stroke, always the first and the last. */
 export function thinPoints<T>(points: readonly T[], max: number): T[] {
   if (points.length <= max) return [...points];

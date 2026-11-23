@@ -6,7 +6,7 @@ import { app } from "electron";
 
 import type { CaptureConfig } from "../../common/config";
 import { EventType } from "../../common/events";
-import type { DisplaysPayload, TerminalCommandPayload } from "../../common/events";
+import type { DisplaysPayload, PointerClickPayload, TerminalCommandPayload } from "../../common/events";
 import { layoutChanged } from "../../common/handover/displays";
 import { sanitizeExplainResult } from "../../common/handover/explain";
 import { HELPER_FILE } from "../../common/handover/helper";
@@ -131,6 +131,11 @@ export interface RecorderDeps {
   getHelperStatus?: () => HelperStatus;
   /** The freeze was closed by the recorder (the recording stopped while frozen): close the overlay. */
   onExplainAborted?: () => void;
+  /**
+   * True when a click landed on Handover's own recording bar. Such a click is never recorded, so
+   * pressing Explain, Pause or Resume does not become a step (or take the freeze's annotations).
+   */
+  isOwnWindowClick?: (click: PointerClickPayload) => boolean;
 }
 
 type FinishIntent = "save" | "discard";
@@ -170,6 +175,9 @@ export class RecorderController {
 
   constructor(private readonly deps: RecorderDeps) {
     this.host = new CollectorHost(this.bus);
+    this.bus.setFilter((input) =>
+      input.type === EventType.PointerClick ? (this.deps.isOwnWindowClick?.(input.payload) ?? false) : false,
+    );
     // Every persisted event refreshes live status (event count, etc.).
     this.bus.subscribe(() => this.emit());
   }

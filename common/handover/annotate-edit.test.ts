@@ -294,6 +294,51 @@ test("pointer.click and app.activate between explain.start and explain.end are n
   assert.equal(kept.length, ev.length - 3);
 });
 
+const clickAt = (t: number, extra: Record<string, unknown> = {}) => ({
+  t,
+  type: "pointer.click",
+  payload: { button: "left", clickCount: 1, space: "macos_global_points", x: 300, y: 300, ...extra },
+});
+
+test("a click reported after the freeze ended is judged by when the user acted (the Done button)", async () => {
+  const session = await load();
+  const base = steps(await buildPackage(session, [], CTX)).length;
+  // The freeze ends at 9,000. The user pressed Done at 8,950; the helper looked the control up for
+  // 250 ms, so the click is reported at 9,150, after explain.end.
+  const late = withEvents(session, [clickAt(9150, { lookupMs: 250 })]);
+  assert.equal(steps(await buildPackage(late, [], CTX)).length, base, "the Done click is not a step");
+  // The same report time without a lookup is a real click made after the freeze.
+  const real = withEvents(session, [clickAt(9150, { lookupMs: 0 })]);
+  assert.equal(steps(await buildPackage(real, [], CTX)).length, base + 1);
+  const noLookup = withEvents(session, [clickAt(9150)]);
+  assert.equal(steps(await buildPackage(noLookup, [], CTX)).length, base + 1);
+});
+
+test("the click on Resume, reported after the pause ended, is not a step", async () => {
+  const session = await load();
+  const base = steps(await buildPackage(session, [], CTX)).length;
+  // The fixture pauses from 13,000 to 15,000. Resume was pressed at 14,950 and reported at 15,150.
+  const resume = withEvents(session, [clickAt(15150, { lookupMs: 250 })]);
+  assert.equal(steps(await buildPackage(resume, [], CTX)).length, base);
+  // A click that really happened after the pause is kept.
+  const after = withEvents(session, [clickAt(15600, { lookupMs: 20 })]);
+  assert.equal(steps(await buildPackage(after, [], CTX)).length, base + 1);
+});
+
+test("a click on Handover's own window is never a step, even outside a freeze", async () => {
+  const session = await load();
+  const base = steps(await buildPackage(session, [], CTX)).length;
+  const own = (app: Record<string, unknown>) =>
+    withEvents(session, [
+      clickAt(2000, {
+        target: { grounding: "accessibility", source: "ax", role: "button", nativeRole: "AXButton", name: "Explain", isPassword: false, app },
+      }),
+    ]);
+  assert.equal(steps(await buildPackage(own({ name: "Handover" }), [], CTX)).length, base, "by app name");
+  assert.equal(steps(await buildPackage(own({ name: "x", process: "Handover.exe" }), [], CTX)).length, base, "by process");
+  assert.equal(steps(await buildPackage(own({ name: "Microsoft Excel" }), [], CTX)).length, base + 1, "another app is kept");
+});
+
 test("a highlight or comment made during a freeze attaches to the last step before the freeze", async () => {
   const session = await load();
   // The freeze is 6,000 to 9,000; the last step before it is S03 (t=5,200). Annotation events

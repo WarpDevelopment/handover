@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { MAX_COMMENT_CHARS, MAX_POINTS, MAX_SHAPES, sanitizeExplainResult } from "./explain";
-import { cssToDpx, dpxToCss, overlayCssSize, thinPoints } from "./overlay-geometry";
+import { cssToDpx, dpxToCss, overlayCssSize, pointInBounds, thinPoints } from "./overlay-geometry";
 
 test("CSS px convert to display physical px with the scale factor, at 100%, 125%, 150%, 200%", () => {
   const cases: { scaleFactor: number; sizeDpx: [number, number]; css: [number, number]; dpx: [number, number] }[] = [
@@ -29,6 +29,15 @@ test("a point outside the display is kept on it, and CSS -> dpx -> CSS stays wit
     const back = dpxToCss(cssToDpx([x, x], d), d);
     assert.ok(Math.abs(back[0] - x) <= 0.5 / d.scaleFactor + 1e-9, `x=${x} back=${back[0]}`);
   }
+});
+
+test("a point is inside bounds on the left and top edges, outside on the right and bottom", () => {
+  const bar = { x: 100, y: 800, width: 760, height: 100 };
+  assert.equal(pointInBounds({ x: 100, y: 800 }, bar), true);
+  assert.equal(pointInBounds({ x: 859.9, y: 899.9 }, bar), true);
+  assert.equal(pointInBounds({ x: 860, y: 850 }, bar), false);
+  assert.equal(pointInBounds({ x: 500, y: 900 }, bar), false);
+  assert.equal(pointInBounds({ x: 99, y: 850 }, bar), false);
 });
 
 test("the overlay surface is the display's physical size over its scale factor", () => {

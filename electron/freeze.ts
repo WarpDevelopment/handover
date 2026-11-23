@@ -64,53 +64,77 @@ export class FreezeCoordinator {
     if (this.active) return { ok: false, error: "The screen is already frozen." };
     this.opening = true;
     try {
-      const begun = await this.deps.beginExplain();
+      let begun: BeginExplainResult;
+      try {
+        begun = await this.deps.beginExplain();
+      } catch (error) {
+        this.deps.log?.warn("could not freeze:", error instanceof Error ? error.message : error);
+        return { ok: false, error: "Could not freeze the screen." };
+      }
       if (!begun.ok || !begun.frames || !begun.sessionDir) {
         return { ok: false, error: begun.error ?? "Could not freeze the screen." };
       }
+      // From here the recorder is frozen. Any failure below must end the freeze again, or every
+      // later click would be dropped until the recording stops.
       const displays = this.deps.getDisplays();
       const cursorId = this.deps.cursorDisplayId();
-      const frames = begun.frames.filter((f) => displays.some((d) => d.id === f.displayId));
-      const views: View[] = [];
-      for (const [i, frame] of frames.entries()) {
-        const display = displays.find((d) => d.id === frame.displayId) as DisplayLike;
-        const sizeDpx: [number, number] = [
-          Math.round(display.size.width * display.scaleFactor),
-          Math.round(display.size.height * display.scaleFactor),
-        ];
-        let image: string;
+      // Read every frame before any window exists, so no window asks for its picture before the
+      // views are registered.
+      const ready: { display: DisplayLike; image: string }[] = [];
+      for (const frame of begun.frames) {
+        const display = displays.find((d) => d.id === frame.displayId);
+        if (!display) continue;
         try {
-          image = await this.deps.readFrame(begun.sessionDir, frame);
+          ready.push({ display, image: await this.deps.readFrame(begun.sessionDir, frame) });
         } catch (error) {
           this.deps.log?.warn("could not read a frozen frame:", error instanceof Error ? error.message : error);
-          continue;
         }
-        const win = this.deps.openWindow(display);
-        const init: FreezeInit = {
-          displayId: display.id,
-          frame: image,
-          sizeDpx,
-          scaleFactor: display.scaleFactor,
-          cssSize: [display.bounds.width, display.bounds.height],
-          index: i + 1,
-          count: frames.length,
-          primary: display.id === cursorId,
-        };
-        views.push({ display, init, win, annotations: [] });
       }
-      if (views.length === 0) {
+      if (ready.length === 0) {
         await this.deps.endExplain({ cancelled: true });
         return { ok: false, error: "Could not show the frozen screen." };
       }
-      if (!views.some((v) => v.init.primary)) views[0].init.primary = true;
-      for (const v of views) {
-        this.views.set(v.win.senderId, v);
-        v.win.onClosed(() => this.windowClosed(v.win.senderId));
-        v.win.onEscape(() => void this.cancel());
+      const views: View[] = [];
+      try {
+        for (const [i, r] of ready.entries()) {
+          const win = this.deps.openWindow(r.display);
+          const init: FreezeInit = {
+            displayId: r.display.id,
+            frame: r.image,
+            sizeDpx: [
+              Math.round(r.display.size.width * r.display.scaleFactor),
+              Math.round(r.display.size.height * r.display.scaleFactor),
+            ],
+            scaleFactor: r.display.scaleFactor,
+            cssSize: [r.display.bounds.width, r.display.bounds.height],
+            index: i + 1,
+            count: ready.length,
+            primary: r.display.id === cursorId,
+          };
+          views.push({ display: r.display, init, win, annotations: [] });
+        }
+        if (!views.some((v) => v.init.primary)) views[0].init.primary = true;
+        for (const v of views) {
+          this.views.set(v.win.senderId, v);
+          v.win.onClosed(() => this.windowClosed(v.win.senderId));
+          v.win.onEscape(() => void this.cancel());
+        }
+        this.deps.activateApp?.();
+        for (const v of views) v.win.show();
+        views.find((v) => v.init.primary)?.win.focus();
+      } catch (error) {
+        this.deps.log?.warn("could not open the freeze windows:", error instanceof Error ? error.message : error);
+        this.views.clear();
+        for (const v of views) {
+          try {
+            if (!v.win.isDestroyed()) v.win.destroy();
+          } catch {
+            // already gone
+          }
+        }
+        await this.deps.endExplain({ cancelled: true });
+        return { ok: false, error: "Could not show the frozen screen." };
       }
-      this.deps.activateApp?.();
-      for (const v of views) v.win.show();
-      views.find((v) => v.init.primary)?.win.focus();
       return { ok: true };
     } finally {
       this.opening = false;

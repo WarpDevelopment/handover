@@ -46,7 +46,11 @@ const FRAMES: FrozenFrame[] = [
   { file: "shots/000002.jpg", displayId: 2, epoch: 1 },
 ];
 
-function makeController(opts: { video?: boolean; onAborted?: () => void } = {}): {
+function makeController(opts: {
+  video?: boolean;
+  onAborted?: () => void;
+  isOwnWindowClick?: (c: { x: number; y: number }) => boolean;
+} = {}): {
   controller: RecorderController;
   hand: HandCollector;
   snapshots: number[];
@@ -71,6 +75,7 @@ function makeController(opts: { video?: boolean; onAborted?: () => void } = {}):
     deleteSession: async () => undefined,
     getDisplays: () => LAYOUT,
     onExplainAborted: opts.onAborted,
+    isOwnWindowClick: opts.isOwnWindowClick,
   });
   return { controller, hand, snapshots };
 }
@@ -231,6 +236,26 @@ test("clicks and app switches between explain.start and explain.end are never re
       { seq: 999, t: (freezeStart + freezeEnd) / 2, epoch: 0, type: "pointer.click", source: "x", payload: { button: "left", clickCount: 1, space: "macos_global_points", x: 7, y: 7 } },
     ];
     assert.equal(withoutFrozenCollectorEvents(noisy).filter((e) => e.type === "pointer.click").length, 2);
+  });
+});
+
+test("a click on Handover's own recording bar is never recorded (Explain, Pause and Resume are not steps)", async () => {
+  await withSessionsRoot(async (root) => {
+    // The bar sits at x < 100 in this test; the rest of the screen is the user's work.
+    const { controller, hand } = makeController({ isOwnWindowClick: (c) => c.x < 100 });
+    const started = await controller.start();
+    hand.click(500, 500); // a real step
+    hand.click(40, 900); // the click that pressed Explain
+    await controller.beginExplain();
+    await controller.endExplain({ cancelled: true });
+    hand.click(60, 900); // the click that pressed Pause
+    await controller.pause();
+    hand.click(20, 900); // the click that pressed Resume
+    await controller.resume();
+    hand.click(700, 700); // a real step
+    await controller.stop();
+    const clicks = (await readEvents(root, started.sessionId!)).filter((e) => e.type === "pointer.click");
+    assert.deepEqual(clicks.map((e) => e.payload.x), [500, 700]);
   });
 });
 
