@@ -89,6 +89,14 @@ One step is one click, one app/window switch, or one manual step the user added.
 | `display_id`, `bounds_dpx`, `bounds_fpx` | element bounds, when known |
 | `locators` | at least one; the last is always `{strategy: "frame_point", value: "x,y", rank, stability: "low"}`. Above it, when available: `uia_automation_id` / `ax_identifier` (rank 1), `role_name_path` (rank 2) |
 
+**Context steps (app or window switches)** have no clicked control. Their `target` is:
+- `grounding: "none"`, with no `grounding_source`, no `element` and no `unavailable`. Nothing failed; there was no control to find.
+- `app`, `window` and `url` as observed.
+- `display_id`, set when the window's display is known.
+- `locators: [{strategy: "frame_point", value: "<window centre in fpx, else frame centre>", rank: 1, stability: "low"}]`.
+
+In PROCESS.md a context step shows evidence as `context` instead of a tier, and its Where line is `<app.name> › <url, else window title> (app switch)`. It is not listed under "What the recorder could not see".
+
 ### 4.3 Frame
 `{frame_id: "frm_0001", t_ms, display_id, source_rect_dpx: [x,y,w,h], scale, full: {path, width, height, est_tokens}, full_annotated?, crop?: {path, width, height, est_tokens, crop_origin_fpx, crop_scale}, redacted_regions_fpx: [[x,y,w,h]…]}`
 
