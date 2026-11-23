@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import {
   app,
   BrowserWindow,
@@ -6,6 +8,8 @@ import {
   ipcMain,
   Menu,
   screen,
+  session,
+  shell,
 } from "electron";
 
 import { FULL_CAPTURE } from "../common/config";
@@ -20,7 +24,13 @@ import { installCrashGuards } from "./crash-guards";
 import { processSession } from "./pipeline";
 import { registerIpc } from "./ipc";
 import { isValidSessionId } from "./recorder/session-store";
-import { createLogger } from "./logger";
+import { saveDiagnosticsToDesktop } from "./diagnostics-info";
+import { createLogger, initFileLogging } from "./logger";
+import {
+  installNodeNetGuard,
+  installWebRequestDeny,
+  isDenyNetworkEnabled,
+} from "./network-guard";
 import { NarrationManager } from "./narration/manager";
 import { SensitiveModelManager } from "./sensitive/model-manager";
 import { RecorderController } from "./recorder/controller";
@@ -55,7 +65,10 @@ if (!instanceReady) {
   app.exit(0);
 }
 
+initFileLogging(path.join(app.getPath("userData"), "logs"));
 const log = createLogger("Main");
+// Test-only network kill switch (HANDOVER_DENY_NETWORK=1), installed before any I/O.
+if (isDenyNetworkEnabled()) installNodeNetGuard((m) => log.warn(m));
 
 // Contain stray async failures so a lost stream error can't crash the main
 // process (and the recording in progress). Registered before any window/IO work.
@@ -359,7 +372,24 @@ function clampControlsToDisplay(): void {
   }
 }
 
+/** Write the support diagnostics zip to the Desktop and show it. Logs outcomes only. */
+async function saveDiagnostics(): Promise<void> {
+  try {
+    const file = await saveDiagnosticsToDesktop();
+    shell.showItemInFolder(file);
+  } catch (err) {
+    log.error("Saving diagnostics failed:", err);
+    dialog.showErrorBox("Couldn't save diagnostics", err instanceof Error ? err.message : String(err));
+  }
+}
+
 app.whenReady().then(async () => {
+  log.info(`Handover ${app.getVersion()} starting on ${process.platform}-${process.arch}`);
+  if (isDenyNetworkEnabled()) {
+    // Test-only switch: prove the app works with no network. Not a product feature.
+    installWebRequestDeny(session.defaultSession.webRequest, (m) => log.warn(m));
+    log.warn("HANDOVER_DENY_NETWORK=1: all non-local network access is blocked");
+  }
   if (process.platform === "win32") Menu.setApplicationMenu(null);
   if (dock && app.dock) app.dock.setIcon(dock);
 
@@ -531,6 +561,7 @@ app.whenReady().then(async () => {
       requestStopRecording,
       showRecorderWindow,
       showRecordingControls,
+      () => void saveDiagnostics(),
     );
   } catch (err) {
     log.warn("Tray unavailable:", err);

@@ -9,18 +9,32 @@ import AdmZip from "adm-zip";
 
 import { writeDebugBundle } from "./debug-bundle";
 
-test("writeDebugBundle zips the whole session under session/ next to debug-info.json", async () => {
+async function withSessionsRoot<T>(fn: (root: string, sessions: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(tmpdir(), "handover-debug-"));
   const previousRoot = process.env.HANDOVER_SESSIONS_DIR;
-  process.env.HANDOVER_SESSIONS_DIR = root;
-
+  const sessions = path.join(root, "sessions");
+  process.env.HANDOVER_SESSIONS_DIR = sessions;
   try {
+    return await fn(root, sessions);
+  } finally {
+    if (previousRoot === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
+    else process.env.HANDOVER_SESSIONS_DIR = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("writeDebugBundle writes a valid zip holding only debug-info.json, never session content", async () => {
+  await withSessionsRoot(async (root, sessions) => {
     const id = "debug-test";
-    const dir = path.join(root, id);
+    const dir = path.join(sessions, id);
     await mkdir(path.join(dir, "frames"), { recursive: true });
     await writeFile(path.join(dir, "session.json"), JSON.stringify({ id }));
-    await writeFile(path.join(dir, "events.jsonl"), '{"seq":0}\n');
+    await writeFile(path.join(dir, "events.jsonl"), '{"title":"PLANTED-PAYLOAD"}\n');
     await writeFile(path.join(dir, "frames", "event_1000.jpg"), Buffer.alloc(8, 7));
+    await writeFile(path.join(dir, "video.webm"), Buffer.alloc(8, 1));
+    // Sibling app-level state must never be swept into the bundle.
+    await mkdir(path.join(root, "app-state"));
+    await writeFile(path.join(root, "app-state", "test.log"), "private runtime");
 
     const dest = path.join(root, "bundle.zip");
     await writeDebugBundle(id, dest, { sessionId: id, marker: "diagnostics" });
@@ -33,21 +47,14 @@ test("writeDebugBundle zips the whole session under session/ next to debug-info.
       "output should start with the ZIP local-file-header magic",
     );
 
-    const names = new AdmZip(dest).getEntries().map((entry) => entry.entryName);
-    assert.ok(names.includes("debug-info.json"), "carries a top-level debug-info.json");
-    assert.ok(
-      names.includes("session/session.json"),
-      "nests the recording's files under session/",
-    );
-    assert.ok(
-      names.includes("session/frames/event_1000.jpg"),
-      "includes nested session artifacts (frames, etc.)",
-    );
-  } finally {
-    if (previousRoot === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
-    else process.env.HANDOVER_SESSIONS_DIR = previousRoot;
-    await rm(root, { recursive: true, force: true });
-  }
+    const zip = new AdmZip(dest);
+    const names = zip
+      .getEntries()
+      .filter((entry) => !entry.isDirectory)
+      .map((entry) => entry.entryName);
+    assert.deepEqual(names, ["debug-info.json"]);
+    assert.ok(!zip.readAsText("debug-info.json").includes("PLANTED-PAYLOAD"));
+  });
 });
 
 test("writeDebugBundle refuses a traversal session id", async () => {
@@ -55,27 +62,4 @@ test("writeDebugBundle refuses a traversal session id", async () => {
     async () => writeDebugBundle("../escape", path.join(tmpdir(), "x.zip"), {}),
     /Invalid session id/,
   );
-});
-
-test("debug export holds only the session folder and debug-info.json", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "handover-debug-only-"));
-  const previousRoot = process.env.HANDOVER_SESSIONS_DIR;
-  const sessions = path.join(root, "sessions");
-  process.env.HANDOVER_SESSIONS_DIR = sessions;
-  try {
-    await mkdir(path.join(sessions, "test"), { recursive: true });
-    await writeFile(path.join(sessions, "test", "session.json"), '{"id":"test"}');
-    // Sibling app-level state must never be swept into the bundle.
-    await mkdir(path.join(root, "app-state"));
-    await writeFile(path.join(root, "app-state", "test.log"), "private runtime");
-    const dest = path.join(root, "bundle.zip");
-    await writeDebugBundle("test", dest, {});
-    const entries = new AdmZip(dest).getEntries();
-    assert.deepEqual(entries.filter((entry) => !entry.isDirectory).map((entry) => entry.entryName).sort(),
-      ["debug-info.json", "session/session.json"]);
-  } finally {
-    if (previousRoot === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
-    else process.env.HANDOVER_SESSIONS_DIR = previousRoot;
-    await rm(root, { recursive: true, force: true });
-  }
 });

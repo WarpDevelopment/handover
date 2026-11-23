@@ -137,7 +137,6 @@ export function registerIpc(
   ipcMain.handle(IPC.marker, (_event, note: string) => recorder.marker(note));
   ipcMain.handle(IPC.doctor, () => runDoctor());
   ipcMain.handle(IPC.narrationStatus, () => narration.status());
-  ipcMain.handle(IPC.narrationDownload, () => narration.downloadModel());
   ipcMain.handle(IPC.narrationTranscribe, (_event, sessionId: string) =>
     narration.transcribeSession(sessionId),
   );

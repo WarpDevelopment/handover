@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { ADVANCED_PROTECTION_AVAILABLE } from "../common/config";
 import type { SensitiveModelStatus } from "../common/ipc";
 
 /** Human-readable status for the on-device protection model shown in the sheet. */
@@ -177,6 +178,7 @@ export function WhatsRecorded({
           </ul>
         </section>
 
+        {ADVANCED_PROTECTION_AVAILABLE && (
         <section className={`sheet-block sheet-advp ${advancedOn ? "on" : ""}`}>
           <div className="sheet-advp-head">
             <div className="sheet-advp-copy">
@@ -229,6 +231,7 @@ export function WhatsRecorded({
             </>
           )}
         </section>
+        )}
 
         <section className="sheet-block">
           <h3>What it never does</h3>

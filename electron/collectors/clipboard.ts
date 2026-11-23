@@ -5,24 +5,18 @@ import { clipboard } from "electron";
 import type { Collector, CollectorContext } from "../recorder/collector";
 
 const POLL_MS = 700;
-const PREVIEW_MAX = 120;
 
 function sha1(input: string | Buffer): string {
   return createHash("sha1").update(input).digest("hex").slice(0, 16);
 }
 
-/** One-line, length-capped preview with newlines collapsed (privacy milestone tightens this). */
-function preview(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > PREVIEW_MAX ? flat.slice(0, PREVIEW_MAX) + "…" : flat;
-}
-
 /**
  * Detects clipboard changes by polling (Electron exposes no change event) and
- * emits `clipboard.change` with the available formats, content length, a stable
- * short hash, and a truncated text preview. The clipboard contents present at
- * session start are used only as a baseline and are never emitted, so we capture
- * copies made *during* the recording, not unrelated pre-session data.
+ * emits `clipboard.change` with only the available formats, the content length and
+ * a short opaque hash that acts as the change counter. It never emits any text or
+ * image content (no preview): the privacy floors say no clipboard content leaves
+ * the machine. The clipboard contents present at session start are used only as a
+ * baseline and are never emitted.
  *
  * Cross-platform: Electron's clipboard API is uniform on macOS and Windows.
  */
@@ -47,19 +41,12 @@ export class ClipboardCollector implements Collector {
   }
 
   /** Reads the clipboard once and derives a change signature + descriptor. */
-  private signature(): {
-    sig: string;
-    formats: string[];
-    length: number;
-    hash: string;
-    textPreview?: string;
-  } {
+  private signature(): { sig: string; formats: string[]; length: number; hash: string } {
     const formats = clipboard.availableFormats();
     const text = clipboard.readText();
 
     let length = text.length;
     let hashInput: string | Buffer = text;
-    let textPreview: string | undefined = text ? preview(text) : undefined;
 
     if (!text && formats.some((f) => f.startsWith("image/"))) {
       const img = clipboard.readImage();
@@ -67,16 +54,15 @@ export class ClipboardCollector implements Collector {
         const png = img.toPNG();
         length = png.byteLength;
         hashInput = png;
-        const { width, height } = img.getSize();
-        textPreview = `[image ${width}x${height}]`;
       }
     }
 
     const hash = sha1(hashInput);
-    return { sig: `${formats.join(",")}|${length}|${hash}`, formats, length, hash, textPreview };
+    return { sig: `${formats.join(",")}|${length}|${hash}`, formats, length, hash };
   }
 
-  private poll(): void {
+  /** Exposed for tests: one poll tick. */
+  poll(): void {
     if (!this.ctx) return;
     try {
       const s = this.signature();
@@ -87,7 +73,6 @@ export class ClipboardCollector implements Collector {
         formats: s.formats,
         length: s.length,
         hash: s.hash,
-        ...(s.textPreview ? { textPreview: s.textPreview } : {}),
       });
     } catch (err) {
       this.ctx.log.warn("clipboard read failed:", err instanceof Error ? err.message : err);

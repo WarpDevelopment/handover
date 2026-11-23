@@ -298,7 +298,6 @@ export const IPC = {
   recordingPrivacyReviewed: "recorder:privacy-reviewed",
   recordingPrivacyWarningRequested: "recorder:privacy-warning-requested",
   narrationStatus: "narration:status",
-  narrationDownload: "narration:download",
   narrationTranscribe: "narration:transcribe",
   narrationStatusChanged: "narration:status-changed",
   sensitiveModelStatus: "sensitive:status",
@@ -368,7 +367,6 @@ export interface HandoverApi {
   onTerminalFinishConfirmationRequested(cb: () => void): () => void;
   onTerminalOutput(cb: (data: string) => void): () => void;
   narrationStatus(): Promise<NarrationStatus>;
-  downloadNarrationModel(): Promise<NarrationActionResult>;
   transcribeNarration(sessionId: string): Promise<NarrationActionResult>;
   onNarrationStatusChanged(cb: (status: NarrationStatus) => void): () => void;
   /** Current status of the "Advanced protection" model (on-device frame OCR). */

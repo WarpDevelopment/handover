@@ -23,16 +23,25 @@ export interface CaptureConfig {
   terminal: boolean;
 }
 
+/** The Advanced protection toggle is hidden in this build: its OCR data cannot be fetched. */
+export const ADVANCED_PROTECTION_AVAILABLE = false;
+
 export type CaptureSourceKey = keyof CaptureConfig;
 
-/** The recorder always captures everything. */
+/**
+ * The tester-build capture set. `browserUrls` is off so the PowerShell/AppleScript
+ * URL readers never start; `terminal` is off and its button is hidden. The export
+ * name is kept because the doctor and main import it.
+ */
 export const FULL_CAPTURE: CaptureConfig = {
   appActivity: true,
-  clipboard: true,
+  // Off: the tester package never uses clipboard events, so the collector is not
+  // constructed and the clipboard is never read.
+  clipboard: false,
   windowTitles: true,
-  browserUrls: true,
+  browserUrls: false,
   video: true,
-  terminal: true,
+  terminal: false,
 };
 
 export interface CaptureSourceInfo {

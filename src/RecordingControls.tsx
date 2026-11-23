@@ -9,7 +9,9 @@ import {
   DEFAULT_NARRATION_LANGUAGE,
   narrationLanguageLabel,
 } from "../common/narration";
+import { FULL_CAPTURE } from "../common/config";
 import { formatMs } from "./format";
+import { TestBanner } from "./TestBanner";
 
 export function RecordingControls() {
   const [status, setStatus] = useState<RecorderStatus | null>(null);
@@ -393,6 +395,7 @@ export function RecordingControls() {
       )}
 
       <div className="recording-bar-wrap">
+        <TestBanner />
         <div className="recording-bar">
           <div className="recording-live" role="status" aria-label={`${captureLabel} ${formatMs(elapsed)}`}>
             <span className="recording-live-dot" aria-hidden />
@@ -448,6 +451,7 @@ export function RecordingControls() {
             </button>
           </div>
 
+          {FULL_CAPTURE.terminal && (
           <button
             className={`recording-terminal ${
               terminalStatus?.state !== "closed" ? "active" : ""
@@ -472,6 +476,7 @@ export function RecordingControls() {
               />
             )}
           </button>
+          )}
 
           <button
             className="recording-discard"
