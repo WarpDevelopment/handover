@@ -136,6 +136,8 @@ export interface RecorderDeps {
    * pressing Explain, Pause or Resume does not become a step (or take the freeze's annotations).
    */
   isOwnWindowClick?: (click: PointerClickPayload) => boolean;
+  /** The Electron id of the display under the pointer, recorded on `explain.start`. */
+  pointerDisplayId?: () => number | undefined;
 }
 
 type FinishIntent = "save" | "discard";
@@ -437,10 +439,14 @@ export class RecorderController {
       if (this.store !== store || this.transition !== "none") return { ok: false, error: "Not recording" };
       const displaySizes = new Map<number, [number, number]>();
       for (const d of this.lastDisplays?.displays ?? []) displaySizes.set(d.id, d.sizeDpx);
+      const pointer = this.deps.pointerDisplayId?.();
       this.bus.publish({
         type: EventType.ExplainStart,
         source: "user",
-        payload: { displayIds: frames.map((f) => f.displayId) },
+        payload: {
+          displayIds: frames.map((f) => f.displayId),
+          ...(pointer !== undefined ? { pointerDisplayId: pointer } : {}),
+        },
       });
       this.explain = { frames, displaySizes };
       this.bus.setBlocked(true);

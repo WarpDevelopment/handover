@@ -125,7 +125,7 @@ export interface StepRecord {
   t_end_ms: number;
   summary: string;
   summary_provenance: "observed" | "user";
-  observed_via?: "pointer" | "window_change";
+  observed_via?: "pointer" | "window_change" | "explain";
   action?: {
     type: "click" | "double_click" | "right_click" | "app_switch";
     point_dpx?: { display_id: string; xy: [number, number] };

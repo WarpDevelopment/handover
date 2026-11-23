@@ -23,7 +23,7 @@ export interface AppRef {
 
 export interface StepDraft {
   kind: "action" | "context";
-  observedVia: "pointer" | "window_change";
+  observedVia: "pointer" | "window_change" | "explain";
   actionType: "click" | "double_click" | "right_click" | "app_switch";
   /** ms from recording start of the click or app switch. */
   tMs: number;

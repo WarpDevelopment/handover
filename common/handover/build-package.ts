@@ -169,6 +169,8 @@ interface DraftStep {
   tEnd: number;
   display?: DisplayInfo;
   layout?: DisplaysPayload;
+  /** Set on an Explain step: the frozen frame it is drawn on. */
+  explain?: { displayElectronId: number; shotFile?: string; freezeIdx: number };
 }
 
 function eventsOfType(events: readonly RecEvent[], type: string): RecEvent[] {
@@ -316,12 +318,82 @@ export async function buildPackageDetailed(
 
   // --- Steps (pre-edit ids) ---
   const freezes = explainIntervals(events, durationMs);
-  const drafts = buildSteps(withoutFrozenCollectorEvents(events, durationMs), clickToDpx);
-  const draftSteps: DraftStep[] = drafts.map((draft, i) => {
+  const baseDrafts = buildSteps(withoutFrozenCollectorEvents(events, durationMs), clickToDpx);
+
+  // Explain steps (tester-package.md §4.4): each freeze with highlights or a comment becomes one step
+  // per display that got a highlight (one step for the pointer's display when there are only
+  // comments), drawn on the frozen frame the user annotated.
+  const annEvents = eventsOfType(events, "annotation");
+  const explainItems: { draft: StepDraft; explain: NonNullable<DraftStep["explain"]>; endMs: number }[] = [];
+  freezes.forEach((f, freezeIdx) => {
+    const inside = annEvents
+      .filter((ev) => ev.t >= f.start && ev.t <= f.end)
+      .map((ev) => ({ ev, p: ev.payload as unknown as AnnotationPayload }));
+    const highlights = inside.filter(
+      (a) => a.p.kind === "highlight" && a.p.shape && a.p.pointsDpx && typeof a.p.displayId === "number",
+    );
+    if (highlights.length === 0 && !inside.some((a) => a.p.kind === "comment")) return;
+    const startEv = events.find((e) => e.type === "explain.start" && e.t === f.start);
+    const startPayload = (startEv?.payload ?? {}) as { displayIds?: number[]; pointerDisplayId?: number };
+    const layout = layoutAt(layouts, f.start);
+    let targets = [...new Set(highlights.map((a) => a.p.displayId as number))];
+    if (targets.length === 0) {
+      const fallback =
+        startPayload.pointerDisplayId ??
+        startPayload.displayIds?.[0] ??
+        layout?.displays.find((d) => d.primary)?.id ??
+        layout?.displays[0]?.id;
+      targets = fallback === undefined ? [] : [fallback];
+    }
+    // App and window frontmost at freeze time: the last step before it, else the first after it.
+    let prior: StepDraft | undefined;
+    for (const d of baseDrafts) if (d.tMs <= f.start) prior = d;
+    prior ??= baseDrafts[0];
+    for (const displayElectronId of targets) {
+      let shotFile = highlights.find((a) => a.p.displayId === displayElectronId && a.p.frameFile)?.p.frameFile;
+      if (!shotFile || !session.files.has(shotFile)) {
+        // Nearest frozen frame of that display to the moment of the freeze.
+        const startEpoch = startEv?.epoch ?? baseEpoch + f.start;
+        let best: ShotEntry | undefined;
+        for (const s of session.shots) {
+          if (s.purpose !== "annotation" || s.displayId !== displayElectronId) continue;
+          if (!best || Math.abs(s.epoch - startEpoch) < Math.abs(best.epoch - startEpoch)) best = s;
+        }
+        shotFile = best?.file;
+      }
+      explainItems.push({
+        draft: {
+          kind: "context",
+          observedVia: "explain",
+          actionType: "app_switch",
+          tMs: f.start,
+          frameTMs: f.start,
+          app: prior?.app ?? { name: "", kind: "unknown" },
+          ...(prior?.windowTitle !== undefined ? { windowTitle: prior.windowTitle } : {}),
+          ...(prior?.url ? { url: prior.url } : {}),
+          summary: "", // filled once the step's marks and comment are known
+          seq: startEv?.seq ?? 0,
+        },
+        explain: { displayElectronId, shotFile, freezeIdx },
+        endMs: Math.round(f.end),
+      });
+    }
+  });
+  const items: { draft: StepDraft; explain?: NonNullable<DraftStep["explain"]>; endMs?: number }[] = [
+    ...baseDrafts.map((draft) => ({ draft })),
+    ...explainItems,
+  ];
+  // Stable sort by time; an Explain step goes after an ordinary step at the same moment.
+  items.sort((a, b) => a.draft.tMs - b.draft.tMs);
+  const drafts = items.map((i) => i.draft);
+  const draftSteps: DraftStep[] = items.map((item, i) => {
+    const draft = item.draft;
     const layout = layoutAt(layouts, draft.tMs);
     let display: DisplayInfo | undefined;
     if (layout) {
-      if (draft.click) {
+      if (item.explain) {
+        display = layout.displays.find((d) => d.id === item.explain?.displayElectronId);
+      } else if (draft.click) {
         display = displayForGlobalPoint(layout, draft.click.x, draft.click.y);
       } else if (draft.windowBounds) {
         display = displayForGlobalPoint(
@@ -336,17 +408,29 @@ export async function buildPackageDetailed(
     return {
       id: `S${pad(i + 1, 2)}`,
       draft,
-      tEnd: Math.round(next ? next.tMs : Math.max(durationMs, draft.tMs)),
+      tEnd: item.endMs ?? Math.round(next ? next.tMs : Math.max(durationMs, draft.tMs)),
       display,
       layout,
+      ...(item.explain ? { explain: item.explain } : {}),
     };
   });
 
   // --- Annotations (pre-edit step ids) ---
   // A highlight or comment made during a freeze attaches to the last step before the freeze, or to
   // the first step after it when there is none before (tester-package.md §4.4).
-  const attachStep = (tMs: number): string | undefined => {
-    const freeze = freezes.find((f) => tMs >= f.start && tMs <= f.end);
+  // A freeze that produced Explain steps attaches its marks to them instead: a highlight to the step
+  // of its own display, a comment to the freeze's first Explain step.
+  const attachStep = (tMs: number, p?: AnnotationPayload): string | undefined => {
+    const fi = freezes.findIndex((f) => tMs >= f.start && tMs <= f.end);
+    if (fi >= 0) {
+      const own = draftSteps.filter((s) => s.explain?.freezeIdx === fi);
+      if (own.length > 0) {
+        const byDisplay =
+          p?.kind === "highlight" ? own.find((s) => s.explain?.displayElectronId === p.displayId) : undefined;
+        return (byDisplay ?? own[0]).id;
+      }
+    }
+    const freeze = fi >= 0 ? freezes[fi] : undefined;
     const at = freeze ? freeze.start : tMs;
     let before: DraftStep | undefined;
     for (const s of draftSteps) if (s.draft.tMs <= at) before = s;
@@ -362,7 +446,7 @@ export async function buildPackageDetailed(
   let markCounter = 0;
   for (const ev of eventsOfType(events, "annotation")) {
     const p = ev.payload as unknown as AnnotationPayload;
-    const stepId = attachStep(ev.t);
+    const stepId = attachStep(ev.t, p);
     const stepIds = stepId ? [stepId] : [];
     if (p.kind === "comment") {
       pending.push({
@@ -498,7 +582,15 @@ export async function buildPackageDetailed(
       const space = ds.layout.globalSpace;
       if (click) pointDpx = globalToDpx(space, display, click.x, click.y);
       if (click?.target?.bounds) elementDpx = boundsToDpx(space, display, click.target.bounds);
-      const shot = selectBeforeFrame(candidatesFor(display.id, "before"), d.frameTMs, BEFORE_LEAD_MS);
+      // An Explain step's picture is the frozen frame the user annotated.
+      const frozen = ds.explain?.shotFile
+        ? session.shots.find((s) => s.file === ds.explain?.shotFile)
+        : undefined;
+      const shot: Candidate | undefined = ds.explain
+        ? frozen
+          ? { shot: frozen, t: frozen.epoch - baseEpoch }
+          : undefined
+        : selectBeforeFrame(candidatesFor(display.id, "before"), d.frameTMs, BEFORE_LEAD_MS);
       const bytes = shot && session.files.get(shot.shot.file);
       if (shot && bytes) {
         let img = await decode(bytes);
@@ -711,13 +803,17 @@ export async function buildPackageDetailed(
       summary: edited ?? d.summary,
       summary_provenance: edited !== undefined ? "user" : "observed",
       observed_via: d.observedVia,
-      action: {
-        type: d.actionType,
-        ...(displayId && pointDpx
-          ? { point_dpx: { display_id: displayId, xy: [round2(pointDpx[0]), round2(pointDpx[1])] } }
-          : {}),
-        ...(pointFpx ? { point_fpx: [round2(pointFpx[0]), round2(pointFpx[1])] } : {}),
-      },
+      ...(ds.explain
+        ? {}
+        : {
+            action: {
+              type: d.actionType,
+              ...(displayId && pointDpx
+                ? { point_dpx: { display_id: displayId, xy: [round2(pointDpx[0]), round2(pointDpx[1])] } }
+                : {}),
+              ...(pointFpx ? { point_fpx: [round2(pointFpx[0]), round2(pointFpx[1])] } : {}),
+            },
+          }),
       target,
       ...(before ? { before } : {}),
       annotation_ids: [],
@@ -731,7 +827,7 @@ export async function buildPackageDetailed(
   // After frame on the last step only: about 500 ms after its action.
   const lastDs = kept[kept.length - 1];
   const lastRec = stepRecords[stepRecords.length - 1];
-  if (lastDs && lastRec?.before && lastDs.display) {
+  if (lastDs && !lastDs.explain && lastRec?.before && lastDs.display) {
     const afterCands = candidatesFor(lastDs.display.id, "after");
     const want = lastDs.draft.tMs + AFTER_DELAY_MS;
     let pick: Candidate | undefined;
@@ -859,6 +955,24 @@ export async function buildPackageDetailed(
     if (first && first.kind === "comment" && first.text.text.trim() !== "") {
       s.why = { text: first.text.text, provenance: "user", source_annotation_ids: [first.annotation_id] };
     }
+  }
+
+  // Explain step summaries: `Explain on <app>: "<first 80 chars of the first comment>"`, or
+  // `Explain on <app> (H1, H2)` when there is no comment. A summary the user edited is kept.
+  for (const s of stepRecords) {
+    if (s.observed_via !== "explain" || s.summary_provenance === "user") continue;
+    const appName = ((s.target?.app as { name?: string } | undefined)?.name ?? "").trim();
+    const where = appName ? `Explain on ${appName}` : "Explain on the screen";
+    const comment = s.why?.text.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 80);
+    const marks = s.annotation_ids
+      .map((id) => annotations.find((a) => a.annotation_id === id))
+      .filter((a): a is Extract<AnnotationRecord, { kind: "highlight" }> => a?.kind === "highlight")
+      .map((a) => a.mark);
+    s.summary = comment
+      ? `${where}: "${comment}"`
+      : marks.length
+        ? `${where} (${marks.join(", ")})`
+        : where;
   }
 
   // --- Gaps ---

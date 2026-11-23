@@ -23,7 +23,7 @@ Title: **Save a meeting note**. Apps: Finder, TextEdit, Safari. Use test data on
 | 2 | Open **TextEdit** (Spotlight: Cmd+Space, type TextEdit, Enter), and in the new document click the text area. | "I open TextEdit to write the meeting note." | app switch to TextEdit, then click in the text area (textbox, name may be empty, weak) |
 | 3 | Type the text `Meeting note: agree supplier delivery for Friday.` (typing is not recorded; this is only what you write.) Then click the **File** menu in the menu bar. | "I type a short note and open the File menu to save it." | click menuitem "File", TextEdit |
 | 4 | Click **Save…** in the File menu. In the save sheet click **Save** (name it `handover-mac-test`, where: Desktop). | "I save the note to the Desktop as handover-mac-test." | click menuitem "Save…", then click button "Save" |
-| 5 | **Explain** (see section A below), while TextEdit is visible. | (comment text, see section A) | highlights H1, H2, H3 and one comment on the last step before the freeze |
+| 5 | **Explain** (see section A below), while TextEdit is visible. | (comment text, see section A) | its own **Explain step** (`Explain on TextEdit: "This is the note the supplier needs."`) with highlights H1, H2, H3 and the comment, drawn on the frozen picture |
 | 6 | Open **Safari**, click the address bar, type `https://example.com`, press Enter, then click the link **More information…**. | "I check the supplier site, example.com, to confirm the delivery policy." | app switch to Safari, click address bar (textbox/combobox), click link |
 | 7 | **Pause** (section B). | "I am pausing now; the next bit should not appear." | `gaps.jsonl` has a `user_paused` gap |
 | 8 | **Resume**, and click **Desktop** in Finder again to finish. | "That is done: the note is saved on the Desktop." | click listitem "Desktop", Finder |
@@ -37,8 +37,9 @@ Reference answer (the scorer's key): the process is **8 actions in 3 apps**, in 
 | A2 | Draw a **box** around the document title bar, an **arrow** at your typed text, and a **highlight** over the text line (tool names may differ slightly). | Each shape stays visible while you type. | |
 | A3 | Type the comment `This is the note the supplier needs.` and press **Enter** (or **Done**; label may differ slightly). | The overlay closes; the live screen is unchanged. | |
 | A4 | Press **Cmd+Shift+E** again, draw one box, press **Esc**. | Nothing is saved. | |
-| A5 | If you have two displays, repeat A1 to A3 on the second one. | Both displays freeze; marks land where drawn. | |
-| A6 | Note: clicks you made on the overlay must **not** appear as steps. | Confirmed in the review screen. | |
+| A5 | If you have two displays, repeat A1 to A3 on the second one, drawing a box on **each** display. | Both displays freeze; marks land where drawn; the review screen shows **two** Explain steps for that freeze, one per display, each with its own box. | |
+| A6 | Note: clicks you made on the overlay (and on the bar's Explain button) must **not** appear as steps. | Confirmed in the review screen. | |
+| A7 | In the review screen find the Explain step for A1 to A3. | It is its own step between the Save step and the Safari step, named `Explain on TextEdit: "This is…"`; its picture is the frozen screen with H1 to H3 drawn on it; the comment is its note. It is not attached to the Save step. | |
 
 ## B. Pause, resume and narration (steps 7 and 8)
 | # | Do | Expect | Result |
@@ -59,8 +60,8 @@ Open **Review sessions**, pick the recording. (Screen is new; labels may differ 
 | # | Do | Expect | Result |
 |---|----|--------|--------|
 | D1 | **Export package**, choose the Desktop. | A message with the step count; folder `.handover` and `.zip` on the Desktop. | |
-| D2 | Open `PROCESS.md`. | Steps match the table above; narration lines present; comment under the step it was attached to; the blurred image is blurred; each click names the right control. | |
-| D3 | Open the `media/` folder. | `…_before_full.png`, `…_crop.png`, and `…_full_annotated.png` showing H1 to H3. | |
+| D2 | Open `PROCESS.md`. | Steps match the table above, plus the Explain step (`evidence explain`, Where line ends `(explain)`); narration lines present; the comment under the Explain step; the blurred image is blurred; each click names the right control. | |
+| D3 | Open the `media/` folder. | `…_before_full.png`, `…_crop.png`, and `…_full_annotated.png` for the Explain step, showing H1 to H3 on the frozen picture. | |
 | D4 | Tray menu (menu bar icon) → **Save diagnostics…**. | `handover-diagnostics-<timestamp>.zip` on the Desktop with no screenshots or comments inside. | |
 | D5 | In `events.jsonl` or the package, search for the typed note text. | Not found (nothing typed is recorded). | |
 

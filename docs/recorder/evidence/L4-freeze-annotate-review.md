@@ -90,3 +90,26 @@ Last code commit `de00e65`:
 - macOS: https://github.com/WarpDevelopment/handover/actions/runs/45239202191, success, artifact `handover-macos-arm64` (668 MB).
 - Earlier pushes on this branch were green too: `fix(ui)` commit `cd5633f` (Windows 45237750448, macOS 45237750357) and `feat(ui)` commit (Windows 45236746711, macOS 45236746841).
 - The commit that adds this file is docs only; its own runs are on the branch page and are reported in the `hc send` message.
+
+## Round 2: Explain steps (orchestrator decision (c), `tester-package.md` §4.4 "Explain steps")
+Merged `origin/task/workflow-recording-assistant` (L6 docs and the spec change) with `git merge`; no conflicts.
+
+What changed:
+- **Builder** (`build-package.ts`): each freeze with highlights or a comment becomes `kind: "context"`, `observed_via: "explain"` steps, one per display that got a highlight (one for the display under the pointer when there are only comments; falls back to the first frozen display). `t_start_ms`/`t_end_ms` are `explain.start`/`explain.end`; `target` is a context target with the app and window frontmost at freeze time; `before` is that display's **frozen frame** (the highlight's `frameFile`, else the nearest `annotation` shot) with `full_annotated` drawn on it; summary is `Explain on <app>: "<first 80 chars of the first comment>"` or `Explain on <app> (H1, H2)`; `why` from the first comment. A highlight attaches to the Explain step of its own display and the comment to the freeze's first Explain step. No `action` on these steps, no after frame. A summary the user edited is kept.
+- **Event type:** `ExplainPayload` gets an optional `pointerDisplayId` (set on `explain.start` by the controller via a new `pointerDisplayId` dep), needed to pick the display for a comment-only freeze. This is an additive optional field on a shared type; flagging it as asked.
+- **Schema** (`observed_via` allows `explain`), **PROCESS.md** (`evidence explain`; Where line `<app> › <window title> (explain)`; not listed under "could not see").
+- **Golden files** regenerated (the synthetic session now has 7 steps; S04 is the Explain step).
+
+Tests (all in `npm test`, now **320**, 0 failed, 0 skipped; `npm run build` exits 0):
+| Requirement | Test |
+|---|---|
+| Freeze with highlights on 2 displays gives 2 Explain steps drawn on their frozen frames | `annotate-edit.test.ts` "a freeze with highlights on two displays…" (frames at 6,900 and 6,910, each annotated image differs from its plain one, package validates) |
+| Comment-only freeze gives one step | "a comment-only freeze gives one Explain step, for the display under the pointer" (pointer display, fallback, empty freeze adds none) |
+| Explain steps excluded from `task_ms` | "Explain steps are excluded from task_ms…" (15,000 / 3,000 / 2,000 of 20,000; step length equals `explain_ms`; `task_ms` unchanged with no freeze) |
+| Edits work on Explain steps | "blur_rect reaches the annotated image…" (blur on S04), "edits use the pre-edit numbering…" (delete S02, blur the Explain step), "a deleted Explain step is absent…"; `review.test.ts` (note edit on the Explain step, export applies it) |
+| Controller records the pointer display | `explain.test.ts` "explain.start records the display under the pointer…" |
+Existing tests for the old attach-to-last-step behaviour were rewritten for the new numbering.
+
+Docs: `smoke/L4.md` (A2, new D2b) and `smoke/mac-owner-session.md` (step 5 row, A5, A6, new A7, D2, D3) now say the freeze is its own Explain step and where the marks appear.
+
+Still unproven: real capture to overlay to Explain step on a person's screen (smoke A2), and whether the app/window recorded for an Explain step is right when the user switched apps during the freeze (it is the last step's app, since collectors are paused while frozen).

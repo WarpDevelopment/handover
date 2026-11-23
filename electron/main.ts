@@ -159,6 +159,7 @@ function isOwnBarClick(click: PointerClickPayload): boolean {
 
 const recorder = new RecorderController({
   isOwnWindowClick: isOwnBarClick,
+  pointerDisplayId: () => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id,
   getDisplays: currentDisplays,
   getHelperStatus: () => helperStatusFrom(helperTracker.report()),
   resolveConfig: () => ({ ...FULL_CAPTURE }),

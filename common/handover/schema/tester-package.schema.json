@@ -134,7 +134,7 @@
         "t_end_ms": { "$ref": "#/$defs/ms" },
         "summary": { "type": "string", "minLength": 1 },
         "summary_provenance": { "enum": ["observed", "user"] },
-        "observed_via": { "enum": ["pointer", "window_change"] },
+        "observed_via": { "enum": ["pointer", "window_change", "explain"] },
         "action": {
           "type": "object",
           "required": ["type"],

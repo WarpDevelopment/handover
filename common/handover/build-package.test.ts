@@ -115,9 +115,10 @@ test("steps, timing and frames of the synthetic session", async () => {
       ["S01", "context", "Switch to Microsoft Excel"],
       ["S02", "action", 'Click button "Save" in Microsoft Excel'],
       ["S03", "action", "Double-click at (400, 300) in Microsoft Excel"],
-      ["S04", "context", "Switch to Google Chrome"],
-      ["S05", "action", 'Click text box "Password" in Google Chrome'],
-      ["S06", "action", 'Right-click pane "Mail list" in Google Chrome'],
+      ["S04", "context", 'Explain on Microsoft Excel: "Always save before closing the file"'],
+      ["S05", "context", "Switch to Google Chrome"],
+      ["S06", "action", 'Click text box "Password" in Google Chrome'],
+      ["S07", "action", 'Right-click pane "Mail list" in Google Chrome'],
     ],
   );
   const manifest = JSON.parse(text(files, "manifest.json"));
@@ -126,7 +127,7 @@ test("steps, timing and frames of the synthetic session", async () => {
     [15000, 3000, 2000, 20000],
   );
   assert.equal(manifest.recording.started_at.endsWith("+02:00"), true);
-  assert.equal(manifest.recording.step_count, 6);
+  assert.equal(manifest.recording.step_count, 7);
   assert.equal(manifest.media.image_count, [...files.keys()].filter((p) => p.endsWith(".png")).length);
 
   // The before frame is the newest frame at least 50 ms before the click: S02 (click at 3,000)
@@ -142,7 +143,7 @@ test("steps, timing and frames of the synthetic session", async () => {
   assert.equal(s[2].before.t_ms, 5000);
 
   // Negative-origin display: macOS dpx = (p - origin) x scale.
-  assert.deepEqual(s[4].action.point_dpx, { display_id: "d1", xy: [1160, 700] });
+  assert.deepEqual(s[5].action.point_dpx, { display_id: "d1", xy: [1160, 700] });
   assert.deepEqual(s[1].action.point_dpx, { display_id: "d0", xy: [1400, 800] });
   // Full images respect the 1,568 rules.
   for (const x of s) {
@@ -154,14 +155,14 @@ test("steps, timing and frames of the synthetic session", async () => {
   assert.equal(s[0].before.crop, undefined);
   assert.ok(s[1].before.crop.width <= 800 && s[1].before.crop.height <= 500);
   // The after frame is only on the last step.
-  assert.equal(s[5].after.t_ms, 16500);
-  assert.ok(s.slice(0, 5).every((x) => x.after === undefined));
+  assert.equal(s[6].after.t_ms, 16500);
+  assert.ok(s.slice(0, 6).every((x) => x.after === undefined));
   // Flags and grounding.
-  assert.deepEqual(s[4].flags, ["contains_redaction"]);
+  assert.deepEqual(s[5].flags, ["contains_redaction"]);
   assert.deepEqual(s[2].flags, ["low_confidence_target"]);
   assert.equal(s[2].target.grounding, "visual_only");
   assert.deepEqual(s[2].target.unavailable, { reason: "timeout" });
-  assert.equal(s[3].target.url.text, "https://mail.example.com/inbox"); // query and fragment dropped
+  assert.equal(s[4].target.url.text, "https://mail.example.com/inbox"); // query and fragment dropped
   const last = s[1].target.locators.at(-1);
   assert.equal(last.strategy, "frame_point");
   assert.equal(last.stability, "low");
@@ -192,40 +193,41 @@ test("PROCESS.md lists only steps with no control as unseen; a weak control is n
   const md = text(await buildPackage(session, edits, CTX), "PROCESS.md");
   const unseen = md.slice(md.indexOf("## What the recorder could not see"));
   assert.match(unseen, /- S03: no control identified \(timeout\); the target is pixels only\./);
-  assert.ok(!unseen.includes("- S06:"), "S06 found a weak control (T2), so it is not pixels only");
+  assert.ok(!unseen.includes("- S07:"), "S07 found a weak control (T2), so it is not pixels only");
+  assert.ok(!unseen.includes("- S04:"), "an Explain step is not a step the recorder failed to see");
   assert.match(md, /evidence T2 \(opaque_toolkit\)/);
-  assert.match(unseen, /- gap_0001 \(S05 → S06\): paused by the user, 2\.0 s\./);
+  assert.match(unseen, /- gap_0001 \(S06 → S07\): paused by the user, 2\.0 s\./);
 });
 
-test("annotations: freeze comment and highlight attach to the last step before the freeze; narration by overlap", async () => {
+test("annotations: a freeze's highlight and comment belong to its own Explain step; narration by overlap", async () => {
   const { session, edits } = await load();
   const files = await buildPackage(session, edits, CTX);
   const a = anns(files);
   const hl = a.find((x) => x.kind === "highlight")!;
   const comment = a.find((x) => x.kind === "comment")!;
   const narr = a.find((x) => x.kind === "narration")!;
-  assert.deepEqual(hl.step_ids, ["S03"]);
-  assert.deepEqual(comment.step_ids, ["S03"]);
+  assert.deepEqual(hl.step_ids, ["S04"]);
+  assert.deepEqual(comment.step_ids, ["S04"]);
   assert.equal(hl.mark, "H1");
-  assert.equal(hl.frame_id, steps(files)[2].before.frame_id);
+  assert.equal(hl.frame_id, steps(files)[3].before.frame_id);
   assert.equal(hl.geometry_fpx.length, 2);
   // fpx = dpx x scale.
-  const scale = steps(files)[2].before.scale;
+  const scale = steps(files)[3].before.scale;
   assert.ok(Math.abs(hl.geometry_fpx[0][0] - 1300 * scale) < 0.01);
   assert.equal(hl.snapped_to.role, "button");
   // Narration overlapping two steps gets a low anchor confidence.
   assert.ok(narr.anchor_confidence < 0.6);
   assert.deepEqual(narr.step_ids, ["S02"]);
   // The comment is the step's why, and PROCESS.md cites it.
-  assert.equal(steps(files)[2].why.text, "Always save before closing the file");
+  assert.equal(steps(files)[3].why.text, "Always save before closing the file");
   assert.match(text(files, "PROCESS.md"), /- Why: Always save before closing the file `\[user, ann_0002\]`/);
-  assert.match(text(files, "PROCESS.md"), /\*\*S03\. .*\*\* \(H1\)/);
+  assert.match(text(files, "PROCESS.md"), /\*\*S04\. .*\*\* \(H1\)/);
 });
 
 test("password field: the before frame is blurred and the step is flagged", async () => {
   const { session } = await load();
   const files = await buildPackage(session, [], CTX);
-  const s5 = steps(files)[4];
+  const s5 = steps(files)[5];
   assert.equal(s5.before.redacted_regions_fpx.length, 1);
   const [x, y, w, h] = s5.before.redacted_regions_fpx[0];
   assert.ok(w > 0 && h > 0);
@@ -237,8 +239,8 @@ test("password field: the before frame is blurred and the step is flagged", asyn
     ),
   };
   const plain = await buildPackage(noPw, [], CTX);
-  const a = await sharp(Buffer.from(files.get("media/S05_before_full.png")!)).raw().toBuffer({ resolveWithObject: true });
-  const b = await sharp(Buffer.from(plain.get("media/S05_before_full.png")!)).raw().toBuffer({ resolveWithObject: true });
+  const a = await sharp(Buffer.from(files.get("media/S06_before_full.png")!)).raw().toBuffer({ resolveWithObject: true });
+  const b = await sharp(Buffer.from(plain.get("media/S06_before_full.png")!)).raw().toBuffer({ resolveWithObject: true });
   assert.equal(a.info.width, b.info.width);
   let inside = 0;
   let outside = 0;
@@ -265,19 +267,19 @@ test("edits: delete renumbers ids and drops its annotations; edit_summary and ed
   ];
   const files = await buildPackage(session, edits, CTX);
   const s = steps(files);
-  assert.deepEqual(s.map((x) => x.step_id), ["S01", "S02", "S03", "S04", "S05"]);
-  assert.deepEqual(s.map((x) => x.seq), [1, 2, 3, 4, 5]);
+  assert.deepEqual(s.map((x) => x.step_id), ["S01", "S02", "S03", "S04", "S05", "S06"]);
+  assert.deepEqual(s.map((x) => x.seq), [1, 2, 3, 4, 5, 6]);
   assert.ok(!s.some((x) => x.summary.includes('"Save"')), "the deleted step is gone");
   assert.equal(s[1].summary, "Open the budget cell");
   assert.equal(s[1].summary_provenance, "user");
   assert.deepEqual(s[1].flags, ["low_confidence_target", "user_edited"]);
-  assert.ok(!files.has("media/S06_before_full.png"), "images are renumbered with the steps");
+  assert.ok(!files.has("media/S07_before_full.png"), "images are renumbered with the steps");
   const a = anns(files);
   assert.deepEqual(a.find((x) => x.kind === "comment")!.text.text, "Save first");
   assert.equal(a.find((x) => x.kind === "comment")!.source, "review");
-  // Narration attached to the deleted step goes with it; highlight and comment moved to the new S02.
+  // Narration attached to the deleted step goes with it; the Explain step (now S03) keeps its marks.
   assert.ok(!a.some((x) => x.kind === "narration"));
-  assert.deepEqual(a.find((x) => x.kind === "highlight")!.step_ids, ["S02"]);
+  assert.deepEqual(a.find((x) => x.kind === "highlight")!.step_ids, ["S03"]);
   // The result still validates.
   const dir = await mkdtemp(path.join(os.tmpdir(), "handover-edit-"));
   try {
@@ -306,13 +308,13 @@ test("context steps: grounding none, a frame_point at the window centre, 'contex
     { strategy: "frame_point", value: `${Math.round(1200 * scale)},${Math.round(820 * scale)}`, rank: 1, stability: "low" },
   ]);
   // Chrome sits on display 2 (origin -1280,-100): centre (-650, 300) = (1260, 800) dpx.
-  assert.equal(s[3].target.display_id, "d1");
-  assert.equal(s[3].target.locators[0].value, `${Math.round(1260 * s[3].before.scale)},${Math.round(800 * s[3].before.scale)}`);
+  assert.equal(s[4].target.display_id, "d1");
+  assert.equal(s[4].target.locators[0].value, `${Math.round(1260 * s[4].before.scale)},${Math.round(800 * s[4].before.scale)}`);
   const md = text(files, "PROCESS.md");
   assert.match(md, /\*\*S01\. Switch to Microsoft Excel\*\* `\[observed\]` · evidence context\n- Where: Microsoft Excel › Budget\.xlsx \(app switch\)/);
   assert.match(md, /evidence T3/);
   const unseen = md.slice(md.indexOf("## What the recorder could not see"));
-  assert.ok(!unseen.includes("S01") && !unseen.includes("S04"));
+  assert.ok(!unseen.includes("S01") && !unseen.includes("S04") && !unseen.includes("S05"));
   // Without window bounds or any frame it falls back to the display centre and still validates.
   const bare: SessionInput = {
     ...session,
@@ -369,10 +371,10 @@ test("gap convention: open without tEndMs, closed by a later gap with the same r
 
 test("deleting the last step leaves no after frame: a frame taken after the deleted action is not 'about 500 ms after' the new last step", async () => {
   const { session } = await load();
-  const files = await buildPackage(session, [{ edit_id: "e1", at: "t", op: "delete_step", step_id: "S06" }], CTX);
+  const files = await buildPackage(session, [{ edit_id: "e1", at: "t", op: "delete_step", step_id: "S07" }], CTX);
   const s = steps(files);
-  assert.equal(s.length, 5);
-  assert.equal(s[4].after, undefined);
+  assert.equal(s.length, 6);
+  assert.equal(s[5].after, undefined);
   assert.ok(![...files.keys()].some((p) => p.includes("_after_")));
 });
 

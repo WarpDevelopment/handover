@@ -26,7 +26,7 @@ test("exports a validating folder and a zip with the same content", async () => 
     });
     assert.equal(result.ok, true, JSON.stringify(result.validationErrors ?? result.error));
     assert.match(result.packageId!, /^pkg_[0-9A-HJKMNP-TV-Z]{26}$/);
-    assert.equal(result.stepCount, 6);
+    assert.equal(result.stepCount, 7); // six recorded steps and the Explain step
     assert.match(path.basename(result.folder!), /^save-the-budget-and-open-mail__pkg_[0-9A-Z]{26}\.handover$/);
     assert.deepEqual((await validatePackage(result.folder!)).errors, []);
 

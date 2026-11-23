@@ -170,7 +170,11 @@ export type GapPayload = {
   tEndMs?: number;
 };
 
-export type ExplainPayload = { displayIds: number[] };
+export type ExplainPayload = {
+  displayIds: number[];
+  /** `explain.start` only: the display under the pointer when the screen froze (optional). */
+  pointerDisplayId?: number;
+};
 
 /** Maps each event type to its payload shape. */
 export interface EventPayloads {

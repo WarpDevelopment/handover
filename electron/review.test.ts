@@ -40,16 +40,16 @@ async function edits(dir: string): Promise<Record<string, unknown>[]> {
 test("load returns the steps with their pre-edit ids, comments, highlights and the image to show", async () => {
   await withCopy(async (dir) => {
     const data = await service().load(dir, "s1");
-    assert.equal(data.steps.length, 6);
-    assert.deepEqual(data.steps.map((s) => s.stepId), ["S01", "S02", "S03", "S04", "S05", "S06"]);
-    assert.deepEqual(data.steps.map((s) => s.preEditId), ["S01", "S02", "S03", "S04", "S05", "S06"]);
-    const s3 = data.steps[2];
-    assert.deepEqual(s3.comment, { annotationId: "ann_0002", text: "Always save before closing the file" });
-    assert.equal(s3.highlightCount, 1);
-    assert.equal(s3.image?.path, "media/S03_before_full_annotated.png", "annotated image when there are highlights");
+    assert.equal(data.steps.length, 7);
+    assert.deepEqual(data.steps.map((s) => s.stepId), ["S01", "S02", "S03", "S04", "S05", "S06", "S07"]);
+    assert.deepEqual(data.steps.map((s) => s.preEditId), ["S01", "S02", "S03", "S04", "S05", "S06", "S07"]);
+    const explain = data.steps[3]; // the freeze is its own step
+    assert.deepEqual(explain.comment, { annotationId: "ann_0002", text: "Always save before closing the file" });
+    assert.equal(explain.highlightCount, 1);
+    assert.equal(explain.image?.path, "media/S04_before_full_annotated.png", "annotated image when there are highlights");
     assert.equal(data.steps[1].image?.path, "media/S02_before_full.png");
-    assert.equal(data.steps[4].blurredFpx.length, 1, "the password field is already blurred");
-    assert.ok(data.steps[4].flags.includes("contains_redaction"));
+    assert.equal(data.steps[5].blurredFpx.length, 1, "the password field is already blurred");
+    assert.ok(data.steps[5].flags.includes("contains_redaction"));
   });
 });
 
@@ -74,7 +74,7 @@ test("edits are appended to edits.jsonl, ids stay pre-edit, and the export appli
     // Delete the step shown as S02, then edit the summary and blur the step shown as S02 now (old S03).
     let data = await svc.applyEdit(dir, "s1", { op: "delete_step", preEditId: "S02" });
     assert.deepEqual(data.steps.map((s) => [s.stepId, s.preEditId]), [
-      ["S01", "S01"], ["S02", "S03"], ["S03", "S04"], ["S04", "S05"], ["S05", "S06"],
+      ["S01", "S01"], ["S02", "S03"], ["S03", "S04"], ["S04", "S05"], ["S05", "S06"], ["S06", "S07"],
     ]);
     data = await svc.applyEdit(dir, "s1", { op: "edit_summary", preEditId: "S03", text: "  Save the budget  " });
     data = await svc.applyEdit(dir, "s1", { op: "edit_comment", annotationId: "ann_0002", text: "Save first, always" });
@@ -82,7 +82,7 @@ test("edits are appended to edits.jsonl, ids stay pre-edit, and the export appli
     assert.equal(data.editCount, 4);
     assert.equal(data.steps[1].summary, "Save the budget");
     assert.equal(data.steps[1].summaryEdited, true);
-    assert.equal(data.steps[1].comment?.text, "Save first, always");
+    assert.equal(data.steps[2].comment?.text, "Save first, always", "the note belongs to the Explain step");
     assert.deepEqual(data.steps[1].blurredFpx, [[100, 100, 200, 100]]);
 
     const lines = await edits(dir);
@@ -99,7 +99,7 @@ test("edits are appended to edits.jsonl, ids stay pre-edit, and the export appli
     try {
       const result = await exportPackage({ sessionDir: dir, destZip: path.join(out, "x.zip"), toolVersion: "0.1.0" });
       assert.equal(result.ok, true, JSON.stringify(result.validationErrors ?? result.error));
-      assert.equal(result.stepCount, 5);
+      assert.equal(result.stepCount, 6);
       const stepsJsonl = await readFile(path.join(result.folder!, "steps.jsonl"), "utf8");
       assert.ok(stepsJsonl.includes("Save the budget"));
       assert.ok(!stepsJsonl.includes('Click button \\"Save\\"'), "the deleted step is gone");

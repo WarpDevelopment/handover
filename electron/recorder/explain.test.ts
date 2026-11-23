@@ -50,6 +50,7 @@ function makeController(opts: {
   video?: boolean;
   onAborted?: () => void;
   isOwnWindowClick?: (c: { x: number; y: number }) => boolean;
+  pointerDisplayId?: () => number | undefined;
 } = {}): {
   controller: RecorderController;
   hand: HandCollector;
@@ -76,6 +77,7 @@ function makeController(opts: {
     getDisplays: () => LAYOUT,
     onExplainAborted: opts.onAborted,
     isOwnWindowClick: opts.isOwnWindowClick,
+    pointerDisplayId: opts.pointerDisplayId,
   });
   return { controller, hand, snapshots };
 }
@@ -209,6 +211,18 @@ test("explain: one frozen frame per display, annotations typed with ids and fram
     assert.equal(anns[1].frameFile, "shots/000002.jpg");
     assert.deepEqual(anns[2], { annotationId: "ann_0003", kind: "comment", text: "Check this total", source: "typed" });
     assert.deepEqual(events.find((e) => e.type === "explain.start")!.payload, { displayIds: [1, 2] });
+  });
+});
+
+test("explain.start records the display under the pointer, so a comment-only freeze lands on the right display", async () => {
+  await withSessionsRoot(async (root) => {
+    const { controller } = makeController({ pointerDisplayId: () => 2 });
+    const started = await controller.start();
+    await controller.beginExplain();
+    await controller.endExplain({ cancelled: true });
+    await controller.stop();
+    const start = (await readEvents(root, started.sessionId!)).find((e) => e.type === "explain.start")!;
+    assert.deepEqual(start.payload, { displayIds: [1, 2], pointerDisplayId: 2 });
   });
 });
 
