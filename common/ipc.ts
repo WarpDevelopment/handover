@@ -380,6 +380,8 @@ export const IPC = {
   pause: "recorder:pause",
   resume: "recorder:resume",
   explain: "recorder:explain",
+  explainHotkey: "recorder:explain-hotkey",
+  freezeReady: "freeze:ready",
   freezeInit: "freeze:init",
   freezeState: "freeze:state",
   freezeDone: "freeze:done",
@@ -475,6 +477,10 @@ export interface HandoverApi {
   resume(): Promise<ActionResult>;
   /** Freeze the screen so items on it can be highlighted and commented on. */
   explain(): Promise<ActionResult>;
+  /** The Explain hotkey that is registered, or null when it could not be (only the button works). */
+  explainHotkey(): Promise<string | null>;
+  /** Freeze overlay only: the frozen frame has been drawn, so the window can be shown. */
+  freezeReady(): void;
   /** Freeze overlay only: the frozen frame and geometry for this window's display. */
   freezeInit(): Promise<FreezeInit | null>;
   /** Freeze overlay only: report the shapes and comment drawn so far on this display. */

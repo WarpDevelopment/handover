@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -16,7 +17,8 @@ import { FULL_CAPTURE } from "../common/config";
 import { displaysPayload } from "../common/handover/displays";
 import { helperStatusFrom } from "../common/handover/helper";
 import { helperTracker } from "./collectors/helper-status";
-import { IPC, type RecorderStatus, type StartResult } from "../common/ipc";
+import { IPC, type ActionResult, type RecorderStatus, type StartResult } from "../common/ipc";
+import type { ReviewEditInput } from "../common/handover/review";
 import type {
   SupportedShellId,
   TerminalActionResult,
@@ -26,7 +28,10 @@ import { createCollectors } from "./collectors";
 import { installCrashGuards } from "./crash-guards";
 import { processSession } from "./pipeline";
 import { registerIpc } from "./ipc";
-import { isValidSessionId } from "./recorder/session-store";
+import { isValidSessionId, sessionDir } from "./recorder/session-store";
+import { FreezeCoordinator, type OverlayWindow } from "./freeze";
+import { registerHotkey } from "./hotkeys";
+import { ReviewService } from "./review";
 import { saveDiagnosticsToDesktop } from "./diagnostics-info";
 import { createLogger, initFileLogging } from "./logger";
 import {
@@ -50,6 +55,7 @@ import {
   clampRecordingControlsWindow,
   createLibraryWindow,
   createRecorderWindow,
+  createFreezeOverlay,
   createRecordingControlsWindow,
   createTerminalWindow,
   fitRecorderHeight,
@@ -149,6 +155,7 @@ const recorder = new RecorderController({
     terminalSession?.busyDetails() ?? { busy: false, command: null },
   finishTerminal: finishRecordedTerminal,
   deleteSession,
+  onExplainAborted: () => freeze.abort(),
   postProcess: async (dir) => {
     await processSession(dir);
     try {
@@ -158,6 +165,86 @@ const recorder = new RecorderController({
     }
   },
 });
+
+const review = new ReviewService({ toolVersion: app.getVersion() });
+
+/** How long an overlay waits for its page to paint the frozen frame before it is shown anyway. */
+const OVERLAY_REVEAL_TIMEOUT_MS = 1500;
+const overlayReveal = new Map<number, () => void>();
+
+/** An overlay `BrowserWindow` as the freeze flow sees it. It is shown once its page has drawn the frame. */
+function overlayWindow(display: Electron.Display): OverlayWindow {
+  const win = createFreezeOverlay(display);
+  const senderId = win.webContents.id;
+  let wantFocus = false;
+  let revealed = false;
+  const reveal = () => {
+    if (revealed || win.isDestroyed()) return;
+    revealed = true;
+    win.show();
+    win.moveTop();
+    if (wantFocus) win.focus();
+  };
+  overlayReveal.set(senderId, reveal);
+  const timer = setTimeout(reveal, OVERLAY_REVEAL_TIMEOUT_MS);
+  win.once("closed", () => {
+    clearTimeout(timer);
+    overlayReveal.delete(senderId);
+  });
+  return {
+    senderId,
+    // Shown by the page's "ready" signal or the timeout above, whichever comes first.
+    show: () => undefined,
+    focus: () => {
+      wantFocus = true;
+      if (revealed && !win.isDestroyed()) win.focus();
+    },
+    destroy: () => {
+      if (!win.isDestroyed()) win.destroy();
+    },
+    isDestroyed: () => win.isDestroyed(),
+    onClosed: (cb) => win.once("closed", cb),
+    onEscape: (cb) => {
+      win.webContents.on("before-input-event", (event, input) => {
+        if (input.type !== "keyDown" || input.key !== "Escape") return;
+        event.preventDefault();
+        cb();
+      });
+    },
+  };
+}
+
+const freeze: FreezeCoordinator = new FreezeCoordinator({
+  beginExplain: () => recorder.beginExplain(),
+  endExplain: (result) => recorder.endExplain(result),
+  getDisplays: () => screen.getAllDisplays(),
+  cursorDisplayId: () => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id,
+  readFrame: async (dir, frame) => {
+    const file = path.resolve(dir, frame.file);
+    if (!file.startsWith(path.resolve(dir) + path.sep)) throw new Error("frame outside the session folder");
+    const bytes = await readFile(file);
+    const mime = file.endsWith(".png") ? "image/png" : "image/jpeg";
+    return `data:${mime};base64,${bytes.toString("base64")}`;
+  },
+  openWindow: overlayWindow,
+  activateApp: () => {
+    if (process.platform === "darwin") app.focus({ steal: true });
+  },
+  log,
+});
+
+/** Pause and Explain only make sense from the recording bar (or the hotkey), while recording. */
+async function startExplain(): Promise<ActionResult> {
+  const status = recorder.status();
+  if (status.state !== "recording" || status.transition !== "none") {
+    return { ok: false, error: "Start recording before using Explain." };
+  }
+  return freeze.begin();
+}
+
+/** The Explain hotkey, or null when it could not be registered (the bar's button still works). */
+const EXPLAIN_HOTKEY = "CommandOrControl+Shift+E";
+let explainHotkey: string | null = null;
 
 async function startRecording(): Promise<StartResult> {
   if (recordingStartPending) {
@@ -556,6 +643,53 @@ app.whenReady().then(async () => {
     fitRecorderHeight(win, height);
   });
 
+  const fromControls = (sender: Electron.WebContents): boolean => {
+    const controls = recordingControlsWindow;
+    return Boolean(controls && !controls.isDestroyed() && sender === controls.webContents);
+  };
+  const notAllowed: ActionResult = { ok: false, error: "This action is only available from the recording bar." };
+  ipcMain.handle(IPC.pause, (event) => (fromControls(event.sender) ? recorder.pause() : notAllowed));
+  ipcMain.handle(IPC.resume, (event) => (fromControls(event.sender) ? recorder.resume() : notAllowed));
+  ipcMain.handle(IPC.explain, (event) => (fromControls(event.sender) ? startExplain() : notAllowed));
+  ipcMain.handle(IPC.explainHotkey, () => explainHotkey);
+  // Freeze overlay windows only; the coordinator ignores any other sender.
+  ipcMain.handle(IPC.freezeInit, (event) => freeze.init(event.sender.id));
+  ipcMain.on(IPC.freezeState, (event, state: unknown) => freeze.setState(event.sender.id, state));
+  ipcMain.on(IPC.freezeReady, (event) => overlayReveal.get(event.sender.id)?.());
+  ipcMain.handle(IPC.freezeDone, (event) => freeze.done(event.sender.id));
+  ipcMain.handle(IPC.freezeCancel, (event) => freeze.cancel(event.sender.id));
+
+  // Review (Library window only): build the steps with their edits, serve images, append edits.
+  const fromLibrary = (sender: Electron.WebContents): boolean =>
+    Boolean(libraryWindow && !libraryWindow.isDestroyed() && sender === libraryWindow.webContents);
+  ipcMain.handle(IPC.reviewLoad, async (event, sessionId: unknown) => {
+    if (!fromLibrary(event.sender) || !isValidSessionId(sessionId)) return { ok: false, error: "Unavailable." };
+    try {
+      return { ok: true, data: await review.load(sessionDir(sessionId), sessionId) };
+    } catch (error) {
+      log.warn("Review load failed:", error);
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle(IPC.reviewImage, (event, sessionId: unknown, imagePath: unknown) =>
+    fromLibrary(event.sender) && isValidSessionId(sessionId) && typeof imagePath === "string"
+      ? review.image(sessionId, imagePath)
+      : null,
+  );
+  ipcMain.handle(IPC.reviewEdit, async (event, sessionId: unknown, edit: unknown) => {
+    if (!fromLibrary(event.sender) || !isValidSessionId(sessionId) || !edit || typeof edit !== "object") {
+      return { ok: false, error: "Unavailable." };
+    }
+    if (recorder.status().sessionId === sessionId) {
+      return { ok: false, error: "This recording is still in progress." };
+    }
+    try {
+      return { ok: true, data: await review.applyEdit(sessionDir(sessionId), sessionId, edit as ReviewEditInput) };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   recorder.onStatusChanged((status) => {
     broadcast(IPC.statusChanged, status);
     syncRecordingWindows(status);
@@ -591,6 +725,10 @@ app.whenReady().then(async () => {
   };
   if (!globalShortcut.register("CommandOrControl+Shift+R", toggle)) {
     log.warn("Global shortcut registration failed");
+  }
+  // Explain: if another app owns the hotkey the recording bar's Explain button still works.
+  if (registerHotkey(globalShortcut, EXPLAIN_HOTKEY, () => void startExplain(), log)) {
+    explainHotkey = EXPLAIN_HOTKEY;
   }
 
   instanceReady?.();
