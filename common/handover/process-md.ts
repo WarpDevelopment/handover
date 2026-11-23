@@ -26,16 +26,6 @@ const GAP_REASON: Record<string, string> = {
   permission_lost: "a permission was revoked",
 };
 
-const UNAVAILABLE_REASON: Record<string, string> = {
-  helper_missing: "the control helper was not running",
-  timeout: "the control lookup timed out",
-  permission_missing: "the accessibility permission was missing",
-  remote_session: "remote screen",
-  opaque_toolkit: "an app that exposes no controls",
-  elevated_window: "an administrator window the recorder cannot see into",
-  secure_field: "a secure field",
-};
-
 function tier(step: StepRecord): "T3" | "T2" | "T0" {
   const g = step.target?.grounding;
   if (g === "accessibility") return "T3";
@@ -154,12 +144,11 @@ export function renderProcessMd(d: ProcessMdData): string {
         `${GAP_REASON[g.reason] ?? g.reason.replace(/_/g, " ")}, ${formatDuration(g.t_end_ms - g.t_start_ms)}.`,
     );
   }
+  // Only steps with no control at all (T0). A weak control (T2) was identified, so it is not listed.
   for (const step of d.steps) {
-    if (step.kind !== "action" || tier(step) === "T3") continue;
-    const reason = unavailableReason(step);
-    const phrase = reason ? (UNAVAILABLE_REASON[reason] ?? reason.replace(/_/g, " ")) : "no control identified";
+    if (step.kind !== "action" || tier(step) !== "T0") continue;
     unseen.push(
-      `- ${step.step_id}: no control identified (${reason ?? "unknown"}: ${phrase}); the target is pixels only.`,
+      `- ${step.step_id}: no control identified (${unavailableReason(step) ?? "unknown"}); the target is pixels only.`,
     );
   }
   if (unseen.length === 0) unseen.push("- None.");

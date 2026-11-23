@@ -48,14 +48,14 @@
   ],
   "files": [
     {
-      "bytes": 2616,
+      "bytes": 3514,
       "path": "CLAUDE_HANDOFF.md",
-      "sha256": "fc927887f2865753e26c02c1d29a10cc9bca2bfcf70f2ede95ee31893317c849"
+      "sha256": "228ec11b01e91da86de6e39b4bb968d50b52a3ea57aa4c49e3e808dd57bceb9e"
     },
     {
-      "bytes": 2033,
+      "bytes": 1896,
       "path": "PROCESS.md",
-      "sha256": "867453e931f885cd42ec6f08f54711f237af044ceb824b3df3f1a346729653c5"
+      "sha256": "411102efce49f475c8e3bea81688eacb4316a2de6105a753a6a09bdd1f566d64"
     },
     {
       "bytes": 135,

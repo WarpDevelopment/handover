@@ -5,8 +5,13 @@ import { canonicalJson, canonicalJsonl, dateInTimezone, formatDuration, isoWithO
 import { assertEdit, assertEditsApplicable, parseEdits, UnsupportedEditError } from "./edits";
 import { blurRect, decode } from "./images";
 import { packageFolderName } from "./build-package";
-import { renderHandoffMd } from "./handoff-md";
+import { HANDOFF_RULES, renderHandoffMd } from "./handoff-md";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 test("JSON is sorted-key, LF-terminated, and undefined values vanish", () => {
   assert.equal(canonicalJson({ b: 1, a: { d: [3, { z: 1, y: 2 }], c: undefined } }), '{\n  "a": {\n    "d": [\n      3,\n      {\n        "y": 2,\n        "z": 1\n      }\n    ]\n  },\n  "b": 1\n}\n');
@@ -92,10 +97,31 @@ test("blurRect changes pixels only inside the rectangle", async () => {
   assert.equal((await blurRect(img, [500, 500, 10, 10])).data, img.data);
 });
 
-test("the handoff keeps the Rules section, including the no-invented-steps rule", () => {
-  const md = renderHandoffMd({ title: "T", slug: "t", package_id: "pkg_X" });
-  assert.match(md, /do not invent steps inside gaps/i);
-  assert.match(md, /\[observed\]/);
-  assert.match(md, /process_spec\.md/);
-  assert.ok(!md.includes("dataflow.json"));
+test("the handoff Rules section is the text of package-spec.md §12, character for character", async () => {
+  const spec = await readFile(path.resolve(here, "../../docs/recorder/package-spec.md"), "utf8");
+  const template = spec.slice(spec.indexOf("## 12. CLAUDE_HANDOFF.md template"), spec.indexOf("## 13."));
+  const start = template.indexOf("## Rules\n");
+  const end = template.indexOf("\n## Produce", start);
+  assert.ok(start > 0 && end > start, "found the Rules section in the spec");
+  const specRules = template.slice(start, end); // up to and including the last rule's newline
+  assert.equal(HANDOFF_RULES, specRules);
+
+  const md = renderHandoffMd({ title: "T" });
+  assert.ok(md.includes(specRules), "the rendered file contains the spec's Rules unchanged");
+  // The opening paragraph and the title line are the spec's too.
+  const intro = "You are reading a recording of one person doing a task on their computer. They reviewed and\n";
+  assert.ok(spec.includes(intro) && md.includes(intro));
+  assert.ok(md.startsWith('# Handoff: recorded process "T"\n'));
+  // The tester-build changes: reading order without the files the tester package does not have,
+  // and a Produce section that asks for process_spec.md next to the package.
+  const readOrder = md.slice(md.indexOf("## Read in this order"), md.indexOf("## Rules"));
+  for (const gone of ["dataflow.json", "prompts.jsonl", "readiness.json", "a11y/", "image_policy"]) {
+    assert.ok(!readOrder.includes(gone), `reading order has no ${gone}`);
+  }
+  assert.ok(readOrder.indexOf("manifest.json") < readOrder.indexOf("PROCESS.md"));
+  assert.ok(readOrder.indexOf("PROCESS.md") < readOrder.indexOf("steps.jsonl"));
+  assert.ok(readOrder.indexOf("steps.jsonl") < readOrder.indexOf("annotations.jsonl"));
+  assert.ok(readOrder.indexOf("annotations.jsonl") < readOrder.indexOf("gaps.jsonl"));
+  assert.ok(readOrder.indexOf("gaps.jsonl") < readOrder.indexOf("Images"));
+  assert.match(md, /Write process_spec\.md next to this package \(not inside the package folder\)/);
 });

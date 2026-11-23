@@ -373,7 +373,7 @@ export async function buildPackage(
       const space = ds.layout.globalSpace;
       if (click) pointDpx = globalToDpx(space, display, click.x, click.y);
       if (click?.target?.bounds) elementDpx = boundsToDpx(space, display, click.target.bounds);
-      const shot = selectBeforeFrame(candidatesFor(display.id, "before"), d.tMs, BEFORE_LEAD_MS);
+      const shot = selectBeforeFrame(candidatesFor(display.id, "before"), d.frameTMs, BEFORE_LEAD_MS);
       const bytes = shot && session.files.get(shot.shot.file);
       if (shot && bytes) {
         let img = await decode(bytes);
@@ -682,7 +682,6 @@ export async function buildPackage(
 
   // --- Text files ---
   const title = session.process.title;
-  const slug = slugify(title);
   put("steps.jsonl", canonicalJsonl(stepRecords));
   put("annotations.jsonl", canonicalJsonl(annotations));
   put("gaps.jsonl", canonicalJsonl(gaps));
@@ -698,7 +697,7 @@ export async function buildPackage(
       gaps,
     }),
   );
-  put("CLAUDE_HANDOFF.md", renderHandoffMd({ title, slug, package_id: ctx.package_id }));
+  put("CLAUDE_HANDOFF.md", renderHandoffMd({ title }));
   put(
     "README.txt",
     `${TEST_BUILD_BANNER}\n\nHandover package ${ctx.package_id}\nStart here: CLAUDE_HANDOFF.md\n`,

@@ -168,6 +168,35 @@ test("steps, timing and frames of the synthetic session", async () => {
   assert.equal(s[1].target.locators[0].strategy, "ax_identifier");
 });
 
+test("the before frame is chosen before the click, not before the time the helper reported it", async () => {
+  const { session } = await load();
+  // The S02 click is reported at t=3,000 after a 400 ms lookup, so the user clicked at 2,600.
+  // Shots at 2,700 and 2,980 are therefore after the click; the newest frame before it is t=0.
+  const slow: SessionInput = {
+    ...session,
+    events: session.events.map((e) =>
+      e.seq === 3 ? { ...e, payload: { ...e.payload, lookupMs: 400 } } : e,
+    ),
+  };
+  const files = await buildPackage(slow, [], CTX);
+  const s2 = steps(files)[1];
+  assert.equal(s2.before.t_ms, 0);
+  assert.equal(s2.t_start_ms, 3000, "the step keeps the time the click was reported");
+  // Without a lookup time the same click still uses the t=2,700 frame.
+  const fast = await buildPackage(session, [], CTX);
+  assert.equal(steps(fast)[1].before.t_ms, 2700);
+});
+
+test("PROCESS.md lists only steps with no control as unseen; a weak control is not listed", async () => {
+  const { session, edits } = await load();
+  const md = text(await buildPackage(session, edits, CTX), "PROCESS.md");
+  const unseen = md.slice(md.indexOf("## What the recorder could not see"));
+  assert.match(unseen, /- S03: no control identified \(timeout\); the target is pixels only\./);
+  assert.ok(!unseen.includes("- S06:"), "S06 found a weak control (T2), so it is not pixels only");
+  assert.match(md, /evidence T2 \(opaque_toolkit\)/);
+  assert.match(unseen, /- gap_0001 \(S05 → S06\): paused by the user, 2\.0 s\./);
+});
+
 test("annotations: freeze comment and highlight attach to the last step before the freeze; narration by overlap", async () => {
   const { session, edits } = await load();
   const files = await buildPackage(session, edits, CTX);

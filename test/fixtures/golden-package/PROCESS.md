@@ -33,5 +33,4 @@
 
 ## What the recorder could not see
 - gap_0001 (S05 → S06): paused by the user, 2.0 s.
-- S03: no control identified (timeout: the control lookup timed out); the target is pixels only.
-- S06: no control identified (opaque_toolkit: an app that exposes no controls); the target is pixels only.
+- S03: no control identified (timeout); the target is pixels only.
