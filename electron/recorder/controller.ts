@@ -8,6 +8,7 @@ import type { CaptureConfig } from "../../common/config";
 import { EventType } from "../../common/events";
 import type { DisplaysPayload, TerminalCommandPayload } from "../../common/events";
 import { layoutChanged } from "../../common/handover/displays";
+import { sanitizeExplainResult } from "../../common/handover/explain";
 import { HELPER_FILE } from "../../common/handover/helper";
 import type { HelperStatus } from "../../common/handover/types";
 import type {
@@ -56,6 +57,37 @@ export interface SessionVideoRecorder {
   stop(): Promise<unknown>;
   /** Every recorded event, so the sidecar can keep the frames a step needs. */
   onEvent?(ev: RecEvent): void;
+  /** A forced frame of every display, saved in the session folder, for the Explain freeze. */
+  snapshot?(force?: boolean): Promise<FrozenFrame[]>;
+}
+
+/** One frozen frame saved for an Explain freeze (`ShotEntry` with `purpose: "annotation"`). */
+export interface FrozenFrame {
+  /** Path relative to the session folder, e.g. `shots/000012.jpg`. */
+  file: string;
+  /** Electron `Display.id` the frame shows. */
+  displayId: number;
+  epoch: number;
+}
+
+export interface PauseResult {
+  ok: boolean;
+  error?: string;
+}
+
+export interface BeginExplainResult {
+  ok: boolean;
+  error?: string;
+  /** The session folder the frozen frames are in. */
+  sessionDir?: string;
+  frames?: FrozenFrame[];
+}
+
+export interface EndExplainResult {
+  ok: boolean;
+  error?: string;
+  /** Ids of the annotation events written. */
+  annotationIds?: string[];
 }
 
 /** Microphone sidecar that can create multiple capture intervals per session. */
@@ -97,6 +129,8 @@ export interface RecorderDeps {
   getDisplays?: () => DisplaysPayload | null;
   /** The native helper's status when a recording stops, saved as `helper.json`. */
   getHelperStatus?: () => HelperStatus;
+  /** The freeze was closed by the recorder (the recording stopped while frozen): close the overlay. */
+  onExplainAborted?: () => void;
 }
 
 type FinishIntent = "save" | "discard";
@@ -130,6 +164,9 @@ export class RecorderController {
   private readonly processing = new Set<Promise<void>>();
   private lastCompleted: { id: string; dir: string } | null = null;
   private lastProcessed = false;
+  private paused = false;
+  private explain: { frames: FrozenFrame[]; displaySizes: Map<number, [number, number]> } | null = null;
+  private annotationCounter = 0;
 
   constructor(private readonly deps: RecorderDeps) {
     this.host = new CollectorHost(this.bus);
@@ -212,6 +249,8 @@ export class RecorderController {
       startedAt: this.store?.meta.startedAt ?? null,
       narrationLanguage: this.narrationLanguage,
       eventCount: this.store?.eventCount ?? 0,
+      paused: this.paused,
+      explaining: this.explain !== null,
       transition: this.transition,
       microphone: {
         ...this.microphone,
@@ -328,6 +367,130 @@ export class RecorderController {
     });
   }
 
+  /**
+   * Pause the recording. Writes `gap{user_paused}` (open: no `tEndMs`) and drops every collector
+   * event until {@link resume}. Screen capture keeps running, so the frame ring stays warm.
+   */
+  pause(): Promise<PauseResult> {
+    return this.enqueue(async () => {
+      if (!this.store || this.transition !== "none") return { ok: false, error: "Not recording" };
+      if (this.paused) return { ok: true };
+      if (this.explain) return { ok: false, error: "Finish the Explain step before pausing." };
+      this.bus.publish({ type: EventType.Gap, source: "user", payload: { reason: "user_paused" } });
+      this.paused = true;
+      this.bus.setBlocked(true);
+      this.emit();
+      return { ok: true };
+    });
+  }
+
+  /** Resume after {@link pause}: closes the open gap with `tEndMs`. */
+  resume(): Promise<PauseResult> {
+    return this.enqueue(async () => {
+      if (!this.store || this.transition !== "none") return { ok: false, error: "Not recording" };
+      if (!this.paused) return { ok: true };
+      this.closePauseGap(this.store);
+      this.emit();
+      return { ok: true };
+    });
+  }
+
+  private closePauseGap(store: SessionStore): void {
+    this.paused = false;
+    this.bus.setBlocked(this.explain !== null);
+    this.bus.publish({
+      type: EventType.Gap,
+      source: "user",
+      payload: { reason: "user_paused", tEndMs: Math.round(store.elapsedMs()) },
+    });
+  }
+
+  /**
+   * Freeze the screen for an explanation: takes one frozen frame per display, writes
+   * `explain.start`, and drops collector events until {@link endExplain}. The caller opens the
+   * overlay windows from the returned frames.
+   */
+  beginExplain(): Promise<BeginExplainResult> {
+    return this.enqueue(async () => {
+      const store = this.store;
+      if (!store || this.transition !== "none") return { ok: false, error: "Not recording" };
+      if (this.paused) return { ok: false, error: "Resume the recording before explaining something." };
+      if (this.explain) return { ok: false, error: "The screen is already frozen." };
+      let frames: FrozenFrame[] = [];
+      try {
+        frames = (await this.video?.snapshot?.(true)) ?? [];
+      } catch (error) {
+        log.warn("freeze snapshot failed:", error instanceof Error ? error.message : error);
+      }
+      if (frames.length === 0) {
+        return { ok: false, error: "Screen capture is not available, so the screen cannot be frozen." };
+      }
+      // The recording may have stopped while the snapshot was taken.
+      if (this.store !== store || this.transition !== "none") return { ok: false, error: "Not recording" };
+      const displaySizes = new Map<number, [number, number]>();
+      for (const d of this.lastDisplays?.displays ?? []) displaySizes.set(d.id, d.sizeDpx);
+      this.bus.publish({
+        type: EventType.ExplainStart,
+        source: "user",
+        payload: { displayIds: frames.map((f) => f.displayId) },
+      });
+      this.explain = { frames, displaySizes };
+      this.bus.setBlocked(true);
+      this.emit();
+      return { ok: true, sessionDir: store.dir, frames };
+    });
+  }
+
+  /**
+   * End the freeze. `result` is what the overlay returned; it is validated here. Highlights and
+   * comments become `annotation` events, then `explain.end` is written. A cancelled result writes
+   * only `explain.end`: the time was still spent explaining.
+   */
+  endExplain(result: unknown): Promise<EndExplainResult> {
+    return this.enqueue(async () => this.endExplainInternal(result));
+  }
+
+  private endExplainInternal(raw: unknown): EndExplainResult {
+    const ex = this.explain;
+    if (!ex || !this.store) return { ok: false, error: "The screen is not frozen." };
+    const result = sanitizeExplainResult(raw, ex.displaySizes);
+    const ids: string[] = [];
+    for (const a of result.annotations) {
+      const annotationId = `ann_${String(++this.annotationCounter).padStart(4, "0")}`;
+      if (a.kind === "comment") {
+        this.bus.publish({
+          type: EventType.Annotation,
+          source: "freeze",
+          payload: { annotationId, kind: "comment", text: a.text, source: "typed" },
+        });
+      } else {
+        const frame = ex.frames.find((f) => f.displayId === a.displayId);
+        this.bus.publish({
+          type: EventType.Annotation,
+          source: "freeze",
+          payload: {
+            annotationId,
+            kind: "highlight",
+            displayId: a.displayId,
+            ...(frame ? { frameFile: frame.file } : {}),
+            shape: a.shape,
+            pointsDpx: a.pointsDpx,
+          },
+        });
+      }
+      ids.push(annotationId);
+    }
+    this.bus.publish({
+      type: EventType.ExplainEnd,
+      source: "user",
+      payload: { displayIds: ex.frames.map((f) => f.displayId) },
+    });
+    this.explain = null;
+    this.bus.setBlocked(this.paused);
+    this.emit();
+    return { ok: true, annotationIds: ids };
+  }
+
   // Marker capture is intentionally retained even though the "Add marker" HUD
   // button was removed in favor of voice narration (see docs/future-features.md).
   marker(note: string): MarkerResult {
@@ -386,6 +549,9 @@ export class RecorderController {
 
     this.store = store;
     this.bus.attach(store);
+    this.paused = false;
+    this.explain = null;
+    this.annotationCounter = 0;
     this.bus.publish({
       type: EventType.SessionStart,
       source: "recorder",
@@ -603,6 +769,12 @@ export class RecorderController {
         };
       }
     }
+    // A recording stopped while paused or frozen closes both, so the time sums stay exact.
+    if (this.explain) {
+      this.endExplainInternal({ cancelled: true });
+      this.deps.onExplainAborted?.();
+    }
+    if (this.paused) this.closePauseGap(store);
     // Audio is flushed before
     // video so the mic-off boundary is anchored as close as possible to the click.
     try {

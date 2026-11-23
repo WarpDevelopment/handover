@@ -72,6 +72,10 @@ export interface RecorderStatus {
   /** Source language fixed for the active recording's narration. */
   narrationLanguage: NarrationLanguage;
   eventCount: number;
+  /** The user paused the recording: nothing is captured until they resume. */
+  paused: boolean;
+  /** The screen is frozen for an explanation (the Explain overlay is open). */
+  explaining: boolean;
   transition: "none" | "starting" | "stopping" | "discarding";
   microphone: {
     state: "off" | "starting" | "on" | "stopping" | "error";

@@ -74,6 +74,11 @@ export class SessionStore {
     this.writeMeta();
   }
 
+  /** Milliseconds since the recording started, on the same clock as an event's `t`. */
+  elapsedMs(): number {
+    return performance.now() - this.startMonotonic;
+  }
+
   get eventCount(): number {
     return this.count;
   }

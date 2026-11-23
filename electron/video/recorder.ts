@@ -182,7 +182,7 @@ export class VideoRecorder {
   }
 
   /** A forced frame of every display right now, persisted for a freeze (`purpose: annotation`). */
-  async snapshot(force = true): Promise<ReturnType<ShotStore["persistSnapshot"]>> {
+  async snapshot(force = true): Promise<Awaited<ReturnType<ShotStore["persistSnapshot"]>>> {
     if (!this.win || !this.store) return [];
     if (force) {
       this.win.webContents.send("video:snapshot");
