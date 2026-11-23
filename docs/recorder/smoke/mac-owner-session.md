@@ -64,12 +64,14 @@ Open **Review sessions**, pick the recording. (Screen is new; labels may differ 
 | D4 | Tray menu (menu bar icon) → **Save diagnostics…**. | `handover-diagnostics-<timestamp>.zip` on the Desktop with no screenshots or comments inside. | |
 | D5 | In `events.jsonl` or the package, search for the typed note text. | Not found (nothing typed is recorded). | |
 
-## L5 click checks folded in
-| # | Do | Expect |
-|---|----|--------|
-| L5-1 | During the process, clicks in Finder, Safari and TextEdit. | Steps with role and name (listitem "Desktop", menuitem "File", link text). |
-| L5-2 | In Safari, once, click a **password** field of any login page. | The field's label as the name, no value anywhere, a blur over the field in that step's before image. |
-| L5-3 | Double-click a Finder item once. | One `double_click` step. |
-| L5-4 | After Done, open the doctor. | `helper: ok`, p95 lookup under 300 ms, counts add up to your clicks. |
+## L5 click checks
+L5-1 is checked on the main recording above. **L5-2 and L5-3 go in a second, separate short recording** (Record, do them, Done, Export). That keeps the scored "Save a meeting note" package free of extra steps.
 
-Record anything unexpected in `docs/recorder/evidence/` or reply to the orchestrator. Send the exported package folder (and only that) to the fresh-Claude scoring run.
+| # | Recording | Do | Expect |
+|---|---|----|--------|
+| L5-1 | main | During the process, clicks in Finder, Safari and TextEdit. | Steps with role and name (listitem "Desktop", menuitem "File", link text). |
+| L5-2 | second | In Safari, click a **password** field of any login page once. | The field's label as the name, no value anywhere, a blur over the field in that step's before image. |
+| L5-3 | second | Double-click a Finder item once. | One `double_click` step. |
+| L5-4 | after both | Open the doctor. | `helper: ok`, p95 lookup under 300 ms, counts add up to your clicks. |
+
+Record anything unexpected in `docs/recorder/evidence/`, or reply to the orchestrator. Send only the exported package folder of the **main** recording to the fresh-Claude scoring run.
