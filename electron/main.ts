@@ -9,6 +9,7 @@ import {
 } from "electron";
 
 import { FULL_CAPTURE } from "../common/config";
+import { displaysPayload } from "../common/handover/displays";
 import { IPC, type RecorderStatus, type StartResult } from "../common/ipc";
 import type {
   SupportedShellId,
@@ -110,7 +111,19 @@ async function finishRecordedTerminal(): Promise<void> {
   }
 }
 
+/** The display layout as the `displays` event records it (tester-package.md §3). */
+function currentDisplays() {
+  return displaysPayload({
+    platform: process.platform,
+    displays: screen.getAllDisplays(),
+    primaryId: screen.getPrimaryDisplay().id,
+    dipToScreenPoint:
+      process.platform === "win32" ? (p) => screen.dipToScreenPoint(p) : undefined,
+  });
+}
+
 const recorder = new RecorderController({
+  getDisplays: currentDisplays,
   resolveConfig: () => ({ ...FULL_CAPTURE }),
   buildCollectors: createCollectors,
   createVideoRecorder: () => new VideoRecorder(),
@@ -519,6 +532,7 @@ app.whenReady().then(async () => {
   const handleDisplayChange = () => {
     clampControlsToDisplay();
     void screens.refresh();
+    recorder.publishDisplays();
   };
   screen.on("display-added", handleDisplayChange);
   screen.on("display-removed", handleDisplayChange);

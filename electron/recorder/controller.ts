@@ -4,7 +4,8 @@ import { app } from "electron";
 
 import type { CaptureConfig } from "../../common/config";
 import { EventType } from "../../common/events";
-import type { TerminalCommandPayload } from "../../common/events";
+import type { DisplaysPayload, TerminalCommandPayload } from "../../common/events";
+import { layoutChanged } from "../../common/handover/displays";
 import type {
   DiscardResult,
   MarkerResult,
@@ -20,7 +21,7 @@ import {
   isNarrationLanguage,
   type NarrationLanguage,
 } from "../../common/narration";
-import type { RecorderState, SessionMeta } from "../../common/types";
+import type { RecEvent, RecorderState, SessionMeta } from "../../common/types";
 import {
   SYSTEM_DEFAULT_MICROPHONE_ID,
   type MicrophoneDevice,
@@ -49,6 +50,8 @@ export interface SessionVideoRecorder {
     displayId?: string,
   ): Promise<void>;
   stop(): Promise<unknown>;
+  /** Every recorded event, so the sidecar can keep the frames a step needs. */
+  onEvent?(ev: RecEvent): void;
 }
 
 /** Microphone sidecar that can create multiple capture intervals per session. */
@@ -86,6 +89,8 @@ export interface RecorderDeps {
   terminalBusy?: () => { busy: boolean; command: string | null };
   /** Flush and close the recorded terminal before the event stream is finalized. */
   finishTerminal?: () => Promise<void>;
+  /** The current display layout, recorded as a `displays` event at start and on changes. */
+  getDisplays?: () => DisplaysPayload | null;
 }
 
 type FinishIntent = "save" | "discard";
@@ -102,6 +107,9 @@ export class RecorderController {
   private readonly host: CollectorHost;
   private activeCollectors: readonly Collector[] = [];
   private video: SessionVideoRecorder | null = null;
+  private videoUnsubscribe: (() => void) | null = null;
+  private lastDisplays: DisplaysPayload | null = null;
+  private lastDisplaysEvent: RecEvent | null = null;
   private audio: SessionAudioRecorder | null = null;
   private transition: RecorderStatus["transition"] = "none";
   private narrationLanguage = DEFAULT_NARRATION_LANGUAGE;
@@ -137,6 +145,25 @@ export class RecorderController {
     return store
       ? { id: store.meta.id, dir: store.dir, startedAt: store.meta.startedAt }
       : null;
+  }
+
+  /**
+   * Record the display layout as a `displays` event when it differs from the last one recorded.
+   * Called at session start and on every display change; a no-op while idle.
+   */
+  publishDisplays(): void {
+    if (!this.store || !this.deps.getDisplays) return;
+    const layout = this.deps.getDisplays();
+    if (!layout || !layoutChanged(this.lastDisplays, layout)) return;
+    const ev = this.bus.publish({ type: EventType.Displays, source: "screen", payload: layout });
+    if (!ev) return;
+    this.lastDisplays = layout;
+    this.lastDisplaysEvent = ev;
+  }
+
+  private releaseVideoFeed(): void {
+    this.videoUnsubscribe?.();
+    this.videoUnsubscribe = null;
   }
 
   recordTerminalCommand(payload: TerminalCommandPayload): boolean {
@@ -348,6 +375,9 @@ export class RecorderController {
       source: "recorder",
       payload: { platform: store.meta.platform },
     });
+    this.lastDisplays = null;
+    this.lastDisplaysEvent = null;
+    this.publishDisplays();
     log.info("Recording started:", store.meta.id, "->", store.dir);
     this.emit();
 
@@ -365,6 +395,12 @@ export class RecorderController {
             options?.screenSourceId,
             options?.screenDisplayId,
           );
+          const video = this.video;
+          if (video.onEvent) {
+            // The sidecar learns the layout first, then sees every later event.
+            if (this.lastDisplaysEvent) video.onEvent(this.lastDisplaysEvent);
+            this.videoUnsubscribe = this.bus.subscribe((ev) => video.onEvent?.(ev));
+          }
         } catch (error) {
           log.warn("video start failed:", error instanceof Error ? error.message : error);
           this.video = null;
@@ -416,6 +452,7 @@ export class RecorderController {
     } catch (error) {
       log.warn("collector rollback failed:", error instanceof Error ? error.message : error);
     }
+    this.releaseVideoFeed();
     if (this.video) {
       try {
         await this.video.stop();
@@ -566,6 +603,7 @@ export class RecorderController {
     }
 
     let videoStartEpoch: number | null = null;
+    this.releaseVideoFeed();
     if (this.video) {
       try {
         const result = await this.video.stop();

@@ -226,6 +226,22 @@ export interface DebugBundleResult {
   error?: string;
 }
 
+/** Result of exporting a recording as a Handover tester package. */
+export interface ExportPackageResult {
+  ok: boolean;
+  /** The user dismissed the save dialog — a cancel, not an error. */
+  canceled?: boolean;
+  packageId?: string;
+  /** Absolute path of the written `.handover` folder. */
+  folder?: string;
+  /** Absolute path of the written `.zip`. */
+  zip?: string;
+  stepCount?: number;
+  error?: string;
+  /** Why the package failed validation, when it did. */
+  validationErrors?: string[];
+}
+
 /** Which foreground-window provider is available on this platform. */
 export interface ActiveWindowInfo {
   ok: boolean;
@@ -296,6 +312,7 @@ export const IPC = {
   takeLibrarySelection: "ui:take-library-selection",
   deleteSession: "sessions:delete",
   exportDebugBundle: "sessions:export-debug",
+  exportPackage: "sessions:export-package",
   terminalOpen: "terminal:open",
   terminalReady: "terminal:ready",
   terminalStatus: "terminal:status",
@@ -381,6 +398,11 @@ export interface HandoverApi {
    * contains private capture data; the renderer warns before calling this.
    */
   exportDebugBundle(sessionId: string): Promise<DebugBundleResult>;
+  /**
+   * Export a recording as a Handover tester package: a `.handover` folder and a `.zip` beside the
+   * location the user picks in a save dialog. The result reports whether it validated.
+   */
+  exportPackage(sessionId: string): Promise<ExportPackageResult>;
   /** Open (and focus) the Sessions library window, docked to the recorder. */
   openLibrary(sessionId?: string): Promise<void>;
   /** Close the Sessions library window from within it. */
