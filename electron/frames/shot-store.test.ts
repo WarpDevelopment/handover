@@ -58,6 +58,22 @@ test("a click persists the newest frame at least 50 ms before it, on the click's
   });
 });
 
+test("a click's control lookup time is subtracted, so a frame taken after the click is never used", async () => {
+  await withStore(async (dir, store) => {
+    store.onEvent(ev("displays", 1_000_000, layout as unknown as Record<string, unknown>));
+    for (const [i, t] of [1_002_000, 1_002_700, 1_002_980].entries()) {
+      store.ingest({ displayId: 1, epoch: t, width: 4, height: 4, data: jpeg(i + 1) });
+    }
+    // The helper reported the click at 1,003,000 after a 300 ms lookup: the user clicked at
+    // 1,002,700. The frames at 1,002,700 and 1,002,980 may already show the click's effect.
+    store.onEvent(ev("pointer.click", 1_003_000, { button: "left", clickCount: 1, space: "macos_global_points", x: 10, y: 10, lookupMs: 300 }));
+    await store.flush();
+    const before = (await readIndex(dir)).filter((e) => e.purpose === "before");
+    assert.equal(before.length, 1);
+    assert.equal(before[0].epoch, 1_002_000);
+  });
+});
+
 test("an app switch persists a frame from every display; duplicates are written once", async () => {
   await withStore(async (dir, store) => {
     store.onEvent(ev("displays", 1_000_000, layout as unknown as Record<string, unknown>));

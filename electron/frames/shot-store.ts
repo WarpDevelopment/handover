@@ -5,8 +5,9 @@
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { DisplaysPayload } from "../../common/events";
+import type { DisplaysPayload, PointerClickPayload } from "../../common/events";
 import { displaysForEvent, STEP_EVENT_TYPES } from "../../common/handover/displays";
+import { clickLookupMs } from "../../common/handover/steps";
 import { SHOTS_DIR, SHOTS_FILE } from "../../common/handover/read-session";
 import type { ShotEntry } from "../../common/handover/types";
 import type { RecEvent } from "../../common/types";
@@ -62,7 +63,12 @@ export class ShotStore {
     if (!STEP_EVENT_TYPES.has(ev.type)) return;
     const displayIds = displaysForEvent(ev, this.layout);
     if (displayIds.length === 0) return;
-    this.enqueue(() => this.persistBefore(displayIds, ev.epoch));
+    // A click is reported after the helper's control lookup, so the user acted `lookupMs` earlier.
+    const actedAt =
+      ev.type === "pointer.click"
+        ? ev.epoch - clickLookupMs(ev.payload as unknown as PointerClickPayload)
+        : ev.epoch;
+    this.enqueue(() => this.persistBefore(displayIds, actedAt));
     this.pending.push({ displayIds, dueEpoch: ev.epoch + AFTER_DELAY_MS });
     this.armTimer();
   }

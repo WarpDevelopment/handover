@@ -27,6 +27,11 @@ export interface StepDraft {
   actionType: "click" | "double_click" | "right_click" | "app_switch";
   /** ms from recording start of the click or app switch. */
   tMs: number;
+  /**
+   * The moment the user acted, for choosing the before frame. The helper reports a click only after
+   * its control lookup (up to 300 ms), so the event time is later than the click by `lookupMs`.
+   */
+  frameTMs: number;
   app: AppRef;
   windowTitle?: string;
   /** Origin + path only. */
@@ -121,6 +126,12 @@ export function groundingOf(click: PointerClickPayload): {
   return { grounding: "visual_only", unavailable: click.unavailableReason ?? "helper_missing" };
 }
 
+/** Helper control-lookup time of a click, clamped to a sane 0 to 1,000 ms. */
+export function clickLookupMs(click: Pick<PointerClickPayload, "lookupMs">): number {
+  const ms = click.lookupMs;
+  return typeof ms === "number" && Number.isFinite(ms) ? Math.min(1000, Math.max(0, ms)) : 0;
+}
+
 /** An app switch right after a click in the same app is the click's own effect, not a step. */
 const SWITCH_AFTER_CLICK_MS = 1000;
 
@@ -170,6 +181,7 @@ export function buildSteps(
             observedVia: "window_change",
             actionType: "app_switch",
             tMs: ev.t,
+            frameTMs: ev.t,
             app,
             windowTitle: title,
             url,
@@ -211,6 +223,7 @@ export function buildSteps(
           observedVia: "pointer",
           actionType,
           tMs: ev.t,
+          frameTMs: ev.t - clickLookupMs(click),
           app,
           windowTitle: title,
           url: app.kind === "browser" ? url : undefined,
