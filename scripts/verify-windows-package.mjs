@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import { excludedWasmPackages, verifyComplianceDirectory } from "./compliance.mjs";
+import { readManifest, verifyAll } from "./fetch-models.mjs";
 
 const require = createRequire(import.meta.url);
 const { listPackage } = require("@electron/asar");
@@ -128,6 +129,15 @@ await verifyComplianceDirectory(path.join(unpacked, "resources", "compliance"), 
   requireSources: true,
   requireElectronNotices: true,
 });
+
+// The narration model must be bundled in the installer, byte-for-byte as pinned.
+const modelProblems = await verifyAll(
+  path.join(unpacked, "resources", "models"),
+  readManifest(),
+);
+if (modelProblems.length > 0) {
+  throw new Error(`Bundled narration model is wrong:\n  ${modelProblems.join("\n  ")}`);
+}
 
 const nestedOutput = asarEntries.find(
   (entry) =>

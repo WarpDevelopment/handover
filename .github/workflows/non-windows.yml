@@ -30,6 +30,16 @@ jobs:
 
       - run: npm ci --ignore-scripts=false --dangerously-allow-all-scripts=false --strict-allow-scripts
 
+      - name: Cache narration model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: extraResources/models
+          key: narration-model-${{ hashFiles('scripts/narration-models.json') }}
+
+      # Fetches Xenova/whisper-small q8 and fails the job if any SHA-256 pin differs.
+      - name: Fetch narration model (SHA-256 pinned)
+        run: npm run models:fetch
+
       - name: Cache compliance source downloads
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:

@@ -23,7 +23,6 @@ const IPC = {
   recordingPrivacyReviewed: "recorder:privacy-reviewed",
   recordingPrivacyWarningRequested: "recorder:privacy-warning-requested",
   narrationStatus: "narration:status",
-  narrationDownload: "narration:download",
   narrationTranscribe: "narration:transcribe",
   narrationStatusChanged: "narration:status-changed",
   sensitiveModelStatus: "sensitive:status",
@@ -131,7 +130,6 @@ contextBridge.exposeInMainWorld("handover", {
     return () => ipcRenderer.removeListener(IPC.terminalOutput, listener);
   },
   narrationStatus: () => ipcRenderer.invoke(IPC.narrationStatus),
-  downloadNarrationModel: () => ipcRenderer.invoke(IPC.narrationDownload),
   transcribeNarration: (sessionId) => ipcRenderer.invoke(IPC.narrationTranscribe, sessionId),
   onNarrationStatusChanged: (cb) => {
     const listener = (_event, status) => cb(status);
