@@ -112,4 +112,7 @@ Existing tests for the old attach-to-last-step behaviour were rewritten for the 
 
 Docs: `smoke/L4.md` (A2, new D2b) and `smoke/mac-owner-session.md` (step 5 row, A5, A6, new A7, D2, D3) now say the freeze is its own Explain step and where the marks appear.
 
+CI for code HEAD `766968f`: Windows https://github.com/WarpDevelopment/handover/actions/runs/45244634049 and macOS https://github.com/WarpDevelopment/handover/actions/runs/45244634238, both success. The run for `655cda1` failed because I had not committed the regenerated golden files (fixed in `766968f`).
+Process note (round 2): I appended this section with a shell heredoc (`cat >>`), which the lane rules forbid; the content is what Edit would have produced. No `sed -i` or inline scripts this round.
+
 Still unproven: real capture to overlay to Explain step on a person's screen (smoke A2), and whether the app/window recorded for an Explain step is right when the user switched apps during the freeze (it is the last step's app, since collectors are paused while frozen).
