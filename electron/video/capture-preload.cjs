@@ -1,378 +1,182 @@
-// Video capture preload — CommonJS, runs in the hidden capture window's isolated
-// world. It has both Web APIs (navigator.mediaDevices, MediaRecorder) and
-// ipcRenderer, so it does the whole capture here and streams webm chunks back
-// to the main process, which writes them to disk. Channel names mirror
-// electron/video/recorder.ts.
+// Screen capture preload — CommonJS, runs in the hidden capture window's isolated world. It has the
+// Web APIs (navigator.mediaDevices, canvas) and ipcRenderer. For every display it opens a desktop
+// stream at native resolution (capped at 2,560 px wide), grabs a frame about 3 times a second and
+// sends it to the main process as a JPEG. Main keeps the last ~2 s in a ring and writes to disk only
+// the frames a step needs. No video is recorded. Channel names mirror electron/video/recorder.ts.
 const { ipcRenderer } = require("electron");
 
-/** @type {MediaRecorder | null} */
-let recorder = null;
-/** @type {MediaStream | null} */
-let stream = null;
-// Serialises chunk sends so the final blob (dispatched just before `stop`) is
-// fully forwarded before we tell main the recording stopped — otherwise the
-// last cluster is lost and the webm ends prematurely.
-let sendChain = Promise.resolve();
-/** @type {ReadableStreamDefaultReader | null} */
-let frameReader = null;
-/** @type {Promise<void> | null} */
-let framePump = null;
-/** @type {Promise<void> | null} */
-let frameEncoding = null;
+/** @type {{ displayId: number, stream: MediaStream, video: HTMLVideoElement, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, hash: HTMLCanvasElement, hashCtx: CanvasRenderingContext2D, lastHash: string, lastSentAt: number, encoding: boolean }[]} */
+let captures = [];
 /** @type {ReturnType<typeof setInterval> | null} */
-let frameTimer = null;
-/** @type {OffscreenCanvas | HTMLCanvasElement | null} */
-let frameCanvas = null;
-/** @type {OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null} */
-let frameContext = null;
-/** @type {OffscreenCanvas | HTMLCanvasElement | null} */
-let hashCanvas = null;
-/** @type {OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null} */
-let hashContext = null;
-/** @type {HTMLVideoElement | null} */
-let previewVideo = null;
-let capturingFrames = false;
-let frameReady = false;
-let recordingStarted = false;
-let startEpoch = 0;
-let startMonotonic = 0;
-let requestedStopEpoch = 0;
-/** @type {number | null} */
-let firstFrameTimestampUs = null;
-let firstFrameEpoch = 0;
-let lastFrameHash = "";
-let lastFrameEmitAt = 0;
-let frameErrorReported = false;
-
-const FRAME_HEARTBEAT_MS = 5000;
-const FRAME_START_TIMEOUT_MS = 5000;
-const FRAME_DEDUPE_DISTANCE = 8;
-const FRAME_JPEG_QUALITY = 0.78;
-
-function reportFrameError(error) {
-  if (frameErrorReported) return;
-  frameErrorReported = true;
-  ipcRenderer.send(
-    "video:frame-error",
-    error instanceof Error ? error.message : String(error),
-  );
-}
-
-function currentEpoch() {
-  return recordingStarted
-    ? startEpoch + (performance.now() - startMonotonic)
-    : Date.now();
-}
+let timer = null;
+let running = false;
+let jpegQuality = 0.9;
+let refreshMs = 1000;
 
 function epochNow() {
   return performance.timeOrigin + performance.now();
 }
 
-function createCanvas(width, height) {
-  if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(width, height);
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  return canvas;
-}
-
-function ensureCanvases(width, height) {
-  if (!frameCanvas || frameCanvas.width !== width || frameCanvas.height !== height) {
-    frameCanvas = createCanvas(width, height);
-    frameContext = frameCanvas.getContext("2d", { alpha: false });
-  }
-  if (!hashCanvas) {
-    hashCanvas = createCanvas(9, 8);
-    hashContext = hashCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
-  }
-  if (!frameContext || !hashContext) throw new Error("Could not create frame capture canvases.");
-}
-
-function dhash() {
-  if (!frameCanvas || !hashContext) return "";
-  hashContext.drawImage(frameCanvas, 0, 0, 9, 8);
-  const pixels = hashContext.getImageData(0, 0, 9, 8).data;
+function dhash(cap) {
+  cap.hashCtx.drawImage(cap.video, 0, 0, 9, 8);
+  const px = cap.hashCtx.getImageData(0, 0, 9, 8).data;
   let bits = "";
   for (let row = 0; row < 8; row++) {
     for (let col = 0; col < 8; col++) {
-      const left = (row * 9 + col) * 4;
-      const right = left + 4;
-      const leftLuma = pixels[left] * 0.299 + pixels[left + 1] * 0.587 + pixels[left + 2] * 0.114;
-      const rightLuma = pixels[right] * 0.299 + pixels[right + 1] * 0.587 + pixels[right + 2] * 0.114;
-      bits += leftLuma < rightLuma ? "1" : "0";
+      const l = (row * 9 + col) * 4;
+      const r = l + 4;
+      const ll = px[l] * 0.299 + px[l + 1] * 0.587 + px[l + 2] * 0.114;
+      const rl = px[r] * 0.299 + px[r + 1] * 0.587 + px[r + 2] * 0.114;
+      bits += ll < rl ? "1" : "0";
     }
   }
-  let hex = "";
-  for (let i = 0; i < 64; i += 4) hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
-  return hex;
+  return bits;
 }
 
 function hamming(a, b) {
-  if (!a || !b || a.length !== b.length) return Number.MAX_SAFE_INTEGER;
-  let distance = 0;
-  for (let i = 0; i < a.length; i++) {
-    let value = parseInt(a[i], 16) ^ parseInt(b[i], 16);
-    while (value) {
-      distance += value & 1;
-      value >>= 1;
-    }
-  }
-  return distance;
+  if (!a || !b) return 64;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+  return d;
 }
 
-function canvasToJpeg(canvas) {
-  if ("convertToBlob" in canvas) {
-    return canvas.convertToBlob({ type: "image/jpeg", quality: FRAME_JPEG_QUALITY });
-  }
+function toJpeg(canvas) {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
-      (blob) => blob ? resolve(blob) : reject(new Error("JPEG encoding returned no data.")),
+      (blob) => (blob ? resolve(blob) : reject(new Error("JPEG encoding returned no data."))),
       "image/jpeg",
-      FRAME_JPEG_QUALITY,
+      jpegQuality,
     );
   });
 }
 
-async function maybeEmitFrame(tMs, force = false) {
-  if (!recordingStarted || !frameReady || !frameCanvas || frameEncoding) return;
-  const hash = dhash();
-  const heartbeatDue = performance.now() - lastFrameEmitAt >= FRAME_HEARTBEAT_MS;
-  if (!force && !heartbeatDue && hamming(hash, lastFrameHash) <= FRAME_DEDUPE_DISTANCE) return;
-
-  frameEncoding = (async () => {
-    const blob = await canvasToJpeg(frameCanvas);
-    const data = new Uint8Array(await blob.arrayBuffer());
-    const roundedEpoch = Math.round(tMs);
-    ipcRenderer.send("video:frame", {
-      data,
-      tMs: roundedEpoch,
-      offsetMs: Math.max(0, Math.round(roundedEpoch - startEpoch)),
-      width: frameCanvas.width,
-      height: frameCanvas.height,
-    });
-    lastFrameHash = hash;
-    lastFrameEmitAt = performance.now();
-  })();
-  try {
-    await frameEncoding;
-  } finally {
-    frameEncoding = null;
-  }
-}
-
-async function drawFrame(source, width, height, timestampUs) {
-  if (!capturingFrames || width <= 0 || height <= 0) return;
-  ensureCanvases(width, height);
-  frameContext.drawImage(source, 0, 0, width, height);
-  frameReady = true;
-  if (!recordingStarted) return;
-
-  let tMs = currentEpoch();
-  if (Number.isFinite(timestampUs)) {
-    if (firstFrameTimestampUs == null) {
-      firstFrameTimestampUs = timestampUs;
-      firstFrameEpoch = tMs;
-    }
-    tMs = firstFrameEpoch + (timestampUs - firstFrameTimestampUs) / 1000;
-  }
-  await maybeEmitFrame(tMs);
-}
-
-async function pumpTrack(track) {
-  const Processor = globalThis.MediaStreamTrackProcessor;
-  if (typeof Processor !== "function" || typeof OffscreenCanvas === "undefined") return false;
-
-  const processor = new Processor({ track });
-  frameReader = processor.readable.getReader();
-  framePump = (async () => {
-    while (capturingFrames && frameReader) {
-      const { done, value: frame } = await frameReader.read();
-      if (done || !frame) break;
-      try {
-        await drawFrame(
-          frame,
-          frame.displayWidth || frame.codedWidth,
-          frame.displayHeight || frame.codedHeight,
-          frame.timestamp,
-        );
-      } finally {
-        frame.close();
-      }
-    }
-  })();
-  framePump.catch((err) => {
-    if (capturingFrames) reportFrameError(err);
-  });
-  return true;
-}
-
-async function startTimerFallback(track) {
-  const video = document.createElement("video");
-  previewVideo = video;
-  video.muted = true;
-  video.playsInline = true;
-  video.srcObject = new MediaStream([track]);
-  await withTimeout(
-    video.play(),
-    FRAME_START_TIMEOUT_MS,
-    "Timed out starting fallback snapshot capture.",
-  );
-  if (!capturingFrames || previewVideo !== video) {
-    video.pause();
-    video.srcObject = null;
+/** Grab one frame of a display. `force` skips the unchanged-frame shortcut. */
+async function grab(cap, force) {
+  const video = cap.video;
+  if (cap.encoding || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) return;
+  const epoch = Math.round(epochNow());
+  // Unchanged screen: tell main to re-stamp the previous frame instead of encoding again. A
+  // refresh is forced every second so tiny changes (a typed character) never go stale for long.
+  const hash = dhash(cap);
+  if (!force && cap.lastHash && hamming(hash, cap.lastHash) <= 2 && epoch - cap.lastSentAt < refreshMs) {
+    ipcRenderer.send("video:same", { displayId: cap.displayId, epoch });
     return;
   }
-  frameTimer = setInterval(() => {
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-    void drawFrame(video, video.videoWidth, video.videoHeight, null)
-      .catch(reportFrameError);
-  }, 1000);
-}
-
-async function startFrameCapture(track) {
-  capturingFrames = true;
-  frameTimer = setInterval(() => {
-    if (frameReady) void maybeEmitFrame(currentEpoch(), true).catch(reportFrameError);
-  }, FRAME_HEARTBEAT_MS);
-  if (!(await pumpTrack(track))) {
-    clearInterval(frameTimer);
-    frameTimer = null;
-    await startTimerFallback(track);
+  cap.encoding = true;
+  try {
+    if (cap.canvas.width !== video.videoWidth || cap.canvas.height !== video.videoHeight) {
+      cap.canvas.width = video.videoWidth;
+      cap.canvas.height = video.videoHeight;
+    }
+    cap.ctx.drawImage(video, 0, 0);
+    const blob = await toJpeg(cap.canvas);
+    const data = new Uint8Array(await blob.arrayBuffer());
+    ipcRenderer.send("video:shot", {
+      displayId: cap.displayId,
+      epoch,
+      width: cap.canvas.width,
+      height: cap.canvas.height,
+      data,
+    });
+    cap.lastHash = hash;
+    cap.lastSentAt = epoch;
+  } finally {
+    cap.encoding = false;
   }
 }
 
-async function stopFrameCapture() {
-  capturingFrames = false;
-  if (frameTimer) clearInterval(frameTimer);
-  frameTimer = null;
-  const reader = frameReader;
-  frameReader = null;
-  if (reader) await reader.cancel().catch(() => undefined);
-  if (framePump) await framePump.catch(() => undefined);
-  framePump = null;
-  if (frameReady) await maybeEmitFrame(currentEpoch(), true).catch(reportFrameError);
-  if (frameEncoding) await frameEncoding.catch(reportFrameError);
-  if (previewVideo) {
-    previewVideo.pause();
-    previewVideo.srcObject = null;
+function tick(force) {
+  if (!running) return;
+  for (const cap of captures) {
+    grab(cap, force).catch((err) => {
+      ipcRenderer.send("video:error", err instanceof Error ? err.message : String(err));
+    });
   }
-  previewVideo = null;
+}
+
+async function openDisplay(source, opts) {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      mandatory: {
+        chromeMediaSource: "desktop",
+        chromeMediaSourceId: source.sourceId,
+        maxFrameRate: opts.captureFps,
+        maxWidth: opts.maxWidth,
+        maxHeight: opts.maxHeight,
+      },
+    },
+  });
+  const video = document.createElement("video");
+  video.muted = true;
+  video.srcObject = stream;
+  await video.play();
+  const canvas = document.createElement("canvas");
+  const hash = document.createElement("canvas");
+  hash.width = 9;
+  hash.height = 8;
+  return {
+    displayId: source.displayId,
+    stream,
+    video,
+    canvas,
+    ctx: canvas.getContext("2d", { alpha: false }),
+    hash,
+    hashCtx: hash.getContext("2d", { alpha: false, willReadFrequently: true }),
+    lastHash: "",
+    lastSentAt: 0,
+    encoding: false,
+  };
 }
 
 function cleanup() {
-  try {
-    if (stream) for (const track of stream.getTracks()) track.stop();
-  } catch {
-    // ignore
+  running = false;
+  if (timer) clearInterval(timer);
+  timer = null;
+  for (const cap of captures) {
+    try {
+      cap.video.pause();
+      cap.video.srcObject = null;
+      for (const t of cap.stream.getTracks()) t.stop();
+    } catch {
+      // ignore
+    }
   }
-  stream = null;
-  recorder = null;
-  frameCanvas = null;
-  frameContext = null;
-  hashCanvas = null;
-  hashContext = null;
-  frameReady = false;
-  capturingFrames = false;
-  recordingStarted = false;
-  requestedStopEpoch = 0;
-  firstFrameTimestampUs = null;
-  lastFrameHash = "";
-  lastFrameEmitAt = 0;
-  frameErrorReported = false;
+  captures = [];
 }
 
 ipcRenderer.on("video:start", async (_event, opts) => {
-  const { sourceId, fps, bitsPerSecond, maxWidth, maxHeight } = opts;
   try {
-    sendChain = Promise.resolve();
-    // Electron desktop capture uses the legacy mandatory-constraints form.
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        mandatory: {
-          chromeMediaSource: "desktop",
-          chromeMediaSourceId: sourceId,
-          maxFrameRate: fps,
-          maxWidth,
-          maxHeight,
-        },
-      },
-    });
-
-    // VP8 encodes with noticeably less CPU than VP9 and, at 1 fps, the file-size
-    // difference is negligible — we favour keeping the machine responsive.
-    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp8")
-      ? "video/webm;codecs=vp8"
-      : "video/webm;codecs=vp9";
-    recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: bitsPerSecond });
-    const [track] = stream.getVideoTracks();
-    if (!track) throw new Error("Desktop capture returned no video track.");
-    recorder.ondataavailable = (e) => {
-      if (!e.data || e.data.size === 0) return;
-      // Preserve order and completion; Uint8Array survives IPC structured clone.
-      sendChain = sendChain.then(async () => {
-        const buf = await e.data.arrayBuffer();
-        ipcRenderer.send("video:chunk", new Uint8Array(buf));
-      });
-    };
-    recorder.onstart = () => {
-      startEpoch = epochNow();
-      startMonotonic = performance.now();
-      recordingStarted = true;
-      ipcRenderer.send("video:started", startEpoch);
-    };
-    recorder.onstop = () => {
-      // Wait for every queued chunk and snapshot before acknowledging stop.
-      Promise.all([sendChain, stopFrameCapture()]).then(() => {
-        const stopEpoch = requestedStopEpoch || currentEpoch();
-        cleanup();
-        ipcRenderer.send("video:stopped", stopEpoch);
-      }).catch((err) => {
-        const stopEpoch = requestedStopEpoch || currentEpoch();
-        cleanup();
-        ipcRenderer.send("video:error", err instanceof Error ? err.message : String(err));
-        ipcRenderer.send("video:stopped", stopEpoch);
-      });
-    };
-    recorder.onerror = (e) => {
-      ipcRenderer.send("video:error", String((e && e.error) || e));
-    };
-
-    // Emit a chunk every second so long sessions stream to disk incrementally.
-    recorder.start(1000);
-    void startFrameCapture(track).catch((err) => {
-      reportFrameError(err);
-      void stopFrameCapture().catch(reportFrameError);
-    });
+    jpegQuality = opts.jpegQuality;
+    refreshMs = opts.refreshMs;
+    const opened = [];
+    for (const source of opts.sources) {
+      try {
+        opened.push(await openDisplay(source, opts));
+      } catch (err) {
+        ipcRenderer.send(
+          "video:display-error",
+          source.displayId,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    if (opened.length === 0) throw new Error("No display could be captured.");
+    captures = opened;
+    running = true;
+    timer = setInterval(() => tick(false), Math.round(1000 / opts.fps));
+    ipcRenderer.send("video:started", Math.round(epochNow()), captures.map((c) => c.displayId));
+    tick(true);
   } catch (err) {
-    await stopFrameCapture();
     cleanup();
     ipcRenderer.send("video:error", err instanceof Error ? err.message : String(err));
   }
 });
 
-function withTimeout(promise, timeoutMs, message) {
-  let timeout;
-  const expired = new Promise((_resolve, reject) => {
-    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
-  });
-  return Promise.race([promise, expired]).finally(() => clearTimeout(timeout));
-}
+// A forced frame for every display right now (used for freeze and the final frame).
+ipcRenderer.on("video:snapshot", () => tick(true));
 
-ipcRenderer.on("video:stop", async () => {
-  try {
-    if (recorder && recorder.state !== "inactive") {
-      requestedStopEpoch = currentEpoch();
-      recorder.requestData();
-      recorder.stop();
-    } else {
-      await stopFrameCapture();
-      ipcRenderer.send("video:stopped", requestedStopEpoch || currentEpoch());
-    }
-  } catch (err) {
-    const stopEpoch = requestedStopEpoch || currentEpoch();
-    await stopFrameCapture().catch(() => undefined);
-    ipcRenderer.send("video:error", err instanceof Error ? err.message : String(err));
-    ipcRenderer.send("video:stopped", stopEpoch);
-  }
+ipcRenderer.on("video:stop", () => {
+  cleanup();
+  ipcRenderer.send("video:stopped", Math.round(epochNow()));
 });
