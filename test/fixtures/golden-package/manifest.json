@@ -53,9 +53,9 @@
       "sha256": "228ec11b01e91da86de6e39b4bb968d50b52a3ea57aa4c49e3e808dd57bceb9e"
     },
     {
-      "bytes": 1896,
+      "bytes": 1900,
       "path": "PROCESS.md",
-      "sha256": "411102efce49f475c8e3bea81688eacb4316a2de6105a753a6a09bdd1f566d64"
+      "sha256": "74dab814c27f45a6634b2b9f7c94e4414fbd27dfe7aab0840ffb823e1dde6c0f"
     },
     {
       "bytes": 135,
@@ -128,9 +128,9 @@
       "sha256": "<png>"
     },
     {
-      "bytes": 7522,
+      "bytes": 7766,
       "path": "steps.jsonl",
-      "sha256": "01a0f4847e2a09b65a751b3ba8be864d44fcc229b1d92a2971d33c207cb143b3"
+      "sha256": "ff76db46c2b2d9d9414b073c5a57e064f1a9e9ba317954baa16d9c25027f4249"
     }
   ],
   "format": "handover-package",

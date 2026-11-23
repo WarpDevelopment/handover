@@ -5,8 +5,8 @@
 
 ## Steps
 
-**S01. Switch to Microsoft Excel** `[observed]` · evidence T0
-- Where: Microsoft Excel › Budget.xlsx (window change)
+**S01. Switch to Microsoft Excel** `[observed]` · evidence context
+- Where: Microsoft Excel › Budget.xlsx (app switch)
 - Images: media/S01_before_full.png
 
 **S02. Click button "Save" in Microsoft Excel** `[observed]` · evidence T3
@@ -19,8 +19,8 @@
 - Why: Always save before closing the file `[user, ann_0002]`
 - Images: media/S03_before_full.png, media/S03_before_crop.png
 
-**S04. Switch to Google Chrome** `[observed]` · evidence T0
-- Where: Google Chrome › mail.example.com/inbox (window change)
+**S04. Switch to Google Chrome** `[observed]` · evidence context
+- Where: Google Chrome › mail.example.com/inbox (app switch)
 - Images: media/S04_before_full.png
 
 **S05. Click text box "Password" in Google Chrome** `[observed]` · evidence T3

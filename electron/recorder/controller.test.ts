@@ -591,6 +591,21 @@ test("the display layout is recorded at start and again only when it changes, an
   });
 });
 
+test("the helper's status is saved with the session when recording stops", async () => {
+  await withSessionsRoot(async (root) => {
+    const controller = new RecorderController({
+      resolveConfig: () => ({ ...FULL_CAPTURE, video: false }),
+      buildCollectors: () => [],
+      deleteSession: async () => undefined,
+      getHelperStatus: () => ({ present: true, version: "0.2.1" }),
+    });
+    const started = await controller.start();
+    assert.equal((await controller.stop()).ok, true);
+    const saved = JSON.parse(await readFile(path.join(root, started.sessionId!, "helper.json"), "utf8"));
+    assert.deepEqual(saved, { present: true, version: "0.2.1" });
+  });
+});
+
 async function withSessionsRoot(
   run: (root: string) => Promise<void>,
 ): Promise<void> {

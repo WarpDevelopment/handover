@@ -26,8 +26,9 @@ const GAP_REASON: Record<string, string> = {
   permission_lost: "a permission was revoked",
 };
 
-function tier(step: StepRecord): "T3" | "T2" | "T0" {
+function tier(step: StepRecord): "T3" | "T2" | "T0" | "context" {
   const g = step.target?.grounding;
+  if (g === "none") return "context";
   if (g === "accessibility") return "T3";
   if (g === "accessibility_weak") return "T2";
   return "T0";
@@ -73,7 +74,7 @@ function whereLine(step: StepRecord): string | undefined {
     const pt = xy ? `${Math.round(xy[0])},${Math.round(xy[1])}` : "unknown";
     return `${app} › point ${pt} in ${img ?? "the screen"} (pixels only)`;
   }
-  return [app, place].filter(Boolean).join(" › ") + " (window change)";
+  return [app, place].filter(Boolean).join(" › ") + " (app switch)";
 }
 
 function imagesLine(step: StepRecord): string | undefined {

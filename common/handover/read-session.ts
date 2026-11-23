@@ -8,6 +8,7 @@ import type { NarrationTranscript } from "../narration";
 import type { RecEvent, SessionMeta } from "../types";
 import { slugify } from "./canonical";
 import { parseEdits } from "./edits";
+import { HELPER_FILE, parseHelperStatus } from "./helper";
 import type {
   Edit,
   HelperStatus,
@@ -90,8 +91,11 @@ export async function readSessionInput(
     : [];
   const process = mergeProcess(meta, await readOptional(path.join(dir, PROCESS_FILE)));
   const edits = parseEdits((await readOptional(path.join(dir, EDITS_FILE))) ?? "");
+  // The helper status saved when the recording stopped wins over the caller's fallback.
+  const helperRaw = await readOptional(path.join(dir, HELPER_FILE));
+  const helper = helperRaw ? parseHelperStatus(helperRaw) : extras.helper;
   return {
-    session: { meta, events, shots, files, narration, process, ...extras },
+    session: { meta, events, shots, files, narration, process, ...extras, helper },
     edits,
   };
 }

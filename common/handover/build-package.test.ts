@@ -288,6 +288,58 @@ test("edits: delete renumbers ids and drops its annotations; edit_summary and ed
   }
 });
 
+test("context steps: grounding none, a frame_point at the window centre, 'context' evidence, '(app switch)', not listed as unseen", async () => {
+  const { session } = await load();
+  const files = await buildPackage(session, [], CTX);
+  const s = steps(files);
+  const t = s[0].target; // Excel, window {100,60,1000,700} points on display 1 (scale 2)
+  assert.equal(t.grounding, "none");
+  assert.equal(t.grounding_source, undefined);
+  assert.equal(t.element, undefined);
+  assert.equal(t.unavailable, undefined);
+  assert.equal(t.display_id, "d0");
+  assert.equal(t.app.name, "Microsoft Excel");
+  assert.equal(t.window.title.text, "Budget.xlsx");
+  // Window centre (600, 410) points = (1200, 820) dpx; fpx = dpx x scale.
+  const scale = s[0].before.scale;
+  assert.deepEqual(t.locators, [
+    { strategy: "frame_point", value: `${Math.round(1200 * scale)},${Math.round(820 * scale)}`, rank: 1, stability: "low" },
+  ]);
+  // Chrome sits on display 2 (origin -1280,-100): centre (-650, 300) = (1260, 800) dpx.
+  assert.equal(s[3].target.display_id, "d1");
+  assert.equal(s[3].target.locators[0].value, `${Math.round(1260 * s[3].before.scale)},${Math.round(800 * s[3].before.scale)}`);
+  const md = text(files, "PROCESS.md");
+  assert.match(md, /\*\*S01\. Switch to Microsoft Excel\*\* `\[observed\]` · evidence context\n- Where: Microsoft Excel › Budget\.xlsx \(app switch\)/);
+  assert.match(md, /evidence T3/);
+  const unseen = md.slice(md.indexOf("## What the recorder could not see"));
+  assert.ok(!unseen.includes("S01") && !unseen.includes("S04"));
+  // Without window bounds or any frame it falls back to the display centre and still validates.
+  const bare: SessionInput = {
+    ...session,
+    shots: [],
+    events: session.events.map((e) => (e.seq === 2 ? { ...e, payload: { ...e.payload, bounds: undefined } } : e)),
+  };
+  const b = steps(await buildPackage(bare, [], CTX))[0];
+  assert.equal(b.target.locators[0].strategy, "frame_point");
+  assert.equal(b.target.grounding, "none");
+});
+
+test("manifest.capture reflects the helper: it ran, it did not, it failed", async () => {
+  const { session } = await load();
+  const noClicks = session.events.filter((e) => e.type !== "pointer.click");
+  const manifest = async (s: SessionInput) => JSON.parse(text(await buildPackage(s, [], CTX), "manifest.json")).capture;
+  // Helper ran but nothing was clicked: both capabilities are true.
+  const ran = await manifest({ ...session, events: noClicks, helper: { present: true, version: "0.2.1" } });
+  assert.deepEqual(ran.helper, { present: true, version: "0.2.1" });
+  assert.equal(ran.capabilities.input_mouse, true);
+  assert.equal(ran.capabilities.a11y_hit, true);
+  // No helper and no clicks: false, with the error carried through.
+  const none = await manifest({ ...session, events: noClicks, helper: { present: false, error: "Helper binary not found" } });
+  assert.deepEqual(none.helper, { present: false, error: "Helper binary not found" });
+  assert.equal(none.capabilities.input_mouse, false);
+  assert.equal(none.capabilities.a11y_hit, false);
+});
+
 test("gap convention: open without tEndMs, closed by a later gap with the same reason, unclosed runs to the end", async () => {
   const { session } = await load();
   const base = session.events.filter((e) => e.type !== "gap");

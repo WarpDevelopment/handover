@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 
 import { app } from "electron";
 
@@ -6,6 +8,8 @@ import type { CaptureConfig } from "../../common/config";
 import { EventType } from "../../common/events";
 import type { DisplaysPayload, TerminalCommandPayload } from "../../common/events";
 import { layoutChanged } from "../../common/handover/displays";
+import { HELPER_FILE } from "../../common/handover/helper";
+import type { HelperStatus } from "../../common/handover/types";
 import type {
   DiscardResult,
   MarkerResult,
@@ -91,6 +95,8 @@ export interface RecorderDeps {
   finishTerminal?: () => Promise<void>;
   /** The current display layout, recorded as a `displays` event at start and on changes. */
   getDisplays?: () => DisplaysPayload | null;
+  /** The native helper's status when a recording stops, saved as `helper.json`. */
+  getHelperStatus?: () => HelperStatus;
 }
 
 type FinishIntent = "save" | "discard";
@@ -159,6 +165,16 @@ export class RecorderController {
     if (!ev) return;
     this.lastDisplays = layout;
     this.lastDisplaysEvent = ev;
+  }
+
+  /** Save the native helper's status next to the events, for the package manifest. Best effort. */
+  private writeHelperStatus(dir: string): void {
+    if (!this.deps.getHelperStatus) return;
+    try {
+      writeFileSync(path.join(dir, HELPER_FILE), JSON.stringify(this.deps.getHelperStatus(), null, 2));
+    } catch (error) {
+      log.warn("could not write helper status:", error instanceof Error ? error.message : error);
+    }
   }
 
   private releaseVideoFeed(): void {
@@ -625,6 +641,7 @@ export class RecorderController {
 
     this.bus.publish({ type: EventType.SessionStop, source: "recorder", payload: {} });
     this.bus.detach();
+    this.writeHelperStatus(store.dir);
     // A finalize failure (disk full, session dir removed) must not wedge the state
     // machine in "stopping": capture it, release the stream, and fall through to a
     // clean idle state below so the recorder can start again.

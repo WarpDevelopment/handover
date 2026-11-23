@@ -14,6 +14,8 @@ import {
 
 import { FULL_CAPTURE } from "../common/config";
 import { displaysPayload } from "../common/handover/displays";
+import { helperStatusFrom } from "../common/handover/helper";
+import { helperTracker } from "./collectors/helper-status";
 import { IPC, type RecorderStatus, type StartResult } from "../common/ipc";
 import type {
   SupportedShellId,
@@ -137,6 +139,7 @@ function currentDisplays() {
 
 const recorder = new RecorderController({
   getDisplays: currentDisplays,
+  getHelperStatus: () => helperStatusFrom(helperTracker.report()),
   resolveConfig: () => ({ ...FULL_CAPTURE }),
   buildCollectors: createCollectors,
   createVideoRecorder: () => new VideoRecorder(),

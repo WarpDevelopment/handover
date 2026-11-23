@@ -556,6 +556,30 @@ export async function buildPackage(
         stability: "low",
       });
       target.locators = locators;
+    } else if (d.kind === "context") {
+      // No clicked control: nothing failed, there was none to find (tester-package.md §4.2).
+      target.grounding = "none";
+      let centre: [number, number] = [0, 0];
+      if (display && ds.layout) {
+        const scale = before?.scale ?? expectedFrameScale(display);
+        const source: Rect = [0, 0, display.sizeDpx[0], display.sizeDpx[1]];
+        const centreDpx: [number, number] = d.windowBounds
+          ? (() => {
+              const r = boundsToDpx(ds.layout.globalSpace, display, d.windowBounds);
+              return [r[0] + r[2] / 2, r[1] + r[3] / 2] as [number, number];
+            })()
+          : [display.sizeDpx[0] / 2, display.sizeDpx[1] / 2];
+        centre = dpxToFpx(source, scale, centreDpx[0], centreDpx[1]);
+      }
+      if (displayId) target.display_id = displayId;
+      target.locators = [
+        {
+          strategy: "frame_point",
+          value: `${Math.round(centre[0])},${Math.round(centre[1])}`,
+          rank: 1,
+          stability: "low",
+        },
+      ];
     }
 
     stepRecords.push({
@@ -772,10 +796,14 @@ export async function buildPackage(
     },
     capture: {
       capabilities: {
-        input_mouse: hasClicks,
-        a11y_hit: events.some(
-          (e) => e.type === "pointer.click" && (e.payload as { target?: unknown }).target !== undefined,
-        ),
+        // True when the native helper ran (its status is saved with the session), or when the
+        // events themselves show clicks and resolved controls.
+        input_mouse: session.helper.present || hasClicks,
+        a11y_hit:
+          session.helper.present ||
+          events.some(
+            (e) => e.type === "pointer.click" && (e.payload as { target?: unknown }).target !== undefined,
+          ),
         capture_backend: session.captureBackend,
         keyboard: "none",
       },

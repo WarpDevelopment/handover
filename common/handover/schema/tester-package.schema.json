@@ -62,7 +62,7 @@
       "type": "object",
       "required": ["app"],
       "properties": {
-        "grounding": { "enum": ["accessibility", "accessibility_weak", "visual_only"] },
+        "grounding": { "enum": ["accessibility", "accessibility_weak", "visual_only", "none"] },
         "grounding_source": { "enum": ["ax", "uia"] },
         "unavailable": {
           "type": "object",
