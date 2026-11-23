@@ -23,6 +23,9 @@ export interface CaptureConfig {
   terminal: boolean;
 }
 
+/** The Advanced protection toggle is hidden in this build: its OCR data cannot be fetched. */
+export const ADVANCED_PROTECTION_AVAILABLE = false;
+
 export type CaptureSourceKey = keyof CaptureConfig;
 
 /**
@@ -32,7 +35,9 @@ export type CaptureSourceKey = keyof CaptureConfig;
  */
 export const FULL_CAPTURE: CaptureConfig = {
   appActivity: true,
-  clipboard: true,
+  // Off: the tester package never uses clipboard events, so the collector is not
+  // constructed and the clipboard is never read.
+  clipboard: false,
   windowTitles: true,
   browserUrls: false,
   video: true,
