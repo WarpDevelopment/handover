@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -6,13 +7,15 @@ import {
   type SaveDialogOptions,
   type WebContents,
 } from "electron";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { PROCESS_FILE } from "../common/handover/read-session";
 import type {
   DebugBundleResult,
   DeleteSessionResult,
+  ExportPackageResult,
   MicrophoneSettingsResult,
   ScreenSettingsResult,
 } from "../common/ipc";
@@ -25,11 +28,25 @@ import type { AudioRecorder } from "./audio/recorder";
 import type { NarrationManager } from "./narration/manager";
 import type { RecorderController } from "./recorder/controller";
 import type { ScreenSourceService } from "./video/sources";
-import { isValidSessionId, sessionsRoot } from "./recorder/session-store";
+import { exportPackage, suggestedZipName } from "./export";
+import { isValidSessionId, sessionDir, sessionsRoot } from "./recorder/session-store";
 import type { SensitiveModelManager } from "./sensitive/model-manager";
 import { deleteSession, listSessions } from "./sessions";
 
 const log = createLogger("IPC");
+
+/** The process title from the start sheet, or the session id until a start sheet exists. */
+function readTitle(sessionId: string): string {
+  try {
+    const raw = JSON.parse(readFileSync(path.join(sessionDir(sessionId), PROCESS_FILE), "utf8")) as {
+      title?: unknown;
+    };
+    if (typeof raw.title === "string" && raw.title.trim()) return raw.title;
+  } catch {
+    // no start sheet yet
+  }
+  return `Recorded process ${sessionId}`;
+}
 
 /** Wire the renderer-facing invoke channels to the recorder, narration, library + doctor. */
 export function registerIpc(
@@ -182,6 +199,32 @@ export function registerIpc(
       return { ok: false, error };
     }
   });
+
+  ipcMain.handle(
+    IPC.exportPackage,
+    async (event, sessionId: string): Promise<ExportPackageResult> => {
+      if (!isValidSessionId(sessionId)) return { ok: false, error: "Unknown session." };
+      if (recorder.status().sessionId === sessionId) {
+        return { ok: false, error: "You can't export a recording while it's still in progress." };
+      }
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const opts: SaveDialogOptions = {
+        title: "Export Handover package",
+        defaultPath: path.join(os.homedir(), "Downloads", suggestedZipName(readTitle(sessionId))),
+        filters: [{ name: "Zip archive", extensions: ["zip"] }],
+      };
+      const picked = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+      if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+      const result = await exportPackage({
+        sessionDir: sessionDir(sessionId),
+        destZip: picked.filePath,
+        toolVersion: app.getVersion(),
+      });
+      if (result.zip) shell.showItemInFolder(result.zip);
+      if (!result.ok) log.warn("package export problem:", result.error, result.validationErrors ?? "");
+      return result;
+    },
+  );
 
   ipcMain.handle(
     IPC.exportDebugBundle,

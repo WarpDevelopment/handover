@@ -257,6 +257,7 @@ function SessionDetail({
           <span className="eyebrow">Recording</span>
           <h2>{formatWhen(summary.startedAt)}</h2>
         </div>
+        <ExportPackageButton sessionId={summary.id} />
         <DebugDownload sessionId={summary.id} />
       </header>
       <dl className="detail-facts">
@@ -323,6 +324,40 @@ const SavedGlyph = () => (
     />
   </svg>
 );
+
+/** Exports a recording as a Handover package (a folder and a zip) and reports whether it validated. */
+function ExportPackageButton({ sessionId }: { sessionId: string }) {
+  const [phase, setPhase] = useState<"idle" | "working" | "done" | "error">("idle");
+  const [message, setMessage] = useState("");
+
+  const run = useCallback(async () => {
+    setPhase("working");
+    setMessage("");
+    const res = await window.handover.exportPackage(sessionId);
+    if (res.canceled) {
+      setPhase("idle");
+    } else if (res.ok) {
+      setMessage(`Exported ${res.stepCount ?? 0} steps`);
+      setPhase("done");
+    } else {
+      setMessage(res.validationErrors?.[0] ?? res.error ?? "Couldn't export the package.");
+      setPhase("error");
+    }
+  }, [sessionId]);
+
+  return (
+    <div className="debug-dl">
+      {phase !== "idle" && phase !== "working" && (
+        <span className="debug-dl-note" title={message} role="status">
+          {phase === "done" ? message : "Couldn't export"}
+        </span>
+      )}
+      <button className="linky" onClick={() => void run()} disabled={phase === "working"}>
+        {phase === "working" ? "Exporting…" : "Export package"}
+      </button>
+    </div>
+  );
+}
 
 /**
  * Subtle, per-recording "download a debug bundle" affordance shown in the session

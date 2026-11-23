@@ -37,6 +37,7 @@ const IPC = {
   takeLibrarySelection: "ui:take-library-selection",
   deleteSession: "sessions:delete",
   exportDebugBundle: "sessions:export-debug",
+  exportPackage: "sessions:export-package",
   terminalOpen: "terminal:open",
   terminalReady: "terminal:ready",
   terminalStatus: "terminal:status",
@@ -161,6 +162,7 @@ contextBridge.exposeInMainWorld("handover", {
   takeLibrarySelection: () => ipcRenderer.invoke(IPC.takeLibrarySelection),
   deleteSession: (sessionId) => ipcRenderer.invoke(IPC.deleteSession, sessionId),
   exportDebugBundle: (sessionId) => ipcRenderer.invoke(IPC.exportDebugBundle, sessionId),
+  exportPackage: (sessionId) => ipcRenderer.invoke(IPC.exportPackage, sessionId),
   openLibrary: (sessionId) => ipcRenderer.invoke(IPC.openLibrary, sessionId),
   closeLibrary: () => ipcRenderer.invoke(IPC.closeLibrary),
   setRecordingControlsExpanded: (expanded) =>
