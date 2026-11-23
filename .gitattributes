@@ -1,0 +1,3 @@
+# Test fixtures are compared byte for byte (golden package files) or decoded as images, so git
+# must never rewrite their line endings, on Windows runners included.
+test/fixtures/** -text
