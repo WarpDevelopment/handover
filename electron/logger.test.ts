@@ -11,7 +11,9 @@ test("file sink writes handover-YYYYMMDD.log lines and never an object payload",
   const day = new Date(2026, 10, 23, 9, 30, 0);
   const stop = initFileLogging(dir, { now: () => day });
   const quiet = console.log;
+  const quietWarn = console.warn;
   console.log = () => undefined;
+  console.warn = () => undefined;
   try {
     const log = createLogger("Test");
     log.info("recording started", 3, true);
@@ -19,6 +21,7 @@ test("file sink writes handover-YYYYMMDD.log lines and never an object payload",
     log.warn("failed:", new Error("boom"));
   } finally {
     console.log = quiet;
+    console.warn = quietWarn;
     stop();
   }
   assert.equal(logFileName(day), "handover-20261123.log");

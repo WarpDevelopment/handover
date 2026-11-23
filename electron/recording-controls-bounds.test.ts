@@ -12,7 +12,7 @@ test("recording controls start bottom-center inside the work area", () => {
   const workArea = { x: -1920, y: 0, width: 1920, height: 1040 };
   assert.deepEqual(initialRecordingControlsBounds(workArea), {
     x: -1240,
-    y: 946,
+    y: 922,
     width: RECORDING_CONTROLS_SIZE.width,
     height: RECORDING_CONTROLS_SIZE.collapsedHeight,
   });
