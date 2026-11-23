@@ -1,6 +1,9 @@
 // L4: DPI-safe overlay coordinates and the checks on what the overlay returns.
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { MAX_COMMENT_CHARS, MAX_POINTS, MAX_SHAPES, sanitizeExplainResult } from "./explain";
@@ -41,6 +44,14 @@ test("thinning a stroke keeps its first and last point and never more than the c
   assert.equal(thin[0], 0);
   assert.equal(thin[49], 999);
   assert.deepEqual(thinPoints([1, 2, 3], 50), [1, 2, 3]);
+});
+
+test("the page policy lets the overlay and the review screen show data: images (frozen frames are sent as data URLs)", async () => {
+  const html = await readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../index.html"), "utf8");
+  const csp = /Content-Security-Policy"\s+content="([^"]+)"/.exec(html)?.[1] ?? "";
+  assert.match(csp, /img-src 'self' data:/);
+  assert.match(csp, /default-src 'self'/, "everything else stays local-only");
+  assert.ok(!/https?:/.test(csp), "no remote source is allowed");
 });
 
 const SIZES = new Map<number, [number, number]>([[1, [2880, 1800]]]);

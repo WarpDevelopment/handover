@@ -115,7 +115,7 @@ export function FreezeOverlay() {
   const [error, setError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
-  const dragging = useRef(false);
+  const draftRef = useRef<Shape | null>(null);
 
   useEffect(() => {
     document.body.dataset.route = "freeze";
@@ -195,37 +195,36 @@ export function FreezeOverlay() {
     return [e.clientX - r.left, e.clientY - r.top];
   };
 
+  // The stroke being drawn lives in a ref, so finishing it never depends on when React renders.
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragging.current = true;
     const p = point(e);
-    setDraft({ shape: tool, points: [p, p] });
+    draftRef.current = { shape: tool, points: [p, p] };
+    setDraft(draftRef.current);
   };
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!dragging.current) return;
+    const d = draftRef.current;
+    if (!d) return;
     const p = point(e);
-    setDraft((d) => {
-      if (!d) return d;
-      if (d.shape === "rect" || d.shape === "arrow") return { ...d, points: [d.points[0], p] };
-      return { ...d, points: [...d.points, p] };
-    });
+    draftRef.current =
+      d.shape === "rect" || d.shape === "arrow"
+        ? { ...d, points: [d.points[0], p] }
+        : { ...d, points: [...d.points, p] };
+    setDraft(draftRef.current);
   };
   const onPointerUp = () => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    setDraft((d) => {
-      if (d) {
-        const first = d.points[0];
-        const last = d.points[d.points.length - 1];
-        const moved = Math.hypot(last[0] - first[0], last[1] - first[1]);
-        if (moved >= MIN_DRAG_PX) {
-          const points = d.shape === "rect" || d.shape === "arrow" ? [first, last] : thinPoints(d.points, MAX_STROKE_POINTS);
-          setShapes((s) => [...s, { shape: d.shape, points }]);
-        }
-      }
-      return null;
-    });
+    const d = draftRef.current;
+    if (!d) return;
+    draftRef.current = null;
+    setDraft(null);
+    const first = d.points[0];
+    const last = d.points[d.points.length - 1];
+    if (Math.hypot(last[0] - first[0], last[1] - first[1]) >= MIN_DRAG_PX) {
+      const points: Point[] =
+        d.shape === "rect" || d.shape === "arrow" ? [first, last] : thinPoints(d.points, MAX_STROKE_POINTS);
+      setShapes((s) => [...s, { shape: d.shape, points }]);
+    }
     // Back to the note, so typing goes on right after drawing.
     noteRef.current?.focus();
   };
