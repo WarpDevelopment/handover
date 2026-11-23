@@ -29,7 +29,7 @@ Branch `lane/L3-steps-frames-export`, base `6d0c0d3`. Node 24.19.0, macOS arm64.
 | 3 | Mac app records ~1 minute across two apps and exports a package that passes `validatePackage` | See "Mac run" | Pass, with the caveats listed |
 | 4 | CI green with the Windows artifact | See "CI" | See "CI" |
 
-Test count: `npm test` runs 230 tests, 0 failed, 0 skipped. `npm run build` exits 0. New suites: `canonical`, `geometry`, `steps`, `build-package`, `validate` (in `common/handover/`), `ring`, `shot-store`, `thumb-diff`, `export` (in `electron/`), plus a controller test for the `displays` event and the video feed.
+Test count: `npm test` runs 233 tests, 0 failed, 0 skipped. `npm run build` exits 0. New suites: `canonical`, `geometry`, `steps`, `build-package`, `validate` (in `common/handover/`), `ring`, `shot-store`, `thumb-diff`, `export` (in `electron/`), plus a controller test for the `displays` event and the video feed.
 
 Other tests worth knowing about:
 - Edits: delete renumbers step ids and image names and drops its annotations; edit-summary sets `summary_provenance: user` and the `user_edited` flag; edit-comment sets `source: review`; `blur_rect` and unknown operations throw.
@@ -44,6 +44,12 @@ A real bug found by a test: sharp keeps only the last `resize` in a chain, so th
 2. **Click time.** The helper reports a click after its control lookup (up to 300 ms), so the event time is later than the click. `StepDraft.frameTMs` and `ShotStore.onEvent` now subtract `lookupMs` (clamped 0 to 1,000 ms) when choosing the before frame; the step keeps the reported `t_start_ms`. Tests in `shot-store.test.ts` and `build-package.test.ts`. **L5 must fill `lookupMs` on `pointer.click`** (the field already exists in the shared type) or the correction is a no-op.
 3. **PROCESS.md** "What the recorder could not see" now lists only T0 steps (no control at all), written `- Sxx: no control identified (<unavailable.reason>); the target is pixels only.` A weak control (T2) is not listed. Golden files regenerated.
 4. **CLAUDE_HANDOFF.md** Rules are the `package-spec.md` §12 text verbatim (so they still mention `dataflow.json`). Deviations from §12, all from `tester-package.md` §6: the reading order is manifest, PROCESS.md, steps, annotations, gaps, then images; "dataflow", "prompts", "readiness" and "a11y" entries are removed; the manifest line drops systems and actors; the image paragraph drops `manifest.media.image_policy` and the a11y sentence; "Produce" asks for `process_spec.md` next to the package with the six items from §6.
+
+## L5 integration notes (from the orchestrator, applied after the first report)
+1. `app.kind` is derived in `steps.ts` `appKind(name, process, bundleId, unavailableReason)`: `remote_session` for the `remote_session` reason, process names `mstsc`, `msrdc`, `msrdcw`, `WindowsApp`, `wfica32` (and Windows App / Citrix names) and the RDC and Citrix bundle ids; `browser` for known browser names, processes and bundle ids; else `native`. Tests in `steps.test.ts`.
+2. The before frame uses `t - lookupMs` (already done in review fix 2).
+3. Gap convention is `resolveGaps` in `build-package.ts`: a gap without `tEndMs` opens, a later gap with the same reason and `tEndMs` closes it, an unclosed gap runs to session end. It feeds both `gaps.jsonl` and `paused_ms`. Test in `build-package.test.ts`.
+4. A `pointer.click` with `clickCount` 2 within 1 s of a `clickCount` 1 click (same button) is merged into one `double_click` step (first click's time, second click's payload, target from either). Test in `steps.test.ts`.
 
 ## Mac run (check 3)
 - How: a throwaway Electron harness (built with vite, run with the installed Electron 43.1.1, not committed) started the real `RecorderController` with the real active-window collector and the new `VideoRecorder`, ran for 60 s while `osascript` switched Finder → Calculator → Finder → Calculator, published **one synthetic `pointer.click`** (no click helper exists until L5), stopped, then ran `exportPackage` and `validatePackage`. It did not go through the Record button.
