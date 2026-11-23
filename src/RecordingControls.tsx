@@ -11,6 +11,7 @@ import {
 } from "../common/narration";
 import { FULL_CAPTURE } from "../common/config";
 import { formatMs } from "./format";
+import { TestBanner } from "./TestBanner";
 
 export function RecordingControls() {
   const [status, setStatus] = useState<RecorderStatus | null>(null);
@@ -394,6 +395,7 @@ export function RecordingControls() {
       )}
 
       <div className="recording-bar-wrap">
+        <TestBanner />
         <div className="recording-bar">
           <div className="recording-live" role="status" aria-label={`${captureLabel} ${formatMs(elapsed)}`}>
             <span className="recording-live-dot" aria-hidden />

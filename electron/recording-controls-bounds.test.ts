@@ -38,9 +38,9 @@ test("recording controls clamp to negative-coordinate and small displays", () =>
 
 test("overlay panel expansion preserves the bar's bottom edge", () => {
   const workArea = { x: 0, y: 0, width: 1440, height: 900 };
-  const collapsed = { x: 440, y: 806, width: 560, height: 76 };
+  const collapsed = { x: 440, y: 782, width: 560, height: 100 };
   const expanded = resizeRecordingControlsBounds(collapsed, true, workArea);
-  assert.deepEqual(expanded, { x: 440, y: 632, width: 560, height: 250 });
+  assert.deepEqual(expanded, { x: 440, y: 608, width: 560, height: 274 });
   assert.equal(expanded.y + expanded.height, collapsed.y + collapsed.height);
   assert.deepEqual(
     resizeRecordingControlsBounds(expanded, false, workArea),

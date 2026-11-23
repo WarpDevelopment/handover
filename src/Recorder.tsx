@@ -17,6 +17,7 @@ import {
 } from "../common/narration";
 import { formatMs } from "./format";
 import { RecordingPrivacyWarning } from "./RecordingPrivacyWarning";
+import { TestBanner } from "./TestBanner";
 import { WhatsRecorded } from "./WhatsRecorded";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
@@ -329,6 +330,7 @@ export function Recorder() {
 
   return (
     <div className="hud" ref={hudRef}>
+      <TestBanner />
       <div className="transport">
         <div className="record-actions">
         <button
