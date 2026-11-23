@@ -428,13 +428,13 @@ function DebugDownload({ sessionId }: { sessionId: string }) {
                   <circle cx="10" cy="12.4" r="1.1" fill="currentColor" />
                 </svg>
               </span>
-              <h2 id="debug-dl-title">Includes private information</h2>
+              <h2 id="debug-dl-title">Environment details only</h2>
             </header>
 
             <p className="sheet-lead" id="debug-dl-desc">
-              This bundle is everything captured in this recording — screen video, screenshots,
-              visited URLs, clipboard contents, and any voice narration and transcript. Share it
-              only with people you trust.
+              This file holds app and system details for support: versions, permissions and the
+              capture check. It contains no screenshots, video, audio, transcript or comments from
+              this recording.
             </p>
 
             <div className="sheet-actions">
