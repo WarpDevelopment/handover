@@ -1,7 +1,7 @@
 # L1 fork-strip-ci: evidence
 
 Branch `lane/L1-fork-strip-ci`, BASE_SHA `f4dfd51`. Code commit `b033456` (strip + rebrand), CI commit `3ee0d14`, notices commit `99e9cb3`.
-CI run on `b033456`: Windows <https://github.com/WarpDevelopment/handover/actions/runs/45214529313>, macOS <https://github.com/WarpDevelopment/handover/actions/runs/45214529425>. The run for the final HEAD (which only adds this file) is listed in the hand-off message.
+CI run on `b033456`: Windows <https://github.com/WarpDevelopment/handover/actions/runs/45214529313>, macOS <https://github.com/WarpDevelopment/handover/actions/runs/45214529425>. Final HEAD `06c5b89` (adds only this file): Windows <https://github.com/WarpDevelopment/handover/actions/runs/45216656142> and macOS <https://github.com/WarpDevelopment/handover/actions/runs/45216655253>, both success, both artifacts uploaded.
 
 ## 1. `npm ci && npm test && npm run build` on the Mac
 - Run with Node 24.19.0 (`/opt/homebrew/opt/node@24`), npm 11.17.0. The default Homebrew Node 26 cannot run the tests: it rejects `--experimental-transform-types`. Upstream was proven on 24.19.0 as well.
