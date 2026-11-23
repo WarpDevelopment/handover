@@ -52,3 +52,8 @@ Proven instead:
 
 ## CI
 Code HEAD `5fb00ba`: Windows <https://github.com/WarpDevelopment/handover/actions/runs/45223668825> success (artifact `handover-windows-x64`, `verify-windows-package.mjs` passes with the 7 pinned model files inside `resources/models`); macOS <https://github.com/WarpDevelopment/handover/actions/runs/45223668522> success (artifact `handover-macos-arm64`, model verified inside the `.app`). The earlier macOS failure (run 45220836534) was the osx-sign crash described above. This evidence commit adds only this file.
+
+## Follow-ups (orchestrator request)
+Code HEAD `bcb9550`, 184 tests, 0 fail. CI: Windows <https://github.com/WarpDevelopment/handover/actions/runs/45225416906> success, macOS <https://github.com/WarpDevelopment/handover/actions/runs/45225416950> success.
+1. **Clipboard off by default.** `FULL_CAPTURE.clipboard = false`, so `createCollectors` never constructs `ClipboardCollector` and the clipboard is never read. Test in `common/config.test.ts` asserts the default collector list has no `clipboard`. The event type and collector code are unchanged. This closes the clipboard-floor question in "Left unproven" above.
+2. **Advanced protection toggle hidden.** `ADVANCED_PROTECTION_AVAILABLE = false` in `common/config.ts` gates the whole section in `src/WhatsRecorded.tsx`; a test asserts the flag and that the section is wrapped in it (source check, no renderer in the harness).
