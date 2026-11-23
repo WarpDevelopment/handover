@@ -90,6 +90,16 @@ jobs:
             throw "ffmpeg-static remains in the lockfile"
           }
 
+      - name: Cache narration model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: extraResources/models
+          key: narration-model-${{ hashFiles('scripts/narration-models.json') }}
+
+      # Fetches Xenova/whisper-small q8 and fails the job if any SHA-256 pin differs.
+      - name: Fetch narration model (SHA-256 pinned)
+        run: npm run models:fetch
+
       - name: Generate license inventory
         run: npm run compliance:licenses
 
@@ -98,6 +108,20 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Lane L5: compile the click and control helper with the in-box csc.exe, then run --selftest.
+      # The packaging step below ships it through extraResources and verify-windows-package.mjs checks it.
+      - name: Build click helper and run its self-test
+        shell: pwsh
+        run: |
+          .\scripts\build-helper-win.ps1
+          $exe = ".\native\build\HandoverHelper.exe"
+          $lines = & $exe --selftest
+          if ($LASTEXITCODE -ne 0) { throw "HandoverHelper --selftest exited with $LASTEXITCODE" }
+          $lines | ForEach-Object { Write-Host "selftest> $_" }
+          $text = $lines -join "`n"
+          if ($text -notmatch '"type":"hello"') { throw "selftest did not print hello" }
+          if ($text -notmatch '"type":"capabilities"') { throw "selftest did not print capabilities" }
 
       - name: Package native installer
         run: npm run dist:win:x64

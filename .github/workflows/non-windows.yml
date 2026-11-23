@@ -30,6 +30,16 @@ jobs:
 
       - run: npm ci --ignore-scripts=false --dangerously-allow-all-scripts=false --strict-allow-scripts
 
+      - name: Cache narration model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: extraResources/models
+          key: narration-model-${{ hashFiles('scripts/narration-models.json') }}
+
+      # Fetches Xenova/whisper-small q8 and fails the job if any SHA-256 pin differs.
+      - name: Fetch narration model (SHA-256 pinned)
+        run: npm run models:fetch
+
       - name: Cache compliance source downloads
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -79,12 +89,26 @@ jobs:
       - run: npm test
       - run: npm run build
 
+      # Lane L5: build the Swift click helper and run its self-test; dist:mac ships it via extraResources.
+      - name: Build click helper and run its self-test
+        run: |
+          npm run build:helper:mac
+          native/build/HandoverHelper --selftest | tee helper-selftest.txt
+          grep -q '"type":"hello"' helper-selftest.txt
+          grep -q '"type":"capabilities"' helper-selftest.txt
+
       - name: Package unsigned macOS zip
         run: npm run dist:mac
         env:
           # Unsigned test build. mac.identity "-" gives the automatic ad-hoc
           # signature; this only stops Developer ID auto-discovery on the runner.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Verify the zip contains the click helper
+        run: unzip -l release/*.zip | tee zip-listing.txt | grep -E 'Resources/helper/HandoverHelper$'
+
+      - name: Verify the bundled narration model in the app
+        run: node scripts/fetch-models.mjs --verify --out=release/mac-arm64/Handover.app/Contents/Resources/models
 
       - name: Upload macOS zip
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

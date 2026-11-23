@@ -268,12 +268,28 @@ export interface DoctorSource {
   note?: string;
 }
 
+/** State of the native click and control helper (lane L5). */
+export type HelperState = "ok" | "missing" | "crashed" | "no-permission";
+
+export interface HelperDoctorInfo {
+  helper: HelperState;
+  /** Version the helper reported in its `hello`; null until it has run. */
+  version: string | null;
+  lastError: string | null;
+  /** Control-lookup time over this app run (null until a click has been seen). */
+  lookupP50Ms: number | null;
+  lookupP95Ms: number | null;
+  /** Click counts by how the control was grounded. `none` = no control resolved. */
+  counts: { accessibility: number; accessibility_weak: number; none: number };
+}
+
 export interface DoctorReport {
   platform: NodeJS.Platform;
   activeWindow: ActiveWindowInfo;
   browserUrl: BrowserUrlInfo;
   sessionsDir: string;
   activeSources: DoctorSource[];
+  helper: HelperDoctorInfo;
 }
 
 /** IPC channel names — the single source of truth shared by main + preload. */
@@ -298,7 +314,6 @@ export const IPC = {
   recordingPrivacyReviewed: "recorder:privacy-reviewed",
   recordingPrivacyWarningRequested: "recorder:privacy-warning-requested",
   narrationStatus: "narration:status",
-  narrationDownload: "narration:download",
   narrationTranscribe: "narration:transcribe",
   narrationStatusChanged: "narration:status-changed",
   sensitiveModelStatus: "sensitive:status",
@@ -369,7 +384,6 @@ export interface HandoverApi {
   onTerminalFinishConfirmationRequested(cb: () => void): () => void;
   onTerminalOutput(cb: (data: string) => void): () => void;
   narrationStatus(): Promise<NarrationStatus>;
-  downloadNarrationModel(): Promise<NarrationActionResult>;
   transcribeNarration(sessionId: string): Promise<NarrationActionResult>;
   onNarrationStatusChanged(cb: (status: NarrationStatus) => void): () => void;
   /** Current status of the "Advanced protection" model (on-device frame OCR). */

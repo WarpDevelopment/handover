@@ -2,6 +2,7 @@ import type { CaptureConfig } from "../../common/config";
 import type { Collector } from "../recorder/collector";
 import { ActiveWindowCollector } from "./active-window";
 import { ClipboardCollector } from "./clipboard";
+import { PointerHelperCollector } from "./pointer-helper";
 
 /**
  * Builds the collectors enabled by `config`. Sources the user hasn't opted into
@@ -24,6 +25,11 @@ export function createCollectors(config: CaptureConfig): Collector[] {
     );
   }
   if (config.clipboard) collectors.push(new ClipboardCollector());
+  // Click and control capture through the native helper. A missing or crashed helper becomes a gap,
+  // never a failed recording.
+  if (process.platform === "win32" || process.platform === "darwin") {
+    collectors.push(new PointerHelperCollector());
+  }
 
   return collectors;
 }

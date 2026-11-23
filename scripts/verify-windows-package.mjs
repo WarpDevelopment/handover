@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import { excludedWasmPackages, verifyComplianceDirectory } from "./compliance.mjs";
+import { readManifest, verifyAll } from "./fetch-models.mjs";
 
 const require = createRequire(import.meta.url);
 const { listPackage } = require("@electron/asar");
@@ -67,6 +68,17 @@ for (const payload of expectedPayloads) {
   verifyPeMachine(files[executableIndex], expectedMachine);
 }
 
+// The click and control helper (lane L5) is built in CI before packaging and shipped via extraResources.
+const helperExe = path.join(unpacked, "resources", "helper", "HandoverHelper.exe");
+try {
+  statSync(helperExe);
+} catch {
+  throw new Error(`Packaged ${arch} application is missing resources/helper/HandoverHelper.exe.`);
+}
+// The helper is compiled as x64. Under arm64 it runs through emulation, so only x64 checks the header.
+if (arch === "x64") verifyPeMachine(helperExe, expectedMachine);
+console.log(`Verified helper payload: ${helperExe} (${statSync(helperExe).size} bytes)`);
+
 for (const excluded of excludedWasmPackages) {
   const prefix = `/${excluded.toLowerCase()}/`;
   const leaked = normalizedFiles.find((file) => file.includes(prefix));
@@ -128,6 +140,15 @@ await verifyComplianceDirectory(path.join(unpacked, "resources", "compliance"), 
   requireSources: true,
   requireElectronNotices: true,
 });
+
+// The narration model must be bundled in the installer, byte-for-byte as pinned.
+const modelProblems = await verifyAll(
+  path.join(unpacked, "resources", "models"),
+  readManifest(),
+);
+if (modelProblems.length > 0) {
+  throw new Error(`Bundled narration model is wrong:\n  ${modelProblems.join("\n  ")}`);
+}
 
 const nestedOutput = asarEntries.find(
   (entry) =>

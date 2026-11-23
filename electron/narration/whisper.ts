@@ -46,11 +46,6 @@ export interface ModelLoadProgress {
   total?: number;
 }
 
-export interface WhisperLoadOptions {
-  allowDownload: boolean;
-  onProgress?: (progress: ModelLoadProgress) => void;
-}
-
 let loadedPipe: AsrPipeline | null = null;
 let pipePromise: Promise<AsrPipeline | null> | null = null;
 
@@ -59,10 +54,17 @@ export function narrationModelId(): string {
   return NARRATION_MODEL_ID;
 }
 
+/**
+ * Where the bundled narration model lives. Packaged builds carry it in
+ * `<resources>/models` (electron-builder `extraResources`, fetched and SHA-256
+ * pinned by `npm run models:fetch`); unpackaged dev runs read `extraResources/models`
+ * in the repo. `HANDOVER_MODELS_DIR` overrides both (tests and local experiments).
+ */
 export function narrationModelCacheDir(): string {
   const override = process.env.HANDOVER_MODELS_DIR;
   if (override) return path.resolve(override);
-  return path.join(app.getPath("userData"), "models");
+  if (app.isPackaged) return path.join(process.resourcesPath, "models");
+  return path.join(app.getAppPath(), "extraResources", "models");
 }
 
 export function isNarrationModelCachedAt(
@@ -87,20 +89,19 @@ export async function removeLegacyNarrationModelCache(
   });
 }
 
-async function build(options: WhisperLoadOptions): Promise<AsrPipeline> {
+async function build(): Promise<AsrPipeline> {
   // Dynamic import: transformers.js + onnxruntime-node are heavy native deps we
   // only ever touch when a model download or transcription is requested.
   const tf = await import("@huggingface/transformers");
 
-  // Keep every downloaded model under the app's user-data dir so it survives
-  // upgrades and is trivial to locate or clear. First run needs the network once;
-  // every run after is offline from this cache. Nothing is bundled with the app.
+  // The model is bundled with the app and read from there only. The app makes no
+  // network calls, so remote loading is switched off outright.
   tf.env.cacheDir = narrationModelCacheDir();
+  tf.env.allowRemoteModels = false;
 
   const pipe = await tf.pipeline("automatic-speech-recognition", NARRATION_MODEL_ID, {
     dtype: DTYPE,
-    local_files_only: !options.allowDownload,
-    progress_callback: options.onProgress,
+    local_files_only: true,
     // onnxruntime-node's CPU memory arena SIGTRAPs (hard native crash) under
     // Electron's runtime, in both the main and utility processes. Disabling the
     // arena is the single option that avoids it; unlike throttling threads or
@@ -116,9 +117,9 @@ async function build(options: WhisperLoadOptions): Promise<AsrPipeline> {
  * deliberately not memoized so an offline attempt can be retried without an app
  * restart.
  */
-export async function getAsrPipeline(options: WhisperLoadOptions): Promise<AsrPipeline> {
+export async function getAsrPipeline(): Promise<AsrPipeline> {
   if (loadedPipe) return loadedPipe;
-  if (!pipePromise) pipePromise = build(options);
+  if (!pipePromise) pipePromise = build();
   try {
     const pipe = await pipePromise;
     if (!pipe) throw new Error("Whisper model did not load.");

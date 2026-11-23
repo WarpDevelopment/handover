@@ -12,12 +12,12 @@ import {
   DEFAULT_NARRATION_LANGUAGE,
   isNarrationLanguage,
   NARRATION_LANGUAGES,
-  NARRATION_MODEL_DOWNLOAD_LABEL,
   narrationLanguageLabel,
   type NarrationLanguage,
 } from "../common/narration";
 import { formatMs } from "./format";
 import { RecordingPrivacyWarning } from "./RecordingPrivacyWarning";
+import { TestBanner } from "./TestBanner";
 import { WhatsRecorded } from "./WhatsRecorded";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
@@ -310,11 +310,6 @@ export function Recorder() {
     void window.handover.openLibrary();
   }, []);
 
-  const downloadNarrationModel = useCallback(async () => {
-    const res = await window.handover.downloadNarrationModel();
-    if (!res.ok) window.alert(res.error ?? "Could not download the voice transcription model.");
-  }, []);
-
   const toggleAdvanced = useCallback(async () => {
     if (!sensitive) return;
     const next = !sensitive.enabled;
@@ -335,6 +330,7 @@ export function Recorder() {
 
   return (
     <div className="hud" ref={hudRef}>
+      <TestBanner />
       <div className="transport">
         <div className="record-actions">
         <button
@@ -689,11 +685,7 @@ export function Recorder() {
             note={doctor.activeWindow.ok ? "found" : "missing"}
           />
           {narrate && narrationStatus && (
-            <VoiceModelRow
-              status={narrationStatus}
-              recording={recording}
-              onDownload={downloadNarrationModel}
-            />
+            <VoiceModelRow status={narrationStatus} />
           )}
           {sensitive && (
             <SensitiveModelRow
@@ -757,19 +749,7 @@ function Row({
   );
 }
 
-function VoiceModelRow({
-  status,
-  recording,
-  onDownload,
-}: {
-  status: NarrationStatus;
-  recording: boolean;
-  onDownload: () => void;
-}) {
-  if (status.phase === "downloading") {
-    const progress = status.progress == null ? "downloading" : `${status.progress}%`;
-    return <Row label="voice transcription" status="warn" note={progress} />;
-  }
+function VoiceModelRow({ status }: { status: NarrationStatus }) {
   if (status.phase === "loading") {
     return <Row label="voice transcription" status="warn" note="preparing" />;
   }
@@ -779,17 +759,8 @@ function VoiceModelRow({
   return (
     <Row
       label="voice transcription"
-      status="warn"
-      note={
-        status.model === "error"
-          ? "download failed"
-          : `${NARRATION_MODEL_DOWNLOAD_LABEL} · multilingual`
-      }
-      action={{
-        label: status.model === "error" ? "retry" : "download",
-        disabled: recording,
-        onClick: onDownload,
-      }}
+      status="bad"
+      note="bundled model missing · reinstall the app"
     />
   );
 }
