@@ -64,6 +64,18 @@ export async function blurRect(img: Decoded, rect: Rect): Promise<Decoded> {
   return { data: out, width: img.width, height: img.height };
 }
 
+/**
+ * Pixelate a rectangle of a finished PNG and return the new PNG. Pixels outside the rectangle keep
+ * their exact values. `rect` is in the PNG's own pixels. Returns the input unchanged when the
+ * rectangle does not touch the image.
+ */
+export async function blurPng(png: Uint8Array, rect: Rect): Promise<Uint8Array> {
+  const img = await decode(png);
+  if (!clampRect(rect, img.width, img.height)) return png;
+  const blurred = await blurRect(img, rect);
+  return renderFull(blurred, { width: img.width, height: img.height });
+}
+
 export async function renderFull(
   img: Decoded,
   size: { width: number; height: number },

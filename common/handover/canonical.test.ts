@@ -65,7 +65,12 @@ test("edits: parse, validate, and fail closed on unknown or unsupported operatio
   assert.throws(() => assertEdit({ op: "delete_step", edit_id: "e", at: "t" }), /needs step_id/);
   assert.throws(() => assertEdit({ op: "blur_rect", edit_id: "e", at: "t", step_id: "S01", rect_fpx: [1, 2] }), /rect_fpx/);
   const blur = assertEdit({ op: "blur_rect", edit_id: "e", at: "t", step_id: "S01", rect_fpx: [1, 2, 3, 4] });
-  assert.throws(() => assertEditsApplicable([blur]), UnsupportedEditError);
+  assert.doesNotThrow(() => assertEditsApplicable([blur])); // blur_rect is applied by the builder
+  assert.throws(() => assertEdit({ op: "blur_rect", edit_id: "e", at: "t", step_id: "S01", rect_fpx: [1, 2, 0, 4] }), /positive size/);
+  assert.throws(
+    () => assertEditsApplicable([{ edit_id: "e", at: "t", op: "crop_everything" } as unknown as ReturnType<typeof assertEdit>]),
+    UnsupportedEditError,
+  );
   assert.doesNotThrow(() => assertEditsApplicable([assertEdit({ op: "delete_step", edit_id: "e", at: "t", step_id: "S01" })]));
 });
 

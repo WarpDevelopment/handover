@@ -376,10 +376,8 @@ test("deleting the last step leaves no after frame: a frame taken after the dele
   assert.ok(![...files.keys()].some((p) => p.includes("_after_")));
 });
 
-test("edits: blur_rect and unknown edit types fail closed", async () => {
+test("edits: unknown edit types fail closed, and an edit for an unknown step is an error", async () => {
   const { session } = await load();
-  const blur = { edit_id: "e1", at: "t", op: "blur_rect", step_id: "S02", rect_fpx: [0, 0, 10, 10] } as Edit;
-  await assert.rejects(() => buildPackage(session, [blur], CTX), UnsupportedEditError);
   const unknown = { edit_id: "e2", at: "t", op: "crop_everything" } as unknown as Edit;
   await assert.rejects(() => buildPackage(session, [unknown], CTX), UnsupportedEditError);
   await assert.rejects(

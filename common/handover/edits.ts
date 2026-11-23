@@ -16,8 +16,13 @@ export class UnsupportedEditError extends Error {
   }
 }
 
-/** Operations this build applies. `blur_rect` is defined but fails closed (L4 implements it). */
-export const APPLIED_EDIT_OPS: readonly string[] = ["delete_step", "edit_summary", "edit_comment"];
+/** Operations this build applies. Anything else fails closed. */
+export const APPLIED_EDIT_OPS: readonly string[] = [
+  "delete_step",
+  "edit_summary",
+  "edit_comment",
+  "blur_rect",
+];
 
 /** Parse `edits.jsonl`. Throws on a malformed line or an unknown operation. */
 export function parseEdits(jsonl: string): Edit[] {
@@ -68,9 +73,10 @@ export function assertEdit(raw: unknown): Edit {
         !isString(e.step_id) ||
         !Array.isArray(r) ||
         r.length !== 4 ||
-        !r.every((n) => typeof n === "number" && Number.isFinite(n))
+        !r.every((n) => typeof n === "number" && Number.isFinite(n)) ||
+        !((r[2] as number) > 0 && (r[3] as number) > 0)
       ) {
-        throw new Error("blur_rect needs step_id and rect_fpx [x,y,w,h]");
+        throw new Error("blur_rect needs step_id and rect_fpx [x,y,w,h] with a positive size");
       }
       break;
     }
@@ -80,7 +86,6 @@ export function assertEdit(raw: unknown): Edit {
 
 /**
  * Throws {@link UnsupportedEditError} when any edit is one this build cannot apply.
- * TODO(L4): implement `blur_rect` in build-package.ts and remove it from the refusal.
  */
 export function assertEditsApplicable(edits: readonly Edit[]): void {
   for (const edit of edits) {

@@ -18,14 +18,16 @@ import {
   estTokens,
   expectedFrameScale,
   fitFullImage,
+  fpxToCrop,
   globalToDpx,
   planCrop,
   selectBeforeFrame,
   type DisplayInfo,
   type Rect,
 } from "./geometry";
+import { renderAnnotated, type RenderableHighlight } from "./annotation-render";
 import { renderHandoffMd } from "./handoff-md";
-import { blurRect, decode, renderCrop, renderFull } from "./images";
+import { blurPng, blurRect, clampRect, decode, renderCrop, renderFull } from "./images";
 import { renderProcessMd } from "./process-md";
 import { buildSteps, groundingOf, layoutAt, type StepDraft } from "./steps";
 import {
@@ -173,11 +175,70 @@ function eventsOfType(events: readonly RecEvent[], type: string): RecEvent[] {
   return events.filter((e) => e.type === type).sort((a, b) => a.t - b.t || a.seq - b.seq);
 }
 
+/** The times between `explain.start` and `explain.end`; an unclosed freeze runs to session end. */
+export function explainIntervals(
+  events: readonly RecEvent[],
+  durationMs = Infinity,
+): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  let open: { start: number; end: number } | null = null;
+  for (const ev of [...events].sort((a, b) => a.t - b.t || a.seq - b.seq)) {
+    if (ev.type === "explain.start") {
+      if (!open) {
+        open = { start: ev.t, end: durationMs };
+        out.push(open);
+      }
+    } else if (ev.type === "explain.end" && open) {
+      open.end = Math.max(open.start, ev.t);
+      open = null;
+    }
+  }
+  return out;
+}
+
+/** Event types the collectors produce. None of them can be a real user action while the screen is frozen. */
+const FROZEN_DROPPED_TYPES: ReadonlySet<string> = new Set([
+  "pointer.click",
+  "app.activate",
+  "app.title-change",
+  "browser.url",
+]);
+
+/**
+ * Events with the collector events that fall inside a freeze removed. Clicks on the overlay are on
+ * Handover's own windows and must never become steps, and the overlay taking focus is not an app
+ * switch by the user. The interval is half-open: `[explain.start, explain.end)`.
+ */
+export function withoutFrozenCollectorEvents(
+  events: readonly RecEvent[],
+  durationMs = Infinity,
+): RecEvent[] {
+  const intervals = explainIntervals(events, durationMs);
+  if (intervals.length === 0) return [...events];
+  return events.filter(
+    (e) => !(FROZEN_DROPPED_TYPES.has(e.type) && intervals.some((i) => e.t >= i.start && e.t < i.end)),
+  );
+}
+
+export interface BuiltPackage {
+  files: PackageBytes;
+  /** Pre-edit id (`S01…`) of each step in the output, in output order (`S01` is index 0). */
+  stepIds: string[];
+}
+
 export async function buildPackage(
   session: SessionInput,
   edits: readonly Edit[],
   ctx: BuildContext,
 ): Promise<PackageBytes> {
+  return (await buildPackageDetailed(session, edits, ctx)).files;
+}
+
+export async function buildPackageDetailed(
+  session: SessionInput,
+  edits: readonly Edit[],
+  ctx: BuildContext,
+): Promise<BuiltPackage> {
   // Fail closed first: never export while ignoring an edit this build cannot apply.
   assertEditsApplicable(edits);
 
@@ -233,7 +294,8 @@ export async function buildPackage(
   };
 
   // --- Steps (pre-edit ids) ---
-  const drafts = buildSteps(events, clickToDpx);
+  const freezes = explainIntervals(events, durationMs);
+  const drafts = buildSteps(withoutFrozenCollectorEvents(events, durationMs), clickToDpx);
   const draftSteps: DraftStep[] = drafts.map((draft, i) => {
     const layout = layoutAt(layouts, draft.tMs);
     let display: DisplayInfo | undefined;
@@ -260,9 +322,13 @@ export async function buildPackage(
   });
 
   // --- Annotations (pre-edit step ids) ---
+  // A highlight or comment made during a freeze attaches to the last step before the freeze, or to
+  // the first step after it when there is none before (tester-package.md §4.4).
   const attachStep = (tMs: number): string | undefined => {
+    const freeze = freezes.find((f) => tMs >= f.start && tMs <= f.end);
+    const at = freeze ? freeze.start : tMs;
     let before: DraftStep | undefined;
-    for (const s of draftSteps) if (s.draft.tMs <= tMs) before = s;
+    for (const s of draftSteps) if (s.draft.tMs <= at) before = s;
     return (before ?? draftSteps[0])?.id;
   };
 
@@ -353,12 +419,19 @@ export async function buildPackage(
   const deleted = new Set<string>();
   const summaryEdits = new Map<string, string>();
   const commentEdits = new Map<string, string>();
+  /** User blur rectangles per pre-edit step id, in full-image px (`rect_fpx`). */
+  const blurEdits = new Map<string, Rect[]>();
   for (const e of edits) {
     if (e.op === "delete_step") deleted.add(e.step_id);
     else if (e.op === "edit_summary") summaryEdits.set(e.step_id, e.text);
     else if (e.op === "edit_comment") commentEdits.set(e.annotation_id, e.text);
+    else if (e.op === "blur_rect") {
+      const list = blurEdits.get(e.step_id) ?? [];
+      list.push([...e.rect_fpx] as Rect);
+      blurEdits.set(e.step_id, list);
+    }
   }
-  for (const id of [...deleted, ...summaryEdits.keys()]) {
+  for (const id of [...deleted, ...summaryEdits.keys(), ...blurEdits.keys()]) {
     if (!draftSteps.some((s) => s.id === id)) {
       throw new Error(`Edit refers to unknown step ${id}`);
     }
@@ -383,6 +456,8 @@ export async function buildPackage(
       .map((s) => ({ shot: s, t: s.epoch - baseEpoch }));
 
   let frameCounter = 0;
+  /** Finished before-full image bytes per output step id, for drawing the annotated image later. */
+  const fullPngs = new Map<string, Uint8Array>();
   const stepRecords: StepRecord[] = [];
   for (const [idx, ds] of kept.entries()) {
     const stepId = renumber.get(ds.id) as string;
@@ -440,7 +515,19 @@ export async function buildPackage(
 
         frameCounter++;
         const fullPath = `media/${stepId}_before_full.png`;
-        put(fullPath, await renderFull(img, full));
+        // The user's blur rectangles (review edits) are in full-image px. They are burned into the
+        // finished full image, so every pixel outside a rectangle is exactly the unedited pixel.
+        const userRects = (blurEdits.get(ds.id) ?? [])
+          .map((r) => clampRect(r, full.width, full.height))
+          .filter((r): r is Rect => r !== null);
+        if ((blurEdits.get(ds.id) ?? []).length > userRects.length) {
+          throw new Error(`Blur on step ${ds.id} lies outside its image; refusing to export it unblurred.`);
+        }
+        let fullBytes = await renderFull(img, full);
+        for (const r of userRects) fullBytes = await blurPng(fullBytes, r);
+        for (const r of userRects) regionsFpx.push(r.map(round2) as Rect);
+        put(fullPath, fullBytes);
+        fullPngs.set(stepId, fullBytes);
         let crop: FrameRecord["crop"];
         if (click && pointDpx) {
           const centre: [number, number] = elementDpx
@@ -454,7 +541,19 @@ export async function buildPackage(
             centreDpx: centre,
           });
           const cropPath = `media/${stepId}_before_crop.png`;
-          put(cropPath, await renderCrop(img, plan.rectFrame, plan.out));
+          let cropBytes = await renderCrop(img, plan.rectFrame, plan.out);
+          for (const r of userRects) {
+            // Map the rectangle into the crop, rounding outwards so it never covers less.
+            const a = fpxToCrop(plan.originFpx, plan.cropScale, r[0], r[1]);
+            const b = fpxToCrop(plan.originFpx, plan.cropScale, r[0] + r[2], r[1] + r[3]);
+            cropBytes = await blurPng(cropBytes, [
+              Math.floor(a[0]),
+              Math.floor(a[1]),
+              Math.ceil(b[0]) - Math.floor(a[0]),
+              Math.ceil(b[1]) - Math.floor(a[1]),
+            ]);
+          }
+          put(cropPath, cropBytes);
           crop = {
             path: cropPath,
             width: plan.out.width,
@@ -628,7 +727,14 @@ export async function buildPackage(
       const scale = full.width / lastDs.display.sizeDpx[0];
       frameCounter++;
       const path = `media/${lastRec.step_id}_after_full.png`;
-      put(path, await renderFull(img, full));
+      // The after frame is the same screen a moment later, so the user's blur on this step also
+      // covers it; otherwise a blurred value would show through in the after image.
+      const afterRects = (blurEdits.get(lastDs.id) ?? [])
+        .map((r) => clampRect(r, full.width, full.height))
+        .filter((r): r is Rect => r !== null);
+      let afterBytes = await renderFull(img, full);
+      for (const r of afterRects) afterBytes = await blurPng(afterBytes, r);
+      put(path, afterBytes);
       lastRec.after = {
         frame_id: `frm_${pad(frameCounter, 4)}`,
         t_ms: Math.round(pick.t),
@@ -641,7 +747,7 @@ export async function buildPackage(
           height: full.height,
           est_tokens: estTokens(full.width, full.height),
         },
-        redacted_regions_fpx: [],
+        redacted_regions_fpx: afterRects.map((r) => r.map(round2) as Rect),
       };
     }
   }
@@ -649,6 +755,8 @@ export async function buildPackage(
   // --- Finish annotations ---
   const stepById = new Map(stepRecords.map((s) => [s.step_id, s]));
   const annotations: AnnotationRecord[] = [];
+  const drawable = new Set<string>();
+  let markOut = 0;
   for (const p of pending) {
     const rec = p.record;
     const hadSteps = rec.step_ids.length > 0;
@@ -687,13 +795,17 @@ export async function buildPackage(
           bounds_fpx: [round2(o[0]), round2(o[1]), round2(b.width * scale), round2(b.height * scale)],
         };
       }
+      // Marks are numbered again here so deleting a step leaves no hole (H1, H2…).
       annotations.push({
         ...rec,
         step_ids: stepIds,
+        mark: `H${++markOut}`,
         frame_id: before.frame_id,
         geometry_fpx: geometry,
         ...(snapped ? { snapped_to: snapped } : {}),
       });
+      // Only a highlight drawn on this step's own display can be drawn into its image.
+      if (sameDisplay) drawable.add(rec.annotation_id);
     } else {
       annotations.push({ ...rec, step_ids: stepIds });
     }
@@ -702,6 +814,21 @@ export async function buildPackage(
     for (const sid of a.step_ids) stepById.get(sid)?.annotation_ids.push(a.annotation_id);
   }
   for (const s of stepRecords) s.annotation_ids.sort();
+
+  // Highlights are drawn only into `*_full_annotated.png`, on top of the (already blurred) full image.
+  for (const s of stepRecords) {
+    const marks: RenderableHighlight[] = [];
+    for (const a of annotations) {
+      if (a.kind === "highlight" && a.step_ids[0] === s.step_id && drawable.has(a.annotation_id)) {
+        marks.push({ mark: a.mark, shape: a.shape, geometry_fpx: a.geometry_fpx });
+      }
+    }
+    const fullBytes = fullPngs.get(s.step_id);
+    if (marks.length === 0 || !s.before || !fullBytes) continue;
+    const annotatedPath = `media/${s.step_id}_before_full_annotated.png`;
+    put(annotatedPath, await renderAnnotated(fullBytes, marks));
+    s.before.full_annotated = { ...s.before.full, path: annotatedPath };
+  }
 
   // A comment attached to a step becomes its `why` (the first typed or review comment).
   for (const s of stepRecords) {
@@ -821,5 +948,5 @@ export async function buildPackage(
     files: fileEntries,
   };
   put("manifest.json", canonicalJson(manifest));
-  return files;
+  return { files, stepIds: kept.map((s) => s.id) };
 }

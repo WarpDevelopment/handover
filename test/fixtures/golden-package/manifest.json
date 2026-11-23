@@ -53,9 +53,9 @@
       "sha256": "228ec11b01e91da86de6e39b4bb968d50b52a3ea57aa4c49e3e808dd57bceb9e"
     },
     {
-      "bytes": 1900,
+      "bytes": 1937,
       "path": "PROCESS.md",
-      "sha256": "74dab814c27f45a6634b2b9f7c94e4414fbd27dfe7aab0840ffb823e1dde6c0f"
+      "sha256": "6559b26e70d322c2291a2709b81a1d5528fc16bf1705acc3bb0a04bfa6d69158"
     },
     {
       "bytes": 135,
@@ -99,6 +99,11 @@
     },
     {
       "bytes": 0,
+      "path": "media/S03_before_full_annotated.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
       "path": "media/S04_before_full.png",
       "sha256": "<png>"
     },
@@ -128,16 +133,16 @@
       "sha256": "<png>"
     },
     {
-      "bytes": 7766,
+      "bytes": 7874,
       "path": "steps.jsonl",
-      "sha256": "ff76db46c2b2d9d9414b073c5a57e064f1a9e9ba317954baa16d9c25027f4249"
+      "sha256": "e451a52865ffca51d08dd422f6f5d62aa84a56a48ca0d6dfda98322a6982cf08"
     }
   ],
   "format": "handover-package",
   "media": {
     "audio_included": false,
     "format": "png",
-    "image_count": 11,
+    "image_count": 12,
     "image_profile": "standard",
     "video_included": false
   },

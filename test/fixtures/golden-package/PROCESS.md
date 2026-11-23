@@ -17,7 +17,7 @@
 **S03. Double-click at (400, 300) in Microsoft Excel** (H1) `[observed]` · evidence T0 (timeout)
 - Where: Microsoft Excel › point 193,145 in media/S03_before_full.png (pixels only)
 - Why: Always save before closing the file `[user, ann_0002]`
-- Images: media/S03_before_full.png, media/S03_before_crop.png
+- Images: media/S03_before_full.png, media/S03_before_full_annotated.png, media/S03_before_crop.png
 
 **S04. Switch to Google Chrome** `[observed]` · evidence context
 - Where: Google Chrome › mail.example.com/inbox (app switch)
