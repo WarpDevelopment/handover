@@ -66,6 +66,7 @@ Last code commit `309846f` (the evidence text before this one):
 - Windows x64: https://github.com/WarpDevelopment/handover/actions/runs/45224940048, success, artifact `handover-windows-x64` (499.7 MB, uploaded).
 - macOS: https://github.com/WarpDevelopment/handover/actions/runs/45224940092, success, artifact `handover-macos-arm64` (510.3 MB).
 - Earlier history: the first Windows run failed on a CRLF checkout of the golden files (fixed by `.gitattributes`), and the run for `5edb0fe` failed on the handoff test reading the spec with CRLF (fixed in `b1b4b0d`). Both fixed runs are green (`45224588165` Windows, `45224588236` macOS).
+- Code commit `6d831a9` (L5 integration items): Windows https://github.com/WarpDevelopment/handover/actions/runs/45227427461 and macOS https://github.com/WarpDevelopment/handover/actions/runs/45227427640, both success.
 - The commit that adds these URLs is docs only; its own runs are listed on the branch page and reported in the `hc send` message.
 
 ## Left unproven or open
