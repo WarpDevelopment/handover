@@ -288,6 +288,15 @@ test("edits: delete renumbers ids and drops its annotations; edit_summary and ed
   }
 });
 
+test("deleting the last step leaves no after frame: a frame taken after the deleted action is not 'about 500 ms after' the new last step", async () => {
+  const { session } = await load();
+  const files = await buildPackage(session, [{ edit_id: "e1", at: "t", op: "delete_step", step_id: "S06" }], CTX);
+  const s = steps(files);
+  assert.equal(s.length, 5);
+  assert.equal(s[4].after, undefined);
+  assert.ok(![...files.keys()].some((p) => p.includes("_after_")));
+});
+
 test("edits: blur_rect and unknown edit types fail closed", async () => {
   const { session } = await load();
   const blur = { edit_id: "e1", at: "t", op: "blur_rect", step_id: "S02", rect_fpx: [0, 0, 10, 10] } as Edit;

@@ -49,6 +49,7 @@ const pad = (n: number, w: number): string => String(n).padStart(w, "0");
 const text = (t: string): TextObj => ({ text: t, redacted: false, classes: [] });
 const BEFORE_LEAD_MS = 50;
 const AFTER_DELAY_MS = 500;
+const AFTER_MAX_MS = 2000;
 const PASSWORD_PAD_FRAME_PX = 4;
 
 export function packageFolderName(title: string, packageId: string): string {
@@ -563,7 +564,9 @@ export async function buildPackage(
     const want = lastDs.draft.tMs + AFTER_DELAY_MS;
     let pick: Candidate | undefined;
     for (const c of afterCands) {
-      if (c.t < lastDs.draft.tMs) continue;
+      // About 500 ms after the action: a frame much later shows something else (for example when
+      // the real last step was deleted in review), so it is not used.
+      if (c.t < lastDs.draft.tMs || c.t - lastDs.draft.tMs > AFTER_MAX_MS) continue;
       if (!pick || Math.abs(c.t - want) < Math.abs(pick.t - want)) pick = c;
     }
     const bytes = pick && session.files.get(pick.shot.file);
