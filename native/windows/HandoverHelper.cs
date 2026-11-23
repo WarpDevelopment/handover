@@ -65,6 +65,7 @@ namespace Handover
 
             if (selftest) return SelfTest(elevated);
 
+            Lookup.Warmup();
             ClickHook hook = new ClickHook();
             bool hookOk = hook.Start();
             Emit("{\"type\":\"capabilities\",\"hook\":" + Json.Bool(hookOk)
@@ -111,6 +112,12 @@ namespace Handover
             StringBuilder sb = new StringBuilder();
             sb.Append("{\"type\":\"selftest\",\"interactive\":").Append(Json.Bool(Environment.UserInteractive));
             sb.Append(",\"hookInstalled\":").Append(Json.Bool(hookOk));
+            // Cold call first, with a generous budget, to show UIA works at all; then the warm call a click
+            // would make, with the real 300 ms budget.
+            Stopwatch cold = Stopwatch.StartNew();
+            LookupResult coldResult = Lookup.Run(10, 10, true, 10000);
+            sb.Append(",\"coldFromPointMs\":").Append(cold.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
+            sb.Append(",\"coldFromPoint\":\"").Append(coldResult.TargetJson != null ? "found" : (coldResult.Reason ?? "none")).Append("\"");
             Stopwatch sw = Stopwatch.StartNew();
             LookupResult r = Lookup.Run(10, 10, true);
             sb.Append(",\"fromPointMs\":").Append(sw.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
@@ -276,6 +283,22 @@ namespace Handover
         /// <summary>Resolve the control at (x, y) with a hard 300 ms budget.</summary>
         public static LookupResult Run(int x, int y, bool allowLookup)
         {
+            return Run(x, y, allowLookup, Program.LookupTimeoutMs);
+        }
+
+        /// <summary>
+        /// The first UIA call in a process loads providers and can take well over 300 ms (measured 302 ms
+        /// and a timeout on the CI runner). Warm it up in the background so the first real click is not lost.
+        /// </summary>
+        public static void Warmup()
+        {
+            Thread t = new Thread(delegate () { try { Run(10, 10, true, 5000); } catch { } });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        public static LookupResult Run(int x, int y, bool allowLookup, int timeoutMs)
+        {
             if (!allowLookup) return new LookupResult { Reason = "timeout" };
             if (Thread.VolatileRead(ref stuck) >= 4) return new LookupResult { Reason = "timeout" };
 
@@ -294,7 +317,7 @@ namespace Handover
             t.SetApartmentState(ApartmentState.MTA);
             Interlocked.Increment(ref stuck);
             t.Start();
-            if (!t.Join(Program.LookupTimeoutMs)) return new LookupResult { Reason = "timeout" };
+            if (!t.Join(timeoutMs)) return new LookupResult { Reason = "timeout" };
             return holder.Result ?? new LookupResult { Reason = "opaque_toolkit" };
         }
 
