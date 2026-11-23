@@ -8,6 +8,7 @@ import type {
   DoctorReport,
   DoctorSource,
 } from "../common/ipc";
+import { helperTracker } from "./collectors/helper-status";
 import { browserUrlProviderKind } from "./collectors/url-provider";
 import { sessionsRoot } from "./recorder/session-store";
 
@@ -61,5 +62,6 @@ export function runDoctor(): DoctorReport {
     browserUrl,
     sessionsDir: sessionsRoot(),
     activeSources,
+    helper: helperTracker.report(),
   };
 }
