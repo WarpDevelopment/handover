@@ -53,9 +53,9 @@
       "sha256": "228ec11b01e91da86de6e39b4bb968d50b52a3ea57aa4c49e3e808dd57bceb9e"
     },
     {
-      "bytes": 1937,
+      "bytes": 2133,
       "path": "PROCESS.md",
-      "sha256": "6559b26e70d322c2291a2709b81a1d5528fc16bf1705acc3bb0a04bfa6d69158"
+      "sha256": "30df0e7510766d4697fbb748f5918f1b390be5db58dae6d5ef4e71ff024ee6e4"
     },
     {
       "bytes": 135,
@@ -65,12 +65,12 @@
     {
       "bytes": 628,
       "path": "annotations.jsonl",
-      "sha256": "20e377d7ce9f65f0dffed9b2a88804e54a3cf47a3269ad4861ac62f144a9075e"
+      "sha256": "e6e1bdc70dfc67b74ee7680d09e3e44e26b81ed20a4fbdd71a635daa70a03cfd"
     },
     {
       "bytes": 120,
       "path": "gaps.jsonl",
-      "sha256": "e5e8254d432caea73d338caa05f015386211959b13940628bfbcaff6988762df"
+      "sha256": "b4184b8c4774668cc683697d96d82a1f21f7ec328eadb252ac07e0aee7a3d7d9"
     },
     {
       "bytes": 0,
@@ -99,27 +99,17 @@
     },
     {
       "bytes": 0,
-      "path": "media/S03_before_full_annotated.png",
-      "sha256": "<png>"
-    },
-    {
-      "bytes": 0,
       "path": "media/S04_before_full.png",
       "sha256": "<png>"
     },
     {
       "bytes": 0,
-      "path": "media/S05_before_crop.png",
+      "path": "media/S04_before_full_annotated.png",
       "sha256": "<png>"
     },
     {
       "bytes": 0,
       "path": "media/S05_before_full.png",
-      "sha256": "<png>"
-    },
-    {
-      "bytes": 0,
-      "path": "media/S06_after_full.png",
       "sha256": "<png>"
     },
     {
@@ -133,16 +123,31 @@
       "sha256": "<png>"
     },
     {
-      "bytes": 7874,
+      "bytes": 0,
+      "path": "media/S07_after_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S07_before_crop.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S07_before_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 8707,
       "path": "steps.jsonl",
-      "sha256": "e451a52865ffca51d08dd422f6f5d62aa84a56a48ca0d6dfda98322a6982cf08"
+      "sha256": "7c80b640bbb274c3434d1eadf28b6f3335c420b34e086509d9566485a6d90f4c"
     }
   ],
   "format": "handover-package",
   "media": {
     "audio_included": false,
     "format": "png",
-    "image_count": 12,
+    "image_count": 13,
     "image_profile": "standard",
     "video_included": false
   },
@@ -175,7 +180,7 @@
     "explain_ms": 3000,
     "paused_ms": 2000,
     "started_at": "2026-11-24T08:00:00+02:00",
-    "step_count": 6,
+    "step_count": 7,
     "task_ms": 15000,
     "timezone": "Africa/Johannesburg"
   },
