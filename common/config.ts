@@ -25,14 +25,18 @@ export interface CaptureConfig {
 
 export type CaptureSourceKey = keyof CaptureConfig;
 
-/** The recorder always captures everything. */
+/**
+ * The tester-build capture set. `browserUrls` is off so the PowerShell/AppleScript
+ * URL readers never start; `terminal` is off and its button is hidden. The export
+ * name is kept because the doctor and main import it.
+ */
 export const FULL_CAPTURE: CaptureConfig = {
   appActivity: true,
   clipboard: true,
   windowTitles: true,
-  browserUrls: true,
+  browserUrls: false,
   video: true,
-  terminal: true,
+  terminal: false,
 };
 
 export interface CaptureSourceInfo {

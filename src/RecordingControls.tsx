@@ -9,6 +9,7 @@ import {
   DEFAULT_NARRATION_LANGUAGE,
   narrationLanguageLabel,
 } from "../common/narration";
+import { FULL_CAPTURE } from "../common/config";
 import { formatMs } from "./format";
 
 export function RecordingControls() {
@@ -448,6 +449,7 @@ export function RecordingControls() {
             </button>
           </div>
 
+          {FULL_CAPTURE.terminal && (
           <button
             className={`recording-terminal ${
               terminalStatus?.state !== "closed" ? "active" : ""
@@ -472,6 +474,7 @@ export function RecordingControls() {
               />
             )}
           </button>
+          )}
 
           <button
             className="recording-discard"
