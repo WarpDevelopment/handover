@@ -49,14 +49,14 @@ test("dispose releases the events stream without hanging", async () => {
 });
 
 async function withSessionsRoot(run: () => Promise<void>): Promise<void> {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-store-"));
-  const previous = process.env.SKILL_RECORDER_SESSIONS_DIR;
-  process.env.SKILL_RECORDER_SESSIONS_DIR = root;
+  const root = await mkdtemp(path.join(tmpdir(), "handover-store-"));
+  const previous = process.env.HANDOVER_SESSIONS_DIR;
+  process.env.HANDOVER_SESSIONS_DIR = root;
   try {
     await run();
   } finally {
-    if (previous === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previous;
+    if (previous === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
+    else process.env.HANDOVER_SESSIONS_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
 }

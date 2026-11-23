@@ -17,10 +17,8 @@ import type {
 } from "../common/terminal";
 import { createCollectors } from "./collectors";
 import { installCrashGuards } from "./crash-guards";
-import { Describer } from "./describer/describer";
 import { processSession } from "./pipeline";
 import { registerIpc } from "./ipc";
-import { ImportManager } from "./imports/manager";
 import { isValidSessionId } from "./recorder/session-store";
 import { createLogger } from "./logger";
 import { NarrationManager } from "./narration/manager";
@@ -29,8 +27,6 @@ import { RecorderController } from "./recorder/controller";
 import { RecordingPrivacySession } from "./recording-privacy";
 import { deleteSession } from "./sessions";
 import { registerSingleInstance } from "./single-instance";
-import { SkillBuilder } from "./skillbuilder/builder";
-import { AutomationBuilder } from "./automationbuilder/builder";
 import { createTray } from "./tray";
 import { dockIcon } from "./icons";
 import { AudioRecorder } from "./audio/recorder";
@@ -81,7 +77,6 @@ let quitReady = false;
 let quitTask: Promise<void> | null = null;
 let recordingStartPending = false;
 let pendingLibrarySelection: string | null = null;
-const imports = new ImportManager();
 const recordingPrivacy = new RecordingPrivacySession();
 const narration = new NarrationManager((status) =>
   broadcast(IPC.narrationStatusChanged, status),
@@ -162,12 +157,6 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
-const describer = new Describer((progress) => broadcast(IPC.analyzeProgress, progress));
-const builder = new SkillBuilder((progress) => broadcast(IPC.skillProgress, progress));
-const automationBuilder = new AutomationBuilder((progress) =>
-  broadcast(IPC.automationProgress, progress),
-);
-
 /** Open, focus, and re-dock the Sessions library window (creating it lazily). */
 function openLibrary(sessionId?: string): void {
   if (recorder.state === "recording") return;
@@ -189,10 +178,6 @@ function openLibrary(sessionId?: string): void {
       recorderWindow.setBounds(recorderHome);
     }
     recorderHome = null;
-    // Drop idle agent conversations now that the library is gone.
-    void describer.evictIdle();
-    void builder.evictIdle();
-    void automationBuilder.evictIdle();
   });
 }
 
@@ -397,9 +382,6 @@ app.whenReady().then(async () => {
   }
   registerIpc(
     recorder,
-    describer,
-    builder,
-    automationBuilder,
     narration,
     microphones,
     screens,
@@ -411,7 +393,6 @@ app.whenReady().then(async () => {
         controls && !controls.isDestroyed() && sender === controls.webContents,
       );
     },
-    imports,
   );
   sensitiveModels.initialize();
   ipcMain.handle(IPC.start, () => requestStartRecording());
@@ -585,18 +566,16 @@ app.on("before-quit", (event) => {
         cancelId: 0,
         message: "A terminal command is still running.",
         detail: terminal.command
-          ? `Closing Skill Recorder will interrupt: ${terminal.command}`
-          : "Closing Skill Recorder will interrupt the active terminal session.",
+          ? `Closing Handover will interrupt: ${terminal.command}`
+          : "Closing Handover will interrupt the active terminal session.",
       });
       if (response === 0) return;
     }
     recorder.beginShutdown();
-    imports.dispose();
     // stop() is serialized behind any start/mic/discard operation already in
     // flight, and is a harmless "Not recording" result when the app is idle.
     await recorder.stop(terminal.busy);
     await recorder.whenProcessed();
-    await imports.whenIdle();
     quitReady = true;
     app.quit();
   })()
@@ -612,10 +591,6 @@ app.on("before-quit", (event) => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
-  void describer.dispose();
-  imports.dispose();
-  void builder.dispose();
-  void automationBuilder.dispose();
   microphones.dispose();
   void sensitiveModels.dispose();
 });

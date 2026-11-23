@@ -1,8 +1,7 @@
-// A Node module-resolution hook that lets the eval harness run the app's
+// A Node module-resolution hook that lets the unit tests run the app's
 // TypeScript source directly (no bundler), by:
 //   1. redirecting the lone `electron` dependency to a headless stub, and
-//   2. redirecting Vite-only catalogue discovery to a Node filesystem adapter, and
-//   3. resolving extensionless relative/absolute imports to their `.ts` file
+//   2. resolving extensionless relative imports to their `.ts` file
 //      (the project is authored Vite-style, without extensions).
 // Node itself strips/transforms the TypeScript (run with
 // `--experimental-transform-types`). Registered via register.mjs.
@@ -12,16 +11,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ELECTRON_STUB = pathToFileURL(path.join(here, "electron-stub.mjs")).href;
-const CATALOGUE_REGISTRY = path.resolve(
-  here,
-  "..",
-  "electron",
-  "architectures",
-  "catalogue-registry.ts",
-);
-const EVAL_CATALOGUE_REGISTRY = pathToFileURL(
-  path.join(here, "lib", "catalogue-registry.ts"),
-).href;
 
 export async function resolve(specifier, context, next) {
   if (specifier === "electron") {
@@ -33,13 +22,7 @@ export async function resolve(specifier, context, next) {
     const base = path.resolve(path.dirname(fileURLToPath(context.parentURL)), specifier);
     for (const candidate of [`${base}.ts`, path.join(base, "index.ts")]) {
       if (existsSync(candidate)) {
-        return {
-          url:
-            candidate === CATALOGUE_REGISTRY
-              ? EVAL_CATALOGUE_REGISTRY
-              : pathToFileURL(candidate).href,
-          shortCircuit: true,
-        };
+        return { url: pathToFileURL(candidate).href, shortCircuit: true };
       }
     }
   }

@@ -8,13 +8,11 @@ import test from "node:test";
 import AdmZip from "adm-zip";
 
 import { writeDebugBundle } from "./debug-bundle";
-import { AiProviderStore } from "./ai-provider-store";
-import { parseByomConfig } from "../common/ai-provider";
 
 test("writeDebugBundle zips the whole session under session/ next to debug-info.json", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-debug-"));
-  const previousRoot = process.env.SKILL_RECORDER_SESSIONS_DIR;
-  process.env.SKILL_RECORDER_SESSIONS_DIR = root;
+  const root = await mkdtemp(path.join(tmpdir(), "handover-debug-"));
+  const previousRoot = process.env.HANDOVER_SESSIONS_DIR;
+  process.env.HANDOVER_SESSIONS_DIR = root;
 
   try {
     const id = "debug-test";
@@ -46,8 +44,8 @@ test("writeDebugBundle zips the whole session under session/ next to debug-info.
       "includes nested session artifacts (frames, etc.)",
     );
   } finally {
-    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
+    if (previousRoot === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
+    else process.env.HANDOVER_SESSIONS_DIR = previousRoot;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -59,33 +57,25 @@ test("writeDebugBundle refuses a traversal session id", async () => {
   );
 });
 
-test("debug export excludes app-level provider credentials and runtime state", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-debug-key-"));
-  const previousRoot = process.env.SKILL_RECORDER_SESSIONS_DIR;
+test("debug export holds only the session folder and debug-info.json", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "handover-debug-only-"));
+  const previousRoot = process.env.HANDOVER_SESSIONS_DIR;
   const sessions = path.join(root, "sessions");
-  process.env.SKILL_RECORDER_SESSIONS_DIR = sessions;
+  process.env.HANDOVER_SESSIONS_DIR = sessions;
   try {
-    const store = new AiProviderStore(() => path.join(root, "ai-connection.json"), {
-      available: () => true,
-      encrypt: () => Buffer.from("protected-test-credential"),
-      decrypt: () => "test-only-credential",
-    });
-    await store.saveByom(parseByomConfig({
-      provider: "openai", baseUrl: "https://api.openai.com/v1", model: "test-model", wireApi: "responses",
-    }), "test-only-credential");
     await mkdir(path.join(sessions, "test"), { recursive: true });
     await writeFile(path.join(sessions, "test", "session.json"), '{"id":"test"}');
-    await mkdir(path.join(root, "ai-runtime"));
-    await writeFile(path.join(root, "ai-runtime", "test.log"), "private runtime");
+    // Sibling app-level state must never be swept into the bundle.
+    await mkdir(path.join(root, "app-state"));
+    await writeFile(path.join(root, "app-state", "test.log"), "private runtime");
     const dest = path.join(root, "bundle.zip");
     await writeDebugBundle("test", dest, {});
     const entries = new AdmZip(dest).getEntries();
     assert.deepEqual(entries.filter((entry) => !entry.isDirectory).map((entry) => entry.entryName).sort(),
       ["debug-info.json", "session/session.json"]);
-    assert.equal(entries.some((entry) => entry.getData().includes(Buffer.from("credential"))), false);
   } finally {
-    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
+    if (previousRoot === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
+    else process.env.HANDOVER_SESSIONS_DIR = previousRoot;
     await rm(root, { recursive: true, force: true });
   }
 });

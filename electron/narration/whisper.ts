@@ -60,7 +60,7 @@ export function narrationModelId(): string {
 }
 
 export function narrationModelCacheDir(): string {
-  const override = process.env.SKILL_RECORDER_MODELS_DIR;
+  const override = process.env.HANDOVER_MODELS_DIR;
   if (override) return path.resolve(override);
   return path.join(app.getPath("userData"), "models");
 }

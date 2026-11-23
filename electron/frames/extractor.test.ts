@@ -51,7 +51,7 @@ test("sampleCapturedFrames returns the nearest static heartbeat for an empty win
 });
 
 test("FrameExtractor safely reuses one portable source snapshot for multiple events", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-frames-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-frames-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceDir = path.join(root, "video-frames");
   const framesDir = path.join(root, "frames");
@@ -95,7 +95,7 @@ test("FrameExtractor safely reuses one portable source snapshot for multiple eve
 });
 
 test("FrameExtractor drops malformed retained frame records", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-retained-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-retained-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(root, { recursive: true });
   await writeFile(
@@ -117,7 +117,7 @@ test("FrameExtractor drops malformed retained frame records", async (t) => {
 });
 
 test("FrameExtractor deduplicates identical source JPEGs without deleting retained files", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-dedupe-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-dedupe-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceDir = path.join(root, "video-frames");
   const framesDir = path.join(root, "frames");

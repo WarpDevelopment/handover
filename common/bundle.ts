@@ -8,8 +8,7 @@ import type { RecEvent, SessionMeta } from "./types";
  * The compact, self-contained artifact a describer consumes. It is the merge of
  * the (primary) non-video event stream and the (opportunistic) correlated frames,
  * cut into human-meaningful **steps**. Validated with zod so it is a stable
- * contract for both the baseline describer and, later, the Copilot describer and
- * skill-conversion.
+ * contract for the baseline describer and the later step builder.
  */
 
 /** Why a new step began — the boundary rule that fired. */

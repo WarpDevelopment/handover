@@ -30,16 +30,16 @@ export function RecordingControls() {
   const microphoneMenuRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    void window.skillRecorder.status().then(setStatus);
-    void window.skillRecorder.microphoneSettings().then(setMicrophoneSettings);
-    void window.skillRecorder.terminalStatus().then(setTerminalStatus);
-    const offStatus = window.skillRecorder.onStatusChanged(setStatus);
+    void window.handover.status().then(setStatus);
+    void window.handover.microphoneSettings().then(setMicrophoneSettings);
+    void window.handover.terminalStatus().then(setTerminalStatus);
+    const offStatus = window.handover.onStatusChanged(setStatus);
     const offMicrophones =
-      window.skillRecorder.onMicrophoneSettingsChanged(setMicrophoneSettings);
+      window.handover.onMicrophoneSettingsChanged(setMicrophoneSettings);
     const offTerminal =
-      window.skillRecorder.onTerminalStatusChanged(setTerminalStatus);
+      window.handover.onTerminalStatusChanged(setTerminalStatus);
     const offTerminalFinish =
-      window.skillRecorder.onTerminalFinishConfirmationRequested(() => {
+      window.handover.onTerminalFinishConfirmationRequested(() => {
         setConfirmDiscard(false);
         setShowMicrophoneMenu(false);
         setTerminalConfirm("done");
@@ -77,7 +77,7 @@ export function RecordingControls() {
   }, [confirmDiscard, recording, showMicrophoneMenu]);
 
   useEffect(() => {
-    void window.skillRecorder.setRecordingControlsExpanded(
+    void window.handover.setRecordingControlsExpanded(
       confirmDiscard || showMicrophoneMenu || terminalConfirm !== null,
     );
   }, [confirmDiscard, showMicrophoneMenu, terminalConfirm]);
@@ -139,7 +139,7 @@ export function RecordingControls() {
     setMicrophonePending(true);
     setActionError(null);
     const enable = status.microphone.state !== "on";
-    const result = await window.skillRecorder.setMicrophoneEnabled(enable);
+    const result = await window.handover.setMicrophoneEnabled(enable);
     if (!result.ok) setActionError(result.error ?? "Could not change the microphone.");
     setMicrophonePending(false);
   }, [status]);
@@ -147,7 +147,7 @@ export function RecordingControls() {
   const selectMicrophone = useCallback(async (deviceId: string) => {
     setDevicePending(true);
     setActionError(null);
-    const result = await window.skillRecorder.selectMicrophone(deviceId);
+    const result = await window.handover.selectMicrophone(deviceId);
     setMicrophoneSettings(result.status);
     if (!result.ok) {
       setActionError(result.error ?? "Could not switch microphones.");
@@ -160,7 +160,7 @@ export function RecordingControls() {
   const done = useCallback(async (forceTerminal = false) => {
     setFinishPending("done");
     setActionError(null);
-    const result = await window.skillRecorder.stop(forceTerminal);
+    const result = await window.handover.stop(forceTerminal);
     if (result.requiresTerminalConfirmation) {
       setTerminalConfirm("done");
       setFinishPending(null);
@@ -175,7 +175,7 @@ export function RecordingControls() {
   const discard = useCallback(async (forceTerminal = false) => {
     setFinishPending("discard");
     setActionError(null);
-    const result = await window.skillRecorder.discard(forceTerminal);
+    const result = await window.handover.discard(forceTerminal);
     if (result.requiresTerminalConfirmation) {
       setConfirmDiscard(false);
       setTerminalConfirm("discard");
@@ -195,7 +195,7 @@ export function RecordingControls() {
     setActionError(null);
     setConfirmDiscard(false);
     setShowMicrophoneMenu(false);
-    const result = await window.skillRecorder.openTerminal();
+    const result = await window.handover.openTerminal();
     if (!result.ok) setActionError(result.error);
     setTerminalPending(false);
   }, []);

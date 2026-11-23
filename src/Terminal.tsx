@@ -51,19 +51,19 @@ export function Terminal() {
     const fitAndReport = () => {
       try {
         fit.fit();
-        window.skillRecorder.resizeTerminal(terminal.cols, terminal.rows);
+        window.handover.resizeTerminal(terminal.cols, terminal.rows);
       } catch {
         // The window can disappear between ResizeObserver delivery and fit().
       }
     };
     const observer = new ResizeObserver(fitAndReport);
     observer.observe(host);
-    const input = terminal.onData((data) => window.skillRecorder.writeTerminal(data));
-    const offOutput = window.skillRecorder.onTerminalOutput((data) => terminal.write(data));
+    const input = terminal.onData((data) => window.handover.writeTerminal(data));
+    const offOutput = window.handover.onTerminalOutput((data) => terminal.write(data));
     const frame = requestAnimationFrame(() => {
       fitAndReport();
       terminal.focus();
-      void window.skillRecorder.terminalReady().then((result) => {
+      void window.handover.terminalReady().then((result) => {
         if (!result.ok) setActionError(result.error);
       });
     });
@@ -78,9 +78,9 @@ export function Terminal() {
   }, []);
 
   useEffect(() => {
-    void window.skillRecorder.terminalStatus().then(setStatus);
-    void window.skillRecorder.terminalShells().then(setShells);
-    return window.skillRecorder.onTerminalStatusChanged(setStatus);
+    void window.handover.terminalStatus().then(setStatus);
+    void window.handover.terminalShells().then(setShells);
+    return window.handover.onTerminalStatusChanged(setStatus);
   }, []);
 
   const switchShell = async (shell: SupportedShellId) => {
@@ -88,7 +88,7 @@ export function Terminal() {
     setActionError(null);
     terminalRef.current?.reset();
     terminalRef.current?.clear();
-    const result = await window.skillRecorder.switchTerminalShell(shell);
+    const result = await window.handover.switchTerminalShell(shell);
     if (!result.ok) setActionError(result.error);
     else terminalRef.current?.focus();
     setSwitching(false);
@@ -138,7 +138,7 @@ export function Terminal() {
         <button
           type="button"
           className="terminal-hide"
-          onClick={() => void window.skillRecorder.hideTerminal()}
+          onClick={() => void window.handover.hideTerminal()}
         >
           Hide
         </button>

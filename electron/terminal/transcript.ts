@@ -86,7 +86,7 @@ export class TerminalTranscriptWriter {
       width: options.columns ?? 100,
       height: options.rows ?? 30,
       timestamp: Math.floor(options.sessionStartedAt / 1000),
-      env: { TERM: "xterm-256color", SHELL: "skill-recorder" },
+      env: { TERM: "xterm-256color", SHELL: "handover" },
     };
     this.writeTranscriptLine(JSON.stringify(header));
   }

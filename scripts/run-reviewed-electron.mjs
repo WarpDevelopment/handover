@@ -8,7 +8,7 @@ import { constants as osConstants } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const reviewedMetadataName = ".skill-recorder-reviewed.json";
+const reviewedMetadataName = ".handover-reviewed.json";
 const dangerousElectronEnvironment = new Set([
   "electron_config_cache",
   "electron_custom_dir",

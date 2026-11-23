@@ -21,7 +21,6 @@ import {
 } from "./run-reviewed-electron.mjs";
 import {
   assertLockfileClosure,
-  assertReviewedCopilotCliVersions,
   assertReviewedTessdataPins,
   assertWasmExcludedFromPackaging,
   buildArtisticSourceSpecs,
@@ -131,7 +130,7 @@ test("canonical legal texts use immutable reviewed sources", () => {
 });
 
 test("nested package legal files are discovered", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-licenses-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-licenses-"));
   try {
     await mkdir(path.join(root, "google"), { recursive: true });
     await mkdir(path.join(root, "vendor", "node-api"), { recursive: true });
@@ -428,7 +427,7 @@ test("ONNX recovery keeps the reviewed source refs and uses explicit pinned alte
 });
 
 test("compliance downloads prefer upstream and reuse only a verified cache", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-download-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-download-"));
   const content = "Reviewed legal text.\n".repeat(10);
   const spec = {
     id: "reviewed-license",
@@ -470,7 +469,7 @@ test("upstream 404s recover only checksum-verified legal files", async (t) => {
   const content = "Reviewed legal text.\n".repeat(10);
   for (const scenario of ["verified", "wrong hash", "HTML", "unavailable"]) {
     await t.test(scenario, async (t) => {
-      const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-recovery-"));
+      const root = await mkdtemp(path.join(tmpdir(), "handover-recovery-"));
       const spec = {
         id: "reviewed-license",
         fileName: "LICENSE.txt",
@@ -521,25 +520,6 @@ test("upstream 404s recover only checksum-verified legal files", async (t) => {
   }
 });
 
-test("unreviewed GitHub Copilot CLI versions fail closed", () => {
-  const reviewedLock = {
-    packages: {
-      "node_modules/@github/copilot": { version: "1.0.71" },
-      "node_modules/@github/copilot-win32-x64": { version: "1.0.71" },
-    },
-  };
-  assert.doesNotThrow(() =>
-    assertReviewedCopilotCliVersions(reviewedLock, "1.0.71"),
-  );
-
-  const changedLock = structuredClone(reviewedLock);
-  changedLock.packages["node_modules/@github/copilot-win32-x64"].version = "1.0.72";
-  assert.throws(
-    () => assertReviewedCopilotCliVersions(changedLock, "1.0.71"),
-    /have not been reviewed/,
-  );
-});
-
 test("platform Sharp/libvips packages use the reviewed LGPL text", () => {
   const pkg = {
     name: "@img/sharp-libvips-linux-x64",
@@ -581,7 +561,7 @@ test("compound SPDX expressions are split into individual terms", () => {
 });
 
 test("every declared Sharp license term resolves to concrete text", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-sharp-license-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-sharp-license-"));
   try {
     await writeFile(
       path.join(root, "LICENSE"),
@@ -627,7 +607,7 @@ test("every declared Sharp license term resolves to concrete text", async () => 
 });
 
 test("exactly one architecture-matched native payload is packaged", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-payload-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-payload-"));
   try {
     const make = async (name) => {
       const directory = path.join(root, name.replaceAll("/", "_"));
@@ -909,13 +889,13 @@ test("relinking instructions use platform-specific native paths", () => {
     /Contents\/Resources\/app\.asar\.unpacked\/node_modules\/@img\/sharp-libvips-darwin-arm64\/lib\/libvips-cpp\.8\.18\.3\.dylib/,
   );
   assert.match(mac, /takes no technical measure to prevent a\r?\nmodified replacement from running/);
-  assert.match(mac, /reverse engineer Skill Recorder to/);
+  assert.match(mac, /reverse engineer Handover to/);
   assert.match(mac, /- Sharp: 0\.35\.3/);
   assert.match(mac, /- Sharp\/libvips packaging: 1\.3\.2/);
   assert.match(mac, /- libvips: 8\.18\.3/);
 
   const linux = renderRelinking(native, { mode: "full", sources }, policy, "linux");
-  assert.match(linux, /libffmpeg\.so beside the Skill Recorder executable/);
+  assert.match(linux, /libffmpeg\.so beside the Handover executable/);
 });
 
 test("distributed notices match the reviewed Sharp and libvips versions", async () => {
@@ -931,7 +911,7 @@ test("distributed notices match the reviewed Sharp and libvips versions", async 
 });
 
 test("archive validation rejects HTML challenge pages", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-archive-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-archive-"));
   try {
     const challenge = path.join(root, "source.tar.gz");
     await writeFile(challenge, `<!doctype html>${"x".repeat(200)}`);
@@ -952,7 +932,7 @@ test("archive validation rejects HTML challenge pages", async () => {
 });
 
 test("licenses-only bundles cannot pass release verification", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-compliance-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-compliance-"));
   try {
     const files = [
       "COMPLIANCE-README.md",
@@ -993,21 +973,13 @@ test("licenses-only bundles cannot pass release verification", async () => {
   }
 });
 
-test("source and release instructions remain compliance-preserving", async () => {
+test("release workflow and reviewed Electron installer remain compliance-preserving", async () => {
   const [
-    windowsInstaller,
-    unixInstaller,
-    instructions,
     readme,
-    releasing,
     windowsWorkflow,
     electronInstaller,
   ] = await Promise.all([
-    readFile(path.join(repoRoot, "install.ps1"), "utf8"),
-    readFile(path.join(repoRoot, "install.sh"), "utf8"),
-    readFile(path.join(repoRoot, "INSTALL.md"), "utf8"),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
-    readFile(path.join(repoRoot, "RELEASING.md"), "utf8"),
     readFile(
       path.join(repoRoot, ".github", "workflows", "windows.yml"),
       "utf8",
@@ -1018,132 +990,6 @@ test("source and release instructions remain compliance-preserving", async () =>
     ),
   ]);
 
-  assert.match(windowsInstaller, /\^\[0-9a-fA-F\]\{40\}\$/);
-  assert.match(
-    windowsInstaller,
-    /https:\/\/codeload\.github\.com\/microsoft\/skill-recorder\/zip\/\$Commit/,
-  );
-  assert.match(windowsInstaller, /https:\/\/nodejs\.org\/dist\/index\.json/);
-  assert.doesNotMatch(
-    windowsInstaller,
-    /NPM_CONFIG_(?:REGISTRY|REPLACE_REGISTRY_HOST)/,
-  );
-  assert.match(
-    windowsInstaller,
-    /https:\/\/github\.com\/electron\/electron\/releases\/download\//,
-  );
-  assert.match(windowsInstaller, /SHASUMS256\.txt/);
-  assert.match(windowsInstaller, /Get-AuthenticodeSignature/);
-  assert.match(windowsInstaller, /OpenJS Foundation/);
-  assert.match(windowsInstaller, /GitHub, Inc\\\./);
-  assert.match(windowsInstaller, /@github\\copilot\\LICENSE\.md/);
-  assert.match(windowsInstaller, /@github\\copilot-win32-\$architecture/);
-  assert.match(windowsInstaller, /node_modules\\electron\\dist\\LICENSES\.chromium\.html/);
-  assert.match(windowsInstaller, /third_party\\compliance-policy\.json/);
-  assert.match(windowsInstaller, /Assert-ReviewedElectronDistribution/);
-  assert.match(windowsInstaller, /EnvironmentVariableTarget\]::Machine/);
-  assert.doesNotMatch(
-    windowsInstaller,
-    /RuntimeInformation\]::OSArchitecture/,
-  );
-  assert.match(
-    windowsInstaller,
-    /\$compatibleReleases = @\(\s+foreach \(\$release in \$index\)/,
-  );
-  assert.doesNotMatch(
-    windowsInstaller,
-    /\$index = @\(Get-Content [^\r\n]+ConvertFrom-Json\)/,
-  );
-  assert.match(windowsInstaller, /\$versionOutput = @\(& \$nodeExe --version\)/);
-  assert.doesNotMatch(
-    windowsInstaller,
-    /\(& \$nodeExe [^\r\n]+\| Select-Object -First 1\)/,
-  );
-  const dependencyInstaller = await readFile(
-    path.join(repoRoot, "scripts", "install-windows-dependencies.mjs"), "utf8",
-  );
-  assert.match(windowsInstaller, /"scripts\\install-windows-dependencies\.mjs"/);
-  assert.match(
-    dependencyInstaller,
-    /"ci",\s+"--no-audit",\s+"--no-fund",\s+"--ignore-scripts=false",\s+"--dangerously-allow-all-scripts=false",\s+"--strict-allow-scripts"/,
-  );
-  assert.doesNotMatch(dependencyInstaller, /--registry|--global|--location|strict.ssl.*false|REPLACE_REGISTRY_HOST/);
-  assert.match(windowsInstaller, /"scripts\\check-lockfile-portability\.mjs"/);
-  assert.match(windowsInstaller, /"scripts\\install-reviewed-electron\.mjs"/);
-  assert.doesNotMatch(windowsInstaller, /node_modules\\electron\\install\.js/);
-  assert.match(
-    windowsInstaller,
-    /Move-DirectoryTree -Source \$buildDirectory -Destination \$sourceDirectory/,
-  );
-  assert.match(
-    windowsInstaller,
-    /Move-DirectoryTree -Source \$expandedDirectory -Destination \$runtimeDirectory/,
-  );
-  assert.match(windowsInstaller, /@?\("run", "compliance:licenses"\)/);
-  assert.match(windowsInstaller, /@?\("run", "build"\)/);
-  assert.doesNotMatch(
-    windowsInstaller,
-    /github\.com\/microsoft\/skill-recorder\/releases\/download/i,
-  );
-  assert.doesNotMatch(windowsInstaller, /\/(?:master|main)\/install\.ps1/i);
-
-  assert.match(windowsInstaller, /"Skill Recorder \(Source\)\.lnk"/);
-  assert.match(windowsInstaller, /SpecialFolder "Programs"/);
-  assert.match(windowsInstaller, /SpecialFolder "DesktopDirectory"/);
-  assert.match(windowsInstaller, /SKILL_RECORDER_NO_DESKTOP_SHORTCUT -ne "1"/);
-  assert.match(
-    windowsInstaller,
-    /Get-CachedDownload `\r?\n\s+-Uri "\$baseUri\/\$archiveName" `\r?\n\s+-CachePath \$archivePath `\r?\n\s+-ExpectedSha256 \$expectedHash/,
-  );
-  assert.match(windowsInstaller, /Remove-CachedDownload -CachePath \$archivePath/);
-  assert.match(windowsInstaller, /Remove-CachedDownload -CachePath \$sourceArchive/);
-
-  assert.match(unixInstaller, /\^\[0-9a-fA-F\]\{40\}\$/);
-  assert.match(
-    unixInstaller,
-    /https:\/\/codeload\.github\.com\/microsoft\/skill-recorder\/tar\.gz\/\$COMMIT/,
-  );
-  assert.match(unixInstaller, /https:\/\/nodejs\.org\/dist\/latest-v24\.x/);
-  assert.doesNotMatch(
-    unixInstaller,
-    /NPM_CONFIG_(?:REGISTRY|REPLACE_REGISTRY_HOST)/,
-  );
-  assert.match(
-    unixInstaller,
-    /https:\/\/github\.com\/electron\/electron\/releases\/download\//,
-  );
-  assert.match(unixInstaller, /SHASUMS256\.txt/);
-  assert.match(
-    unixInstaller,
-    /"\$NPM" ci \\\s+--no-audit \\\s+--no-fund \\\s+--ignore-scripts=false \\\s+--dangerously-allow-all-scripts=false \\\s+--strict-allow-scripts/,
-  );
-  assert.match(
-    unixInstaller,
-    /"\$NODE" "scripts\/check-lockfile-portability\.mjs"/,
-  );
-  assert.match(
-    unixInstaller,
-    /"\$NODE" "scripts\/install-reviewed-electron\.mjs"/,
-  );
-  assert.doesNotMatch(unixInstaller, /node_modules\/electron\/install\.js/);
-  assert.match(unixInstaller, /"\$NPM" run compliance:licenses/);
-  assert.match(unixInstaller, /"\$NPM" run build/);
-  assert.match(unixInstaller, /\.compliance\/licenses\/LGPL-3\.0\.txt/);
-  assert.match(unixInstaller, /@github\/copilot-\$\{PLATFORM\}-\$\{ARCHITECTURE\}/);
-  assert.doesNotMatch(
-    unixInstaller,
-    /github\.com\/microsoft\/skill-recorder\/releases\/download/i,
-  );
-  assert.doesNotMatch(unixInstaller, /\/(?:master|main)\/install\.sh/i);
-
-  assert.match(instructions, /generated build is for local execution only/i);
-  assert.match(instructions, /npm ci/);
-  assert.match(instructions, /full 40-character commit SHA/i);
-  assert.match(instructions, /npm 11\.17/i);
-  assert.match(instructions, /macOS/);
-  assert.match(instructions, /Ubuntu/);
-  assert.match(instructions, /complete generated\s+compliance bundle/i);
-  assert.doesNotMatch(instructions, /raw\.githubusercontent\.com\/[^ \n]+\/(?:master|main)\//i);
   assert.match(electronInstaller, /createHash\("sha256"\)/);
   assert.match(electronInstaller, /@electron-internal\/extract-zip/);
   assert.match(electronInstaller, /@electron\/get/);
@@ -1161,23 +1007,11 @@ test("source and release instructions remain compliance-preserving", async () =>
     repoManifest.scripts.start,
     "node scripts/run-reviewed-electron.mjs start",
   );
-  assert.match(instructions, /SKILL_RECORDER_NO_DESKTOP_SHORTCUT=1/);
-  assert.match(instructions, /GetFolderPath\('DesktopDirectory'\)/);
-  assert.match(readme, /\[`INSTALL\.md`\]\(INSTALL\.md\)/);
-  assert.match(readme, /\[`RELEASING\.md`\]\(RELEASING\.md\)/);
   assert.doesNotMatch(readme, /raw\.githubusercontent\.com\/[^ \n]+\/(?:master|main)\//i);
-  assert.match(releasing, /source-only releases.*are the default/i);
-  assert.match(releasing, /npm version 0\.2\.0 --no-git-tag-version/);
-  assert.match(releasing, /full release commit SHA/i);
-  assert.match(releasing, /git",\["cat-file","blob"/);
-  assert.match(releasing, /not working-tree\s+files/i);
-  assert.match(releasing, /SHA-256 values for `install\.ps1` and `install\.sh`/i);
-  assert.match(releasing, /complete, version-matched\s+compliance bundle/i);
-  assert.match(releasing, /Tesseract\.js-core/);
-  assert.match(instructions, /Tesseract WebAssembly component notices/);
-  assert.match(releasing, /Never silently replace an asset or move a release tag/i);
+  assert.match(readme, /Handover/);
   assert.match(
     windowsWorkflow,
-    /- name: Test commit-pinned source installation\r?\n\s+shell: powershell/,
+    /actions\/upload-artifact@[0-9a-f]{40}[\s\S]*handover-windows-x64/,
   );
+  assert.doesNotMatch(windowsWorkflow, /windows-11-arm|install\.ps1|test:ai:runtime/);
 });

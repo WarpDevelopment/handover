@@ -45,7 +45,7 @@ function settleWithTimeout(task: Promise<unknown>, ms: number): Promise<void> {
 }
 
 /** Where the persisted opt-in lives — inside the models dir so a single override
- *  (SKILL_RECORDER_MODELS_DIR) relocates both the flag and the model cache. */
+ *  (HANDOVER_MODELS_DIR) relocates both the flag and the model cache. */
 function settingsFile(): string {
   return path.join(modelsCacheDir(), "advanced-protection.json");
 }

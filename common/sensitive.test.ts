@@ -57,7 +57,7 @@ test("phone after a number ending in 1 is still detected (no country-code latch)
 
 test("does not flag ordinary prose, URLs, or commit hashes", () => {
   assert.equal(scanStructuredPii("Opened the quarterly planning doc and reviewed the roadmap.").length, 0);
-  assert.equal(scanStructuredPii("Visited https://github.com/microsoft/skill-recorder/issues").length, 0);
+  assert.equal(scanStructuredPii("Visited https://github.com/example-org/example-repo/issues").length, 0);
   assert.equal(scanStructuredPii("git checkout 9c1e6f2a4b7d8e0f1a2b3c4d5e6f7a8b9c0d1e2f").length, 0);
 });
 

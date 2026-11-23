@@ -17,7 +17,6 @@ import {
   type NarrationLanguage,
 } from "../common/narration";
 import { formatMs } from "./format";
-import { IMPORT_LIMIT_LABEL } from "../common/import";
 import { RecordingPrivacyWarning } from "./RecordingPrivacyWarning";
 import { WhatsRecorded } from "./WhatsRecorded";
 
@@ -69,40 +68,35 @@ export function Recorder() {
   const [screenActionError, setScreenActionError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [sessionCount, setSessionCount] = useState(0);
-  const [pendingCount, setPendingCount] = useState(0);
-  const [importPending, setImportPending] = useState(false);
-  const [importCanceling, setImportCanceling] = useState(false);
-  const [importError, setImportError] = useState<string | null>(null);
   const narrationSettingsRef = useRef<HTMLElement>(null);
   const hudRef = useRef<HTMLDivElement>(null);
 
   const refreshCount = useCallback(async () => {
-    const list = await window.skillRecorder.listSessions();
+    const list = await window.handover.listSessions();
     setSessionCount(list.length);
-    setPendingCount(list.filter((s) => !s.analysis).length);
   }, []);
 
   const applyRecorderStatus = useCallback((next: RecorderStatus) => {
     setStatus(next);
     setSelectedNarrationLanguage(next.narrationLanguage);
   }, []);
-  useEffect(() => window.skillRecorder.onSessionsChanged(() => { void refreshCount(); }), [refreshCount]);
+  useEffect(() => window.handover.onSessionsChanged(() => { void refreshCount(); }), [refreshCount]);
 
   useEffect(() => {
-    void window.skillRecorder.status().then(applyRecorderStatus);
-    void window.skillRecorder.doctor().then(setDoctor);
-    void window.skillRecorder.narrationStatus().then(setNarrationStatus);
-    void window.skillRecorder.microphoneSettings().then(setMicrophoneSettings);
-    void window.skillRecorder.screenSettings().then(setScreenSettings);
-    void window.skillRecorder.sensitiveModelStatus().then(setSensitive);
+    void window.handover.status().then(applyRecorderStatus);
+    void window.handover.doctor().then(setDoctor);
+    void window.handover.narrationStatus().then(setNarrationStatus);
+    void window.handover.microphoneSettings().then(setMicrophoneSettings);
+    void window.handover.screenSettings().then(setScreenSettings);
+    void window.handover.sensitiveModelStatus().then(setSensitive);
     void refreshCount();
-    const offRecorder = window.skillRecorder.onStatusChanged(applyRecorderStatus);
-    const offNarration = window.skillRecorder.onNarrationStatusChanged(setNarrationStatus);
+    const offRecorder = window.handover.onStatusChanged(applyRecorderStatus);
+    const offNarration = window.handover.onNarrationStatusChanged(setNarrationStatus);
     const offMicrophones =
-      window.skillRecorder.onMicrophoneSettingsChanged(setMicrophoneSettings);
+      window.handover.onMicrophoneSettingsChanged(setMicrophoneSettings);
     const offScreens =
-      window.skillRecorder.onScreenSettingsChanged(setScreenSettings);
-    const offSensitive = window.skillRecorder.onSensitiveModelStatusChanged(setSensitive);
+      window.handover.onScreenSettingsChanged(setScreenSettings);
+    const offSensitive = window.handover.onSensitiveModelStatusChanged(setSensitive);
     return () => {
       offRecorder();
       offNarration();
@@ -113,14 +107,14 @@ export function Recorder() {
   }, [applyRecorderStatus, refreshCount]);
 
   useEffect(() => {
-    return window.skillRecorder.onRecordingPrivacyWarningRequested(() => {
+    return window.handover.onRecordingPrivacyWarningRequested(() => {
       setShowNarrationSettings(false);
       setShowRecordingWarning(true);
     });
   }, []);
 
-  // The analyze step happens in the library window, so re-check how many
-  // recordings still need analysis whenever the recorder regains focus.
+  // Recordings are reviewed in the library window, so re-check the count
+  // whenever the recorder regains focus.
   useEffect(() => {
     const onFocus = () => void refreshCount();
     window.addEventListener("focus", onFocus);
@@ -171,7 +165,7 @@ export function Recorder() {
     let frame = 0;
     const report = () => {
       frame = 0;
-      window.skillRecorder.fitRecorderHeight?.(measureHudHeight(hud));
+      window.handover.fitRecorderHeight?.(measureHudHeight(hud));
     };
     const schedule = () => {
       if (frame) return;
@@ -212,24 +206,24 @@ export function Recorder() {
 
   const toggle = useCallback(async () => {
     if (recording) {
-      const res = await window.skillRecorder.stop();
+      const res = await window.handover.stop();
       if (!res.ok) window.alert(res.error ?? "Action failed");
-      applyRecorderStatus(await window.skillRecorder.status());
+      applyRecorderStatus(await window.handover.status());
       return;
     }
 
-    const res = await window.skillRecorder.start();
+    const res = await window.handover.start();
     if (res.privacyWarningRequired) {
       setShowRecordingWarning(true);
       return;
     }
     if (!res.ok) window.alert(res.error ?? "Action failed");
-    applyRecorderStatus(await window.skillRecorder.status());
+    applyRecorderStatus(await window.handover.status());
   }, [applyRecorderStatus, recording]);
 
   const startAfterWarning = useCallback(async () => {
     setWarningStarting(true);
-    const res = await window.skillRecorder.confirmStart();
+    const res = await window.handover.confirmStart();
     if (!res.ok) {
       setWarningStarting(false);
       window.alert(res.error ?? "Could not start recording.");
@@ -237,7 +231,7 @@ export function Recorder() {
     }
     setShowRecordingWarning(false);
     setWarningStarting(false);
-    applyRecorderStatus(await window.skillRecorder.status());
+    applyRecorderStatus(await window.handover.status());
   }, [applyRecorderStatus]);
 
   const openPrivacyReview = useCallback((origin: PrivacyReviewOrigin) => {
@@ -252,7 +246,7 @@ export function Recorder() {
   }, [privacyReviewOrigin]);
 
   const completePrivacyReview = useCallback(async () => {
-    await window.skillRecorder.markRecordingPrivacyReviewed();
+    await window.handover.markRecordingPrivacyReviewed();
     setPrivacyReviewOrigin(null);
     setShowRecordingWarning(false);
   }, []);
@@ -264,9 +258,9 @@ export function Recorder() {
         return;
       }
       setSelectedNarrationLanguage(value);
-      const result = await window.skillRecorder.setNarrationLanguage(value);
+      const result = await window.handover.setNarrationLanguage(value);
       if (!result.ok) window.alert(result.error ?? "Could not change the narration language.");
-      applyRecorderStatus(await window.skillRecorder.status());
+      applyRecorderStatus(await window.handover.status());
     },
     [applyRecorderStatus],
   );
@@ -275,7 +269,7 @@ export function Recorder() {
     if (!microphoneSettings) return;
     setMicrophonePending(true);
     setMicrophoneActionError(null);
-    const result = await window.skillRecorder.setNarrationEnabled(
+    const result = await window.handover.setNarrationEnabled(
       !microphoneSettings.narrationEnabled,
     );
     setMicrophoneSettings(result.status);
@@ -291,7 +285,7 @@ export function Recorder() {
   const selectMicrophone = useCallback(async (deviceId: string) => {
     setMicrophonePending(true);
     setMicrophoneActionError(null);
-    const result = await window.skillRecorder.selectMicrophone(deviceId);
+    const result = await window.handover.selectMicrophone(deviceId);
     setMicrophoneSettings(result.status);
     if (!result.ok) {
       setMicrophoneActionError(
@@ -304,7 +298,7 @@ export function Recorder() {
   const selectScreen = useCallback(async (sourceId: string) => {
     setScreenPending(true);
     setScreenActionError(null);
-    const result = await window.skillRecorder.selectScreen(sourceId);
+    const result = await window.handover.selectScreen(sourceId);
     setScreenSettings(result.status);
     if (!result.ok) {
       setScreenActionError(result.error ?? "Could not select that screen.");
@@ -313,34 +307,11 @@ export function Recorder() {
   }, []);
 
   const openLibrary = useCallback(() => {
-    void window.skillRecorder.openLibrary();
-  }, []);
-
-  const importRecording = useCallback(async () => {
-    setImportPending(true);
-    setImportCanceling(false);
-    setImportError(null);
-    try {
-      const result = await window.skillRecorder.importRecording();
-      if (result.ok && result.sessionId) {
-        await refreshCount();
-        await window.skillRecorder.openLibrary(result.sessionId);
-      } else if (!result.canceled) {
-        setImportError(result.error ?? "Could not import this recording.");
-      }
-    } catch (error) {
-      setImportError(`Could not import this recording: ${String(error)}`);
-    } finally { setImportPending(false); setImportCanceling(false); }
-  }, [refreshCount]);
-
-  const cancelImport = useCallback(async () => {
-    setImportCanceling(true);
-    try { await window.skillRecorder.cancelImport(); }
-    catch (error) { setImportError(`Could not cancel import: ${String(error)}`); setImportCanceling(false); }
+    void window.handover.openLibrary();
   }, []);
 
   const downloadNarrationModel = useCallback(async () => {
-    const res = await window.skillRecorder.downloadNarrationModel();
+    const res = await window.handover.downloadNarrationModel();
     if (!res.ok) window.alert(res.error ?? "Could not download the voice transcription model.");
   }, []);
 
@@ -349,16 +320,16 @@ export function Recorder() {
     const next = !sensitive.enabled;
     setAdvancedPending(true);
     setSensitive((s) => (s ? { ...s, enabled: next } : s)); // optimistic; real state follows
-    const res = await window.skillRecorder.setAdvancedProtection(next);
+    const res = await window.handover.setAdvancedProtection(next);
     if (!res.ok) {
-      void window.skillRecorder.sensitiveModelStatus().then(setSensitive);
+      void window.handover.sensitiveModelStatus().then(setSensitive);
       window.alert(res.error ?? "Could not update advanced protection.");
     }
     setAdvancedPending(false);
   }, [sensitive]);
 
   const downloadSensitiveModels = useCallback(async () => {
-    const res = await window.skillRecorder.downloadSensitiveModels();
+    const res = await window.handover.downloadSensitiveModels();
     if (!res.ok) window.alert(res.error ?? "Could not download the protection models.");
   }, []);
 
@@ -374,25 +345,7 @@ export function Recorder() {
         >
           <span className="record-glyph" />
         </button>
-        <button
-          className="import-recording"
-          onClick={() => void importRecording()}
-          disabled={recording || transitioning || importPending || microphonePending || screenPending}
-          aria-label="Import recording"
-          title={`Import recording (${IMPORT_LIMIT_LABEL})`}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3V7Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-          </svg>
-        </button>
         </div>
-        {importPending && (
-          <div className="import-notice" role="status">
-            <span>{importCanceling ? "Canceling import..." : "Checking recording compatibility..."}</span>
-            <button className="linky" disabled={importCanceling} onClick={() => void cancelImport()}>Cancel</button>
-          </div>
-        )}
-        {importError && <p className="import-error" role="alert">{importError}</p>}
         <div className={`timecode ${recording ? "live" : ""}`}>
           {recording ? formatMs(elapsed) : "00:00"}
         </div>
@@ -400,7 +353,7 @@ export function Recorder() {
           {recording
             ? `${status?.eventCount ?? 0} events captured`
             : justSaved
-              ? "Capture saved. Open Sessions to analyze"
+              ? "Capture saved. Open Sessions to review"
               : justDiscarded
                 ? "Recording discarded"
               : screenSettings?.error
@@ -673,14 +626,12 @@ export function Recorder() {
       </button>
 
       <button
-        className={`sessions-open ${pendingCount > 0 ? "has-new" : ""}`}
+        className="sessions-open"
         onClick={openLibrary}
         aria-label={
-          pendingCount > 0
-            ? `Review sessions, ${pendingCount} ready to analyze`
-            : sessionCount === 0
-              ? "Review sessions, nothing recorded yet"
-              : `Review sessions, ${sessionCount} recorded`
+          sessionCount === 0
+            ? "Review sessions, nothing recorded yet"
+            : `Review sessions, ${sessionCount} recorded`
         }
       >
         <span className="sessions-open-icon" aria-hidden>
@@ -710,14 +661,11 @@ export function Recorder() {
         <span className="sessions-open-text">
           <span className="sessions-open-label">
             Review sessions
-            {pendingCount > 0 && <span className="sessions-open-flag">{pendingCount}</span>}
           </span>
-          <span className={`sessions-open-sub ${pendingCount > 0 ? "is-new" : ""}`}>
-            {pendingCount > 0
-              ? `${pendingCount} ready to analyze`
-              : sessionCount === 0
-                ? "No recordings yet"
-                : `${sessionCount} recording${sessionCount === 1 ? "" : "s"}`}
+          <span className="sessions-open-sub">
+            {sessionCount === 0
+              ? "No recordings yet"
+              : `${sessionCount} recording${sessionCount === 1 ? "" : "s"}`}
           </span>
         </span>
         <span className="sessions-open-chevron" aria-hidden>
@@ -736,9 +684,9 @@ export function Recorder() {
       {doctor && (
         <div className="doctor">
           <Row
-            label="Copilot runtime"
-            status={doctor.copilotCli.ok ? "good" : "bad"}
-            note={doctor.copilotCli.ok ? "found" : "missing"}
+            label="Window tracking"
+            status={doctor.activeWindow.ok ? "good" : "bad"}
+            note={doctor.activeWindow.ok ? "found" : "missing"}
           />
           {narrate && narrationStatus && (
             <VoiceModelRow

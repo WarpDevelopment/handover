@@ -22,7 +22,7 @@ const unpacked = readdirSync(outputRoot)
   );
 if (!unpacked) throw new Error(`Could not find the ${arch} unpacked Windows application.`);
 
-const appExe = path.join(unpacked, "Skill Recorder.exe");
+const appExe = path.join(unpacked, "Handover.exe");
 const expectedMachine = arch === "arm64" ? 0xaa64 : 0x8664;
 verifyPeMachine(appExe, expectedMachine);
 verifyPeMachine(path.join(unpacked, "ffmpeg.dll"), expectedMachine);
@@ -49,10 +49,6 @@ const expectedPayloads = [
   {
     packagePath: `/onnxruntime-node/bin/napi-v6/win32/${arch}/`,
     executable: `/onnxruntime-node/bin/napi-v6/win32/${arch}/onnxruntime_binding.node`,
-  },
-  {
-    packagePath: `/@github/copilot-win32-${arch}/`,
-    executable: `/@github/copilot-win32-${arch}/copilot.exe`,
   },
 ];
 for (const payload of expectedPayloads) {
@@ -91,12 +87,19 @@ const otherArch = arch === "arm64" ? "x64" : "arm64";
 const wrongArchitecturePayloads = [
   `/@koromix/koffi-win32-${otherArch}/`,
   `/@img/sharp-win32-${otherArch}/`,
-  `/@github/copilot-win32-${otherArch}/copilot.exe`,
 ];
 for (const wrongPayload of wrongArchitecturePayloads) {
   if (normalizedFiles.some((file) => file.includes(wrongPayload))) {
     throw new Error(`Packaged ${arch} application contains ${wrongPayload}.`);
   }
+}
+
+// Handover ships no AI runtime: no GitHub Copilot CLI may be present anywhere.
+const copilotPayload = normalizedFiles.find(
+  (file) => file.includes("/@github/copilot") || /\/copilot(?:\.exe)?$/.test(file),
+);
+if (copilotPayload) {
+  throw new Error(`Packaged application contains a forbidden Copilot payload ${copilotPayload}.`);
 }
 
 const forbiddenStandaloneFfmpeg = normalizedFiles.filter(
@@ -136,7 +139,7 @@ const nestedOutput = asarEntries.find(
 if (nestedOutput) {
   throw new Error(`Packaged application recursively contains build output ${nestedOutput}.`);
 }
-const forbiddenSourceRoots = ["common", "docs", "electron", "evals", "scripts", "src"];
+const forbiddenSourceRoots = ["common", "docs", "electron", "evals", "scripts", "src", "test"];
 for (const root of forbiddenSourceRoots) {
   if (asarEntries.some((entry) => entry === root || entry.startsWith(`${root}/`))) {
     throw new Error(`Packaged application contains source-only directory ${root}/.`);

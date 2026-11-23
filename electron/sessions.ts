@@ -1,7 +1,6 @@
 import { access, lstat, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { AnalysisSchema, type Analysis } from "../common/analysis";
 import { readAudioNarrationLanguage } from "../common/audio";
 import type { SessionSummary } from "../common/ipc";
 import {
@@ -11,7 +10,6 @@ import {
 } from "../common/narration";
 import type { SessionMeta } from "../common/types";
 import { createLogger } from "./logger";
-import { readImport } from "./imports/metadata";
 import { isValidSessionId, sessionDir, sessionsRoot } from "./recorder/session-store";
 
 const log = createLogger("Sessions");
@@ -24,17 +22,6 @@ async function exists(file: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-/** Load and validate a session's persisted analysis without blocking the main thread. */
-async function loadAnalysis(dir: string): Promise<Analysis | null> {
-  try {
-    const raw = JSON.parse(await readFile(path.join(dir, "analysis.json"), "utf8"));
-    const parsed = AnalysisSchema.safeParse(raw);
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
   }
 }
 
@@ -128,34 +115,12 @@ async function summarize(root: string, name: string): Promise<SessionSummary | n
     return null; // not a valid session dir
   }
   if (!meta?.id) return null;
-  let imported;
-  if (meta.source === "imported-video") {
-    try {
-      imported = readImport(dir);
-      if (!imported) throw new Error("Missing import.json");
-    } catch (error) {
-      log.warn(`invalid imported session ${name}:`, error);
-      return null;
-    }
-  }
 
-  const [
-    analysis,
-    processed,
-    hasVideo,
-    narrationLanguage,
-    narration,
-    hasSkill,
-    hasAutomation,
-    sizeBytes,
-  ] = await Promise.all([
-      loadAnalysis(dir),
+  const [processed, hasVideo, narrationLanguage, narration, sizeBytes] = await Promise.all([
       exists(path.join(dir, "bundle.json")),
       exists(path.join(dir, "video.json")),
       loadAudioLanguage(dir),
       loadNarration(dir),
-      exists(path.join(dir, "skill.json")),
-      exists(path.join(dir, "built-automation.json")),
       sessionDirectorySize(dir).catch((error) => {
         log.warn(
           `could not measure session ${name}:`,
@@ -167,7 +132,6 @@ async function summarize(root: string, name: string): Promise<SessionSummary | n
 
   return {
     id: meta.id,
-    ...(imported ? { imported } : {}),
     startedAt: meta.startedAt ?? null,
     stoppedAt: meta.stoppedAt ?? null,
     durationMs: meta.startedAt && meta.stoppedAt ? meta.stoppedAt - meta.startedAt : null,
@@ -179,19 +143,6 @@ async function summarize(root: string, name: string): Promise<SessionSummary | n
     hasNarration: narration !== null,
     narrationSegmentCount: narration?.segmentCount ?? null,
     narrationUpdatedAt: narration?.updatedAt ?? null,
-    hasSkill,
-    hasAutomation,
-    analysis: analysis
-      ? {
-          revision: analysis.revision,
-          createdAt: analysis.createdAt,
-          narrationSourceUpdatedAt: analysis.narrationSourceUpdatedAt,
-          title: analysis.title ?? "",
-          intent: analysis.intent,
-          intentConfidence: analysis.intentConfidence,
-          stepCount: analysis.steps.length,
-        }
-      : null,
   };
 }
 

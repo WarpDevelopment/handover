@@ -1,18 +1,7 @@
-import type { Analysis, AnalysisFeedback, AnalysisStep, Confidence } from "./analysis";
-import type { AutomationPlan, BuiltAutomation } from "./automation";
 import type { MicrophoneDevice } from "./microphone";
 import type { NarrationLanguage } from "./narration";
 import type { ScreenSource } from "./screen";
-import type { SensitiveReport } from "./sensitive";
-import type {
-  BuiltSkill,
-  SkillArchitecture,
-  SkillPlan,
-  TargetPlacement,
-} from "./skill";
 import type { RecorderState } from "./types";
-import type { ImportDetails, ImportMetadata, ImportResult } from "./import";
-import type { AiConnectionResult, AiConnectionStatus, ByomConfig } from "./ai-provider";
 import type {
   SupportedShellId,
   TerminalActionResult,
@@ -38,7 +27,6 @@ export interface LastSession {
 /** A saved recording as shown in the sessions library. */
 export interface SessionSummary {
   id: string;
-  imported?: ImportMetadata;
   startedAt: number | null;
   stoppedAt: number | null;
   durationMs: number | null;
@@ -55,20 +43,6 @@ export interface SessionSummary {
   hasNarration: boolean;
   narrationSegmentCount: number | null;
   narrationUpdatedAt: number | null;
-  /** True once a skill has been built and persisted for this session. */
-  hasSkill: boolean;
-  /** True once an automation has been built and persisted for this session. */
-  hasAutomation: boolean;
-  /** Present once the describer has produced an analysis for this session. */
-  analysis: {
-    revision: number;
-    createdAt: number;
-    narrationSourceUpdatedAt: number | null;
-    title: string;
-    intent: string;
-    intentConfidence: Confidence;
-    stepCount: number;
-  } | null;
 }
 
 export type NarrationModelState = "missing" | "downloading" | "ready" | "error";
@@ -112,29 +86,6 @@ export interface RecorderStatus {
   lastSession: LastSession | null;
 }
 
-/** Streamed to the renderer while the describer agent works. */
-export interface AnalyzeProgress {
-  sessionId: string;
-  phase: "start" | "working" | "drafting" | "done" | "error";
-  message: string;
-}
-
-/** Result of an analyze / feedback round. */
-export interface AnalyzeResult {
-  ok: boolean;
-  analysis?: Analysis;
-  error?: string;
-  /**
-   * Present when the on-device pre-send scan redacted potentially sensitive
-   * details before the session was sent to the selected AI provider — masked values in the
-   * captured text, plus a count of on-screen regions blurred in frames. This is
-   * purely informational — the analysis still ran and `ok` is unaffected. The
-   * report carries only masked values + short redacted context, never raw values,
-   * so the renderer can show a non-blocking "Redacted N details" summary.
-   */
-  review?: SensitiveReport;
-}
-
 /** The on-device model asset behind "Advanced protection". */
 export type SensitiveModelState = "missing" | "downloading" | "ready" | "error";
 
@@ -157,116 +108,6 @@ export interface SensitiveModelStatus {
 
 export interface SensitiveModelActionResult {
   ok: boolean;
-  error?: string;
-}
-
-/** Feedback payload sent from the renderer for a re-analysis round. */
-export interface AnalysisFeedbackInput extends AnalysisFeedback {
-  sessionId: string;
-}
-
-/** A direct edit to the analysis, applied without re-running the agent. Any subset
- *  of fields may be sent; the rest are left untouched. */
-export interface AnalysisEditInput {
-  sessionId: string;
-  /** New short label; empty string clears it (list falls back to the intent). */
-  title?: string;
-  /** New one-sentence goal; blank/whitespace is ignored (intent can't be emptied). */
-  intent?: string;
-  /** The full, user-edited ordered steps; replaces the current steps when present. */
-  steps?: AnalysisStep[];
-}
-
-/* --- Skill Builder -------------------------------------------------------- */
-
-/** Streamed to the renderer while the skill-builder agent works. */
-export interface SkillBuildProgress {
-  sessionId: string;
-  phase: "start" | "working" | "drafting" | "done" | "error";
-  message: string;
-}
-
-/** Start a build (or refine one) for a session's analysis. */
-export interface SkillBuildInput {
-  sessionId: string;
-  /** Target architecture (Scout or Cowork). */
-  architecture: SkillArchitecture;
-  /** Natural-language refinement for the current plan; omit for the first pass. */
-  feedback?: string;
-}
-
-/** Result of a propose/refine round: the plan to show the user. */
-export interface SkillPlanResult {
-  ok: boolean;
-  plan?: SkillPlan;
-  error?: string;
-}
-
-/**
- * Where a built skill lands:
- * - **install** — write it into the target agent's live skills folder (Scout auto-loads it).
- * - **export** — download it to a folder the user picks (the only option for Cowork).
- */
-export type SkillPlacement = TargetPlacement;
-
-/** Exact rendered file held in the main process until placement or discard. */
-export interface SkillPreview {
-  id: string;
-  markdown: string;
-}
-
-export interface SkillPreviewResult {
-  ok: boolean;
-  preview?: SkillPreview;
-  error?: string;
-}
-
-/** Result of finalizing + placing a skill. */
-export interface SkillCreateResult {
-  ok: boolean;
-  /** The reviewed candidate was discarded or no longer matches the plan. */
-  previewExpired?: boolean;
-  skill?: BuiltSkill;
-  /** Absolute path of the placed SKILL.md. */
-  path?: string;
-  /** How the skill was placed (echoed back for the done screen). */
-  placement?: SkillPlacement;
-  /** True when the user dismissed the export destination dialog — a cancel, not an error. */
-  canceled?: boolean;
-  error?: string;
-}
-
-/* --- Automation Builder --------------------------------------------------- */
-
-/** Streamed to the renderer while the automation-builder agent works. */
-export interface AutomationBuildProgress {
-  sessionId: string;
-  phase: "start" | "working" | "drafting" | "done" | "error";
-  message: string;
-}
-
-/** Start an automation build (or refine one) for a session's analysis. */
-export interface AutomationBuildInput {
-  sessionId: string;
-  /** Target architecture (automations are Scout-only today). */
-  architecture: SkillArchitecture;
-  /** Natural-language refinement for the current plan; omit for the first pass. */
-  feedback?: string;
-}
-
-/** Result of a propose/refine round: the automation plan to show the user. */
-export interface AutomationPlanResult {
-  ok: boolean;
-  plan?: AutomationPlan;
-  error?: string;
-}
-
-/** Result of finalizing + exporting an automation bundle. */
-export interface AutomationCreateResult {
-  ok: boolean;
-  automation?: BuiltAutomation;
-  /** Absolute path of the exported automation.json. */
-  path?: string;
   error?: string;
 }
 
@@ -385,36 +226,6 @@ export interface DebugBundleResult {
   error?: string;
 }
 
-export interface CopilotInfo {
-  ok: boolean;
-  path: string | null;
-}
-
-/** Success means the bundled CLI completed login and a fresh SDK client verified it. */
-export type CopilotSignInResult =
-  | { ok: true; status: "authenticated" }
-  | {
-      ok: false;
-      status: "failed" | "canceled" | "timed-out";
-      /** Manual fallback; never includes credentials. */
-      command?: string;
-      error?: string;
-    };
-
-/**
- * Message GitHub-mode AI features throw when the CLI has no stored credentials.
- * Skill Recorder ships its own Copilot CLI in `node_modules`, so there is usually no
- * global `copilot` command to run — the renderer matches this message to offer the
- * in-app sign-in affordance instead.
- */
-export const COPILOT_SIGNED_OUT_ERROR =
-  "GitHub Copilot isn't signed in on this computer yet. Sign in below, then try again.";
-
-/** Whether an error from a Copilot-backed feature means "no credentials yet". */
-export function isCopilotSignedOutError(error?: string | null): boolean {
-  return typeof error === "string" && error.includes("isn't signed in on this computer");
-}
-
 /** Which foreground-window provider is available on this platform. */
 export interface ActiveWindowInfo {
   ok: boolean;
@@ -443,7 +254,6 @@ export interface DoctorSource {
 
 export interface DoctorReport {
   platform: NodeJS.Platform;
-  copilotCli: CopilotInfo;
   activeWindow: ActiveWindowInfo;
   browserUrl: BrowserUrlInfo;
   sessionsDir: string;
@@ -468,14 +278,6 @@ export const IPC = {
   status: "recorder:status",
   marker: "recorder:marker",
   doctor: "doctor:check",
-  copilotSignIn: "copilot:sign-in",
-  copilotSignInCancel: "copilot:sign-in-cancel",
-  aiConnectionStatus: "ai:status",
-  aiConnectionChanged: "ai:changed",
-  aiConnectionGitHub: "ai:github",
-  aiConnectionSave: "ai:save",
-  aiConnectionForget: "ai:forget",
-  aiConnectionCancel: "ai:cancel",
   statusChanged: "recorder:status-changed",
   recordingPrivacyReviewed: "recorder:privacy-reviewed",
   recordingPrivacyWarningRequested: "recorder:privacy-warning-requested",
@@ -487,36 +289,13 @@ export const IPC = {
   sensitiveSetAdvanced: "sensitive:set-advanced",
   sensitiveDownloadModels: "sensitive:download-models",
   sensitiveStatusChanged: "sensitive:status-changed",
-  sensitiveGetReport: "sensitive:get-report",
-  analyze: "analyze:start",
-  analyzeFeedback: "analyze:feedback",
-  getAnalysis: "analyze:get",
-  updateAnalysis: "analyze:update",
-  cancelAnalysis: "analyze:cancel",
-  analyzeProgress: "analyze:progress",
   listSessions: "sessions:list",
-  importRecording: "import:select",
-  cancelImport: "import:cancel",
-  saveImportDetails: "import:details",
+  openSessionsFolder: "sessions:open-folder",
   sessionsChanged: "sessions:changed",
   librarySelection: "ui:library-selection",
   takeLibrarySelection: "ui:take-library-selection",
   deleteSession: "sessions:delete",
   exportDebugBundle: "sessions:export-debug",
-  buildSkill: "skill:build",
-  prepareSkill: "skill:prepare",
-  discardSkillPreview: "skill:discard-preview",
-  createSkill: "skill:create",
-  getSkill: "skill:get",
-  cancelSkill: "skill:cancel",
-  revealSkill: "skill:reveal",
-  skillProgress: "skill:progress",
-  buildAutomation: "automation:build",
-  createAutomation: "automation:create",
-  getAutomation: "automation:get",
-  cancelAutomation: "automation:cancel",
-  revealAutomation: "automation:reveal",
-  automationProgress: "automation:progress",
   terminalOpen: "terminal:open",
   terminalReady: "terminal:ready",
   terminalStatus: "terminal:status",
@@ -534,8 +313,8 @@ export const IPC = {
   fitRecorderHeight: "ui:fit-recorder-height",
 } as const;
 
-/** Shape exposed on `window.skillRecorder` by the preload bridge. */
-export interface SkillRecorderApi {
+/** Shape exposed on `window.handover` by the preload bridge. */
+export interface HandoverApi {
   /** Request a start; may require the pre-recording privacy warning first. */
   start(): Promise<StartResult>;
   /** Start once after the user explicitly proceeds through the privacy warning. */
@@ -560,18 +339,6 @@ export interface SkillRecorderApi {
   status(): Promise<RecorderStatus>;
   marker(note: string): Promise<MarkerResult>;
   doctor(): Promise<DoctorReport>;
-  /**
-   * Sign in through the browser using the bundled CLI and verify authentication.
-   * The attempt ID scopes cancellation to the requesting panel.
-   */
-  copilotSignIn(attemptId: string): Promise<CopilotSignInResult>;
-  cancelCopilotSignIn(attemptId: string): Promise<void>;
-  aiConnectionStatus(): Promise<AiConnectionStatus>;
-  onAiConnectionChanged(cb: (status: AiConnectionStatus) => void): () => void;
-  aiConnectionGitHub(attemptId: string): Promise<AiConnectionResult>;
-  aiConnectionSave(attemptId: string, profile: ByomConfig, apiKey?: string): Promise<AiConnectionResult>;
-  aiConnectionForget(attemptId: string): Promise<AiConnectionResult>;
-  aiConnectionCancel(attemptId: string): Promise<void>;
   onStatusChanged(cb: (status: RecorderStatus) => void): () => void;
   openTerminal(): Promise<TerminalActionResult>;
   terminalReady(): Promise<TerminalActionResult>;
@@ -599,29 +366,10 @@ export interface SkillRecorderApi {
    *  repeatedly. */
   downloadSensitiveModels(): Promise<SensitiveModelActionResult>;
   onSensitiveModelStatusChanged(cb: (status: SensitiveModelStatus) => void): () => void;
-  /** Load the persisted redaction summary for a session, if any. Lets the review
-   *  panel rehydrate when an already-analyzed session is reopened (the live `review`
-   *  from {@link analyze} is transient). Contains only masked values + counts. */
-  getSensitiveReport(sessionId: string): Promise<SensitiveReport | null>;
-  /** Run the Copilot describer on a session (defaults to the last completed one).
-   *  Runs an on-device sensitive-detail scan first and redacts any flagged values
-   *  from the text before it is sent — non-blocking; the analysis always proceeds
-   *  and any redaction is reported back in `review`. */
-  analyze(sessionId?: string): Promise<AnalyzeResult>;
-  /** Send NL feedback and re-analyze in the same multi-turn session. */
-  analyzeFeedback(input: AnalysisFeedbackInput): Promise<AnalyzeResult>;
-  /** Load the persisted analysis for a session, if any. */
-  getAnalysis(sessionId: string): Promise<Analysis | null>;
-  /** Edit the title/intent text directly (no re-analysis). */
-  updateAnalysis(input: AnalysisEditInput): Promise<AnalyzeResult>;
-  /** Abort an in-flight analysis. */
-  cancelAnalysis(sessionId: string): Promise<{ ok: boolean }>;
-  onAnalyzeProgress(cb: (progress: AnalyzeProgress) => void): () => void;
   /** All saved recordings, newest first, for the sessions library. */
   listSessions(): Promise<SessionSummary[]>;
-  importRecording(): Promise<ImportResult>;
-  cancelImport(): Promise<void>;
-  saveImportDetails(sessionId: string, details: ImportDetails): Promise<{ ok: boolean; error?: string }>;
+  /** Reveal the folder that holds all saved recordings in the OS file manager. */
+  openSessionsFolder(): Promise<{ ok: boolean; error?: string }>;
   onSessionsChanged(cb: () => void): () => void;
   onLibrarySelection(cb: () => void): () => void;
   takeLibrarySelection(): Promise<string | null>;
@@ -633,49 +381,6 @@ export interface SkillRecorderApi {
    * contains private capture data; the renderer warns before calling this.
    */
   exportDebugBundle(sessionId: string): Promise<DebugBundleResult>;
-  /**
-   * Propose (or refine) a skill from a recording's analysis. Pass `feedback` to
-   * revise the current plan in the same multi-turn conversation.
-   */
-  buildSkill(input: SkillBuildInput): Promise<SkillPlanResult>;
-  /**
-   * Finalize the (user-edited) skill plan and place its SKILL.md. The edited plan the
-   * user sees is authoritative — the body is written from exactly these values and steps.
-   * `placement` picks the destination: `"install"` writes into the target agent's live
-   * skills folder (Scout); `"export"` prompts for a folder and downloads it there (the
-   * only option for Cowork). Defaults to `"install"`.
-   */
-  prepareSkill(sessionId: string, plan: SkillPlan): Promise<SkillPreviewResult>;
-  discardSkillPreview(sessionId: string, previewId?: string): Promise<{ ok: boolean; error?: string }>;
-  createSkill(
-    sessionId: string,
-    plan: SkillPlan,
-    placement?: SkillPlacement,
-    previewId?: string,
-  ): Promise<SkillCreateResult>;
-  /** Load a previously built skill for a session, if any. */
-  getSkill(sessionId: string): Promise<BuiltSkill | null>;
-  /** Abort an in-flight build. */
-  cancelSkill(sessionId: string): Promise<{ ok: boolean }>;
-  /** Reveal an exported SKILL.md in the OS file manager. */
-  /** Reveal a session's exported SKILL.md in the OS file manager. */
-  revealSkill(sessionId: string): Promise<{ ok: boolean }>;
-  onSkillProgress(cb: (progress: SkillBuildProgress) => void): () => void;
-  /**
-   * Propose (or refine) an automation from a recording's analysis. Pass `feedback`
-   * to revise the current plan in the same multi-turn conversation.
-   */
-  buildAutomation(input: AutomationBuildInput): Promise<AutomationPlanResult>;
-  /** Finalize the (user-edited) automation plan and export its importable bundle.
-   *  The edited plan is authoritative — the bundle is built from it verbatim. */
-  createAutomation(sessionId: string, plan: AutomationPlan): Promise<AutomationCreateResult>;
-  /** Load a previously built automation for a session, if any. */
-  getAutomation(sessionId: string): Promise<BuiltAutomation | null>;
-  /** Abort an in-flight automation build. */
-  cancelAutomation(sessionId: string): Promise<{ ok: boolean }>;
-  /** Reveal a session's exported automation bundle in the OS file manager. */
-  revealAutomation(sessionId: string): Promise<{ ok: boolean }>;
-  onAutomationProgress(cb: (progress: AutomationBuildProgress) => void): () => void;
   /** Open (and focus) the Sessions library window, docked to the recorder. */
   openLibrary(sessionId?: string): Promise<void>;
   /** Close the Sessions library window from within it. */

@@ -193,7 +193,7 @@ export class RecorderController {
   start(options?: StartOptions): Promise<StartResult> {
     return this.enqueue(() =>
       this.shuttingDown
-        ? Promise.resolve({ ok: false, error: "Skill Recorder is shutting down." })
+        ? Promise.resolve({ ok: false, error: "Handover is shutting down." })
         : this.startInternal(options),
     );
   }

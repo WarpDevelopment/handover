@@ -17,7 +17,6 @@ import {
   searchTerminalOutput,
 } from "./artifacts";
 import { TerminalTranscriptWriter } from "./transcript";
-import { createDescriberTools } from "../describer/tools";
 
 const NONCE = "recorded_terminal_nonce_1234";
 
@@ -94,7 +93,7 @@ test("shell discovery honors supported defaults without invoking a shell", () =>
 });
 
 test("temporary shell integration chains but never modifies the real profile", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-shell-test-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-shell-test-"));
   const home = path.join(root, "home");
   await mkdir(home);
   const profile = path.join(home, ".bashrc");
@@ -115,7 +114,7 @@ test("temporary shell integration chains but never modifies the real profile", a
     assert.equal(launch.executable, "/bin/bash");
     assert.deepEqual(launch.args.slice(0, 1), ["--rcfile"]);
     const wrapper = await readFile(launch.args[1], "utf8");
-    assert.match(wrapper, /Skill Recorder generated shell integration/);
+    assert.match(wrapper, /Handover generated shell integration/);
     assert.match(wrapper, /USER_SETTING|\.bashrc/);
     assert.match(wrapper, /HISTTIMEFORMAT= builtin history 1/);
     assert.match(wrapper, /HISTFILE=\/dev\/null/);
@@ -147,7 +146,7 @@ test("temporary shell integration chains but never modifies the real profile", a
 });
 
 test("transcript persists full output and an indexed command range", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-terminal-test-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-terminal-test-"));
   try {
     const commands: string[] = [];
     const writer = new TerminalTranscriptWriter({
@@ -196,7 +195,7 @@ test("transcript persists full output and an indexed command range", async () =>
 });
 
 test("closing a transcript marks an active command interrupted", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-terminal-test-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-terminal-test-"));
   try {
     const writer = new TerminalTranscriptWriter({
       sessionDir: root,
@@ -216,88 +215,6 @@ test("closing a transcript marks an active command interrupted", async () => {
     const page = await listTerminalCommands(root);
     assert.equal(page.commands[0].interrupted, true);
     assert.equal(page.commands[0].exitCode, null);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("terminal output tool applies redaction before returning an excerpt", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-terminal-test-"));
-  const secret = "ghp_" + "Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8";
-  try {
-    const writer = new TerminalTranscriptWriter({
-      sessionDir: root,
-      sessionStartedAt: 1_000,
-    });
-    writer.appendOutput(`token=${secret}\r\n`, 1_500);
-    await writer.close();
-    const tools = createDescriberTools({
-      sessionDir: root,
-      startedAt: 1_000,
-      extractor: null,
-      redaction: {
-        current: {
-          redactText: (text) => text.split(secret).join("[redacted]"),
-          frameRedactor: null,
-        },
-      },
-      onSubmit: () => undefined,
-    });
-    const tool = tools.find((candidate) => candidate.name === "search_terminal_output");
-    assert.ok(tool?.handler);
-    const handler = tool.handler as (args: unknown) => Promise<unknown> | unknown;
-    const result = await handler({ query: "ghp_" });
-    const serialized = String(result);
-    assert.equal(serialized.includes(secret), false);
-    assert.match(serialized, /\[redacted\]/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("terminal command tool truncates fields and caps oversized page requests", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-terminal-test-"));
-  try {
-    const writer = new TerminalTranscriptWriter({
-      sessionDir: root,
-      sessionStartedAt: 1_000,
-    });
-    for (let index = 0; index < 55; index += 1) {
-      writer.startCommand({
-        type: "command-start",
-        id: `cmd-${index}`,
-        command: index === 0 ? "x".repeat(70_000) : `echo ${index}`,
-        cwd: index === 0 ? `/${"y".repeat(70_000)}` : "/work",
-        shell: "bash",
-        atMs: 1_100 + index * 10,
-      });
-      writer.finishCommand({
-        type: "command-finish",
-        id: `cmd-${index}`,
-        exitCode: 0,
-        atMs: 1_105 + index * 10,
-      });
-    }
-    await writer.close();
-    const tools = createDescriberTools({
-      sessionDir: root,
-      startedAt: 1_000,
-      extractor: null,
-      redaction: { current: null },
-      onSubmit: () => undefined,
-    });
-    const tool = tools.find((candidate) => candidate.name === "list_terminal_commands");
-    assert.ok(tool?.handler);
-    const handler = tool.handler as (args: unknown) => Promise<unknown> | unknown;
-    const serialized = String(await handler({ limit: 1_000 }));
-    const result = JSON.parse(serialized) as {
-      count: number;
-      commands: Array<{ command: string; cwd: string }>;
-    };
-    assert.equal(result.count, 50);
-    assert.match(result.commands[0].command, /\[truncated\]$/);
-    assert.match(result.commands[0].cwd, /\[truncated\]$/);
-    assert(serialized.length < 20_000);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

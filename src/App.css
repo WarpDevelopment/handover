@@ -1,18 +1,4 @@
-/* Segoe Sans — Scout's brand typeface (bundled from the Scout app). */
-@font-face {
-  font-family: "Segoe Sans";
-  src: url("./assets/fonts/Segoe-sans.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Segoe Sans";
-  src: url("./assets/fonts/Segoe-sans-Italic.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: italic;
-  font-display: swap;
-}
+/* Typography uses the system font stack; no typefaces are bundled. */
 
 :root {
   color-scheme: light;
@@ -50,8 +36,8 @@
   --warn: hsl(35, 92%, 42%);       /* amber for "needs setup" (not an error) */
   --warn-rgb: 206, 123, 9;
 
-  --sans: "Segoe Sans", Aptos, Calibri, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", Roboto, sans-serif;
+  --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
   --mono: Consolas, "SF Mono", "JetBrains Mono", Menlo, "Courier New", monospace;
 }
 
@@ -3260,7 +3246,7 @@ dialog.ai-connection-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
 
 /* ==========================================================================
    Read-first review tiles (src/plan-edit.tsx). Each gate reads as a calm report
-   of what Copilot proposed; a field becomes an input only when clicked. Controls
+   of what was proposed; a field becomes an input only when clicked. Controls
    (reorder / remove) are revealed on hover. No wall of text boxes by default.
    ========================================================================== */
 
