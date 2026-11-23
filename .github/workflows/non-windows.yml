@@ -96,6 +96,9 @@ jobs:
           # signature; this only stops Developer ID auto-discovery on the runner.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
+      - name: Verify the bundled narration model in the app
+        run: node scripts/fetch-models.mjs --verify --out=release/mac-arm64/Handover.app/Contents/Resources/models
+
       - name: Upload macOS zip
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
