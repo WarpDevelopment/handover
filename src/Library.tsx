@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { NarrationStatus, SessionSummary } from "../common/ipc";
 import { formatBytes, formatDur, formatWhen } from "./format";
+import { StepReview } from "./StepReview";
 
 export function Library() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -240,6 +241,7 @@ function SessionDetail({
   onChanged: () => void | Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState(false);
   const voiceBusy =
     narrationStatus?.activeSessionId === summary.id && narrationStatus.phase !== "idle";
 
@@ -250,6 +252,10 @@ function SessionDetail({
     await onChanged();
   }, [summary.id, onChanged]);
 
+  if (reviewing) {
+    return <StepReview sessionId={summary.id} onClose={() => setReviewing(false)} />;
+  }
+
   return (
     <div className="detail">
       <header className="detail-head">
@@ -257,6 +263,9 @@ function SessionDetail({
           <span className="eyebrow">Recording</span>
           <h2>{formatWhen(summary.startedAt)}</h2>
         </div>
+        <button className="record-cta" onClick={() => setReviewing(true)}>
+          Review steps
+        </button>
         <ExportPackageButton sessionId={summary.id} />
         <DebugDownload sessionId={summary.id} />
       </header>

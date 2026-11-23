@@ -27,6 +27,9 @@ export function RecordingControls() {
   const [terminalPending, setTerminalPending] = useState(false);
   const [terminalConfirm, setTerminalConfirm] = useState<"done" | "discard" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [explainPending, setExplainPending] = useState(false);
+  const [pausePending, setPausePending] = useState(false);
+  const [explainHotkey, setExplainHotkey] = useState<string | null>(null);
   const keepRecordingRef = useRef<HTMLButtonElement>(null);
   const microphoneControlRef = useRef<HTMLDivElement>(null);
   const microphoneMenuRef = useRef<HTMLElement>(null);
@@ -35,6 +38,7 @@ export function RecordingControls() {
     void window.handover.status().then(setStatus);
     void window.handover.microphoneSettings().then(setMicrophoneSettings);
     void window.handover.terminalStatus().then(setTerminalStatus);
+    void window.handover.explainHotkey().then(setExplainHotkey);
     const offStatus = window.handover.onStatusChanged(setStatus);
     const offMicrophones =
       window.handover.onMicrophoneSettingsChanged(setMicrophoneSettings);
@@ -202,6 +206,25 @@ export function RecordingControls() {
     setTerminalPending(false);
   }, []);
 
+  const paused = status?.paused === true;
+  const explaining = status?.explaining === true;
+  const startExplain = useCallback(async () => {
+    setExplainPending(true);
+    setActionError(null);
+    setConfirmDiscard(false);
+    setShowMicrophoneMenu(false);
+    const result = await window.handover.explain();
+    if (!result.ok) setActionError(result.error ?? "Could not freeze the screen.");
+    setExplainPending(false);
+  }, []);
+  const togglePause = useCallback(async () => {
+    setPausePending(true);
+    setActionError(null);
+    const result = paused ? await window.handover.resume() : await window.handover.pause();
+    if (!result.ok) setActionError(result.error ?? "Could not change the pause.");
+    setPausePending(false);
+  }, [paused]);
+
   const transitionBusy = status?.transition !== "none";
   const microphoneBusy =
     microphonePending ||
@@ -241,13 +264,23 @@ export function RecordingControls() {
         ? "Saving"
         : status?.transition === "discarding"
           ? "Discarding"
-          : "Capturing";
+          : paused
+            ? "Paused"
+            : explaining
+              ? "Explaining"
+              : "Capturing";
+  const hotkeyLabel = explainHotkey
+    ? explainHotkey
+        .replace("CommandOrControl", /Mac/i.test(navigator.platform) ? "⌘" : "Ctrl")
+        .replace("Shift", /Mac/i.test(navigator.platform) ? "⇧" : "Shift")
+        .replace(/\+/g, /Mac/i.test(navigator.platform) ? "" : "+")
+    : null;
 
   return (
     <div
       className={`recording-controls ${
         confirmDiscard || showMicrophoneMenu || terminalConfirm ? "expanded" : ""
-      }`}
+      } ${paused ? "paused" : ""}`}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && confirmDiscard) setConfirmDiscard(false);
       }}
@@ -451,6 +484,33 @@ export function RecordingControls() {
             </button>
           </div>
 
+          <button
+            className="recording-explain"
+            disabled={lifecycleBusy || explainPending || paused || explaining}
+            aria-label="Explain: freeze the screen, then highlight and comment on it"
+            title={
+              hotkeyLabel
+                ? `Freeze the screen to highlight and comment on it (${hotkeyLabel})`
+                : "Freeze the screen to highlight and comment on it"
+            }
+            onClick={() => void startExplain()}
+          >
+            <ExplainIcon />
+            <span>Explain</span>
+          </button>
+
+          <button
+            className={`recording-pause ${paused ? "on" : ""}`}
+            disabled={lifecycleBusy || pausePending || explaining}
+            aria-pressed={paused}
+            aria-label={paused ? "Resume recording" : "Pause recording"}
+            title={paused ? "Resume recording" : "Pause: nothing is captured until you resume"}
+            onClick={() => void togglePause()}
+          >
+            <PauseIcon resume={paused} />
+            <span>{paused ? "Resume" : "Pause"}</span>
+          </button>
+
           {FULL_CAPTURE.terminal && (
           <button
             className={`recording-terminal ${
@@ -519,6 +579,27 @@ function ChevronIcon({ open }: { open: boolean }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function ExplainIcon() {
+  return (
+    <svg width="17" height="16" viewBox="0 0 18 16" fill="none" aria-hidden>
+      <rect x="1.5" y="2" width="15" height="12" rx="2" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M5 10.5 8.2 5.8m0 0H5.6m2.6 0v2.6M10.5 10.5h2.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PauseIcon({ resume }: { resume: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+      {resume ? (
+        <path d="M4 2.6v8.8L11 7 4 2.6Z" fill="currentColor" />
+      ) : (
+        <path d="M4.5 2.5v9M9.5 2.5v9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      )}
     </svg>
   );
 }
