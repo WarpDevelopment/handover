@@ -56,7 +56,11 @@ A real bug found by a test: sharp keeps only the last `resize` in a chain, so th
 - **Boot smoke:** `node scripts/run-reviewed-electron.mjs start --user-data-dir=<temp>` on the built app ran for 14 s with 10 Electron processes alive and the log `[Sensitive/models] advanced protection on; provisioning OCR model in background` and `[Main] Capture: recording all sources`, no error. This loads `main.ts`, `ipc.ts` (including the new export channel), the preload and the Library bundle. A plain `npm start` printed nothing and exited while another Handover instance (a different lane's) was running, which is the single-instance lock; that is why the second run used a separate user-data directory.
 
 ## CI
-CI_RUNS_PLACEHOLDER
+Last code commit `309846f` (the evidence text before this one):
+- Windows x64: https://github.com/WarpDevelopment/handover/actions/runs/45224940048, success, artifact `handover-windows-x64` (499.7 MB, uploaded).
+- macOS: https://github.com/WarpDevelopment/handover/actions/runs/45224940092, success, artifact `handover-macos-arm64` (510.3 MB).
+- Earlier history: the first Windows run failed on a CRLF checkout of the golden files (fixed by `.gitattributes`), and the run for `5edb0fe` failed on the handoff test reading the spec with CRLF (fixed in `b1b4b0d`). Both fixed runs are green (`45224588165` Windows, `45224588236` macOS).
+- The commit that adds these URLs is docs only; its own runs are listed on the branch page and reported in the `hc send` message.
 
 ## Left unproven or open
 1. **UI Record/Stop and Export button** were not clicked; the harness called the controller and `exportPackage` directly. The export dialog (`dialog.showSaveDialog`) has not been exercised by a person.
