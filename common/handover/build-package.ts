@@ -90,19 +90,47 @@ function clip(i: Interval, duration: number): Interval | null {
   return end > start ? { start, end } : null;
 }
 
+/**
+ * Gap convention: a `gap` event without `tEndMs` opens a gap at its `t`; a later `gap` with the
+ * same reason and a `tEndMs` closes it (ending at `tEndMs`); an unclosed gap runs to session end.
+ * A `gap` with `tEndMs` and nothing open for its reason is a complete gap starting at its own `t`.
+ */
+export function resolveGaps(
+  events: readonly RecEvent[],
+  durationMs: number,
+): { reason: GapPayload["reason"]; start: number; end: number }[] {
+  const out: { reason: GapPayload["reason"]; start: number; end: number }[] = [];
+  const open = new Map<string, { reason: GapPayload["reason"]; start: number; end: number }>();
+  for (const ev of eventsOfType(events, "gap")) {
+    const p = ev.payload as unknown as GapPayload;
+    const current = open.get(p.reason);
+    if (p.tEndMs === undefined) {
+      if (current) continue; // already open for this reason
+      const g = { reason: p.reason, start: ev.t, end: durationMs };
+      open.set(p.reason, g);
+      out.push(g);
+    } else if (current) {
+      current.end = Math.max(current.start, p.tEndMs);
+      open.delete(p.reason);
+    } else {
+      out.push({ reason: p.reason, start: ev.t, end: Math.max(ev.t, p.tEndMs) });
+    }
+  }
+  return out;
+}
+
 /** Pause, explain and task time. `task_ms + explain_ms + paused_ms = duration_ms`. */
 export function computeTiming(events: readonly RecEvent[], durationMs: number) {
   const gapIntervals: Interval[] = [];
   const explain: Interval[] = [];
   let explainOpen: number | null = null;
+  for (const g of resolveGaps(events, durationMs)) {
+    if (g.reason !== "user_paused") continue;
+    const c = clip({ start: g.start, end: g.end }, durationMs);
+    if (c) gapIntervals.push(c);
+  }
   for (const ev of [...events].sort((a, b) => a.t - b.t || a.seq - b.seq)) {
-    if (ev.type === "gap") {
-      const p = ev.payload as unknown as GapPayload;
-      if (p.reason === "user_paused") {
-        const c = clip({ start: ev.t, end: p.tEndMs ?? durationMs }, durationMs);
-        if (c) gapIntervals.push(c);
-      }
-    } else if (ev.type === "explain.start") {
+    if (ev.type === "explain.start") {
       if (explainOpen === null) explainOpen = ev.t;
     } else if (ev.type === "explain.end") {
       if (explainOpen !== null) {
@@ -663,10 +691,10 @@ export async function buildPackage(
 
   // --- Gaps ---
   const gaps: GapRecord[] = [];
-  for (const ev of eventsOfType(events, "gap")) {
-    const p = ev.payload as unknown as GapPayload;
-    const start = Math.round(ev.t);
-    const end = Math.round(p.tEndMs ?? durationMs);
+  for (const g of resolveGaps(events, durationMs)) {
+    const p = { reason: g.reason };
+    const start = Math.round(g.start);
+    const end = Math.round(g.end);
     let after: string | undefined;
     let beforeStep: string | undefined;
     for (const s of stepRecords) {

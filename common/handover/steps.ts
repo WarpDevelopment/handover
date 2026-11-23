@@ -48,15 +48,28 @@ export interface StepDraft {
 
 const BROWSERS = ["google chrome", "chrome", "microsoft edge", "msedge", "edge", "firefox", "safari",
   "brave", "brave browser", "arc", "opera", "vivaldi", "chromium"];
-const REMOTE = ["mstsc", "msrdc", "windows app", "microsoft remote desktop", "citrix workspace",
-  "wfica", "citrix viewer", "remote desktop connection"];
+const REMOTE = ["mstsc", "msrdc", "msrdcw", "windowsapp", "windows app", "microsoft remote desktop",
+  "citrix workspace", "wfica", "wfica32", "citrix viewer", "remote desktop connection"];
+const BROWSER_BUNDLES = ["com.google.chrome", "com.apple.safari", "org.mozilla.firefox",
+  "com.microsoft.edgemac", "com.brave.browser", "company.thebrowser.browser",
+  "com.operasoftware.opera", "com.vivaldi.vivaldi", "org.chromium.chromium"];
+const REMOTE_BUNDLES = ["com.microsoft.rdc.macos", "com.microsoft.rdc.osx.beta", "com.citrix.receiver.nomas"];
 
-export function appKind(name: string | undefined, processName?: string): AppKind {
+export function appKind(
+  name: string | undefined,
+  processName?: string,
+  bundleId?: string,
+  unavailableReason?: string,
+): AppKind {
   const n = (name ?? "").trim().toLowerCase();
   const p = (processName ?? "").trim().toLowerCase().replace(/\.exe$/, "");
-  if (!n && !p) return "unknown";
-  if (REMOTE.some((r) => n === r || p === r || n.startsWith(`${r} `))) return "remote_session";
-  if (BROWSERS.includes(n) || BROWSERS.includes(p)) return "browser";
+  const b = (bundleId ?? "").trim().toLowerCase();
+  if (unavailableReason === "remote_session") return "remote_session";
+  if (!n && !p && !b) return "unknown";
+  if (REMOTE_BUNDLES.includes(b) || REMOTE.some((r) => n === r || p === r || n.startsWith(`${r} `))) {
+    return "remote_session";
+  }
+  if (BROWSER_BUNDLES.includes(b) || BROWSERS.includes(n) || BROWSERS.includes(p)) return "browser";
   return "native";
 }
 
@@ -125,6 +138,9 @@ export function groundingOf(click: PointerClickPayload): {
   }
   return { grounding: "visual_only", unavailable: click.unavailableReason ?? "helper_missing" };
 }
+
+/** The second click of a double-click follows the first by less than this. */
+const DOUBLE_CLICK_MERGE_MS = 1000;
 
 /** Helper control-lookup time of a click, clamped to a sane 0 to 1,000 ms. */
 export function clickLookupMs(click: Pick<PointerClickPayload, "lookupMs">): number {
@@ -211,13 +227,38 @@ export function buildSteps(
             name: t.app.name,
             ...(t.app.process ? { process: t.app.process } : {}),
             ...(t.app.bundleId ? { bundle_id: t.app.bundleId } : {}),
-            kind: appKind(t.app.name, t.app.process),
+            kind: appKind(t.app.name, t.app.process, t.app.bundleId, click.unavailableReason),
           };
+        } else if (click.unavailableReason === "remote_session") {
+          app = { ...app, kind: "remote_session" };
         }
         if (t?.windowTitle) title = t.windowTitle;
         const actionType: StepDraft["actionType"] =
           click.button === "right" ? "right_click" : click.clickCount === 2 ? "double_click" : "click";
         const dpx = toDpx(click, ev.t);
+        // A double-click arrives as two clicks, the second with clickCount 2: one step.
+        const prev = steps[steps.length - 1];
+        if (
+          click.clickCount === 2 &&
+          prev?.kind === "action" &&
+          prev.click?.clickCount === 1 &&
+          prev.click.button === click.button &&
+          ev.t - prev.tMs <= DOUBLE_CLICK_MERGE_MS
+        ) {
+          const merged: PointerClickPayload = { ...click, target: click.target ?? prev.click.target };
+          prev.actionType = click.button === "right" ? "right_click" : "double_click";
+          prev.click = merged;
+          prev.app = app;
+          prev.windowTitle = title;
+          prev.summary = summaryFor({
+            actionType: prev.actionType,
+            appName: app.name,
+            target: merged.target ? { role: merged.target.role, name: merged.target.name } : undefined,
+            pointDpx: toDpx(merged, prev.tMs),
+          });
+          lastClick = { tMs: ev.t, appName: app.name };
+          break;
+        }
         steps.push({
           kind: "action",
           observedVia: "pointer",

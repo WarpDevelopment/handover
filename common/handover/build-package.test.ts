@@ -288,6 +288,33 @@ test("edits: delete renumbers ids and drops its annotations; edit_summary and ed
   }
 });
 
+test("gap convention: open without tEndMs, closed by a later gap with the same reason, unclosed runs to the end", async () => {
+  const { session } = await load();
+  const base = session.events.filter((e) => e.type !== "gap");
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...base,
+    gap(50, 13000, { reason: "user_paused" }), // opens
+    gap(51, 14000, { reason: "helper_restart" }), // opens another reason; never closed
+    gap(52, 15000, { reason: "user_paused", tEndMs: 15000 }), // closes the pause
+    gap(53, 18000, { reason: "capture_lost", tEndMs: 19000 }), // complete on its own
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(
+    gaps.map((g) => [g.reason, g.t_start_ms, g.t_end_ms]),
+    [["user_paused", 13000, 15000], ["helper_restart", 14000, 20000], ["capture_lost", 18000, 19000]],
+  );
+  const m = JSON.parse(text(files, "manifest.json"));
+  assert.equal(m.recording.paused_ms, 2000);
+  assert.equal(m.recording.task_ms + m.recording.explain_ms + m.recording.paused_ms, m.recording.duration_ms);
+  // An unclosed pause runs to session end.
+  const open = await buildPackage({ ...session, events: [...base, gap(50, 13000, { reason: "user_paused" })] }, [], CTX);
+  assert.equal(JSON.parse(text(open, "manifest.json")).recording.paused_ms, 7000);
+});
+
 test("deleting the last step leaves no after frame: a frame taken after the deleted action is not 'about 500 ms after' the new last step", async () => {
   const { session } = await load();
   const files = await buildPackage(session, [{ edit_id: "e1", at: "t", op: "delete_step", step_id: "S06" }], CTX);

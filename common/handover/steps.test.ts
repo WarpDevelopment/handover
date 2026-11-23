@@ -104,6 +104,68 @@ test("URLs drop query and fragment; non-web schemes are dropped", () => {
   assert.equal(reduceUrl("not a url"), undefined);
 });
 
+test("app kind comes from process, bundle id and the remote_session reason (ClickTarget.app has no kind)", () => {
+  for (const p of ["mstsc.exe", "msrdc.exe", "msrdcw.exe", "WindowsApp.exe", "wfica32.exe"]) {
+    assert.equal(appKind("x", p), "remote_session", p);
+  }
+  assert.equal(appKind("Windows App", "WindowsApp.exe"), "remote_session");
+  assert.equal(appKind("Chrome", "chrome.exe"), "browser");
+  assert.equal(appKind("Safari", undefined, "com.apple.Safari"), "browser");
+  assert.equal(appKind("Some", undefined, "com.microsoft.rdc.macos"), "remote_session");
+  assert.equal(appKind("Excel", "EXCEL.EXE", "com.microsoft.Excel", "remote_session"), "remote_session");
+  assert.equal(appKind("Excel", "EXCEL.EXE"), "native");
+  // End to end: a click with no target but the remote_session reason marks the app.
+  const steps = buildSteps(
+    [
+      ev(100, "app.activate", { app: "Notepad", title: "" }),
+      ev(900, "pointer.click", { button: "left", clickCount: 1, space: "windows_virtual_px", x: 1, y: 1, unavailableReason: "remote_session" }),
+    ],
+    dpx,
+  );
+  assert.equal(steps[1].app.kind, "remote_session");
+  const viaTarget = buildSteps(
+    [ev(100, "pointer.click", { button: "left", clickCount: 1, space: "windows_virtual_px", x: 1, y: 1,
+      target: { grounding: "accessibility", source: "uia", role: "button", nativeRole: "Button", name: "OK", isPassword: false, app: { name: "Remote Desktop", process: "mstsc.exe" } } })],
+    dpx,
+  );
+  assert.equal(viaTarget[0].app.kind, "remote_session");
+});
+
+test("a double-click (two clicks, the second with clickCount 2) is one double_click step", () => {
+  const target = { grounding: "accessibility", source: "ax", role: "cell", nativeRole: "AXCell", name: "B2", isPassword: false, app: { name: "Excel" } };
+  const steps = buildSteps(
+    [
+      ev(1000, "pointer.click", { button: "left", clickCount: 1, space: "macos_global_points", x: 5, y: 6, lookupMs: 20, target }),
+      ev(1180, "pointer.click", { button: "left", clickCount: 2, space: "macos_global_points", x: 5, y: 6, lookupMs: 20, target }),
+      ev(5000, "pointer.click", { button: "left", clickCount: 1, space: "macos_global_points", x: 9, y: 9 }),
+    ],
+    dpx,
+  );
+  assert.equal(steps.length, 2);
+  assert.equal(steps[0].actionType, "double_click");
+  assert.equal(steps[0].summary, 'Double-click cell "B2" in Excel');
+  assert.equal(steps[0].tMs, 1000, "the step keeps the first click's time");
+  assert.equal(steps[0].frameTMs, 980);
+  assert.equal(steps[0].click?.clickCount, 2);
+  // Too far apart, a different button, or no first click: not merged.
+  const apart = buildSteps(
+    [
+      ev(1000, "pointer.click", { button: "left", clickCount: 1, space: "macos_global_points", x: 5, y: 6 }),
+      ev(2500, "pointer.click", { button: "left", clickCount: 2, space: "macos_global_points", x: 5, y: 6 }),
+    ],
+    dpx,
+  );
+  assert.equal(apart.length, 2);
+  const otherButton = buildSteps(
+    [
+      ev(1000, "pointer.click", { button: "left", clickCount: 1, space: "macos_global_points", x: 5, y: 6 }),
+      ev(1100, "pointer.click", { button: "right", clickCount: 2, space: "macos_global_points", x: 5, y: 6 }),
+    ],
+    dpx,
+  );
+  assert.equal(otherButton.length, 2);
+});
+
 test("app kind recognises browsers and remote sessions", () => {
   assert.equal(appKind("Google Chrome"), "browser");
   assert.equal(appKind("", "msedge.exe"), "browser");
