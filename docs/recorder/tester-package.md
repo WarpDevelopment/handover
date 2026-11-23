@@ -59,11 +59,11 @@ One step is one click, one app/window switch, or one manual step the user added.
 |---|---|---|
 | `step_id` | yes | `S01…`, renumbered at export in `seq` order |
 | `seq` | yes | 1-based |
-| `kind` | yes | `action` (click), `context` (app/window switch), `manual` (added in review) |
+| `kind` | yes | `action` (click), `context` (app/window switch, or an Explain freeze, see §4.4), `manual` (added in review) |
 | `t_start_ms`, `t_end_ms` | yes | ms from recording start, half-open interval |
 | `summary` | yes | one imperative sentence from a template, e.g. `Click button "Save" in Excel`; or the user's edited text |
 | `summary_provenance` | yes | `observed` (template) or `user` (edited) |
-| `observed_via` | action/context | `pointer` or `window_change` |
+| `observed_via` | action/context | `pointer`, `window_change` or `explain` |
 | `action` | action | `{type: "click"\|"double_click"\|"right_click"\|"app_switch", point_dpx: {display_id, xy}, point_fpx: [x,y]}` |
 | `target` | action/context | §4.2 |
 | `before` | action/context | frame §4.3 |
@@ -114,7 +114,19 @@ In PROCESS.md a context step shows evidence as `context` instead of a tier, and 
 
 Highlight render (fixed): rect and arrow 3 px `#E5484D`, arrow with a 12 px filled head; highlighter 14 px `#FFD60A` at 40%; freehand 3 px `#E5484D`. The H-mark label goes in a 20 px white-on-`#E5484D` box outside the top-left corner. Highlights are drawn only into `*_full_annotated.png`.
 
-A highlight or comment made during a freeze attaches to the step whose before frame was frozen (the last step before the freeze, or the first step after it when none came before). A narration segment attaches to the step whose `[t_start_ms − 3 s, t_end_ms + 1 s]` window it overlaps most; `anchor_confidence < 0.6` when it overlaps more than one step.
+**Explain steps.** Each Explain freeze becomes its own step, so the marks are always drawn on the exact picture the user annotated.
+- **Which displays.** One step per display that received at least one highlight. When the freeze has comments but no highlights, there is one step for the display under the pointer at freeze time.
+- **Step fields:**
+  - `kind: "context"`, `observed_via: "explain"`, with `t_start_ms` set to `explain.start` and `t_end_ms` to `explain.end`;
+  - `target` is as for a context step (§4.2: `grounding: "none"`), using the app and window that were frontmost at freeze time;
+  - `before` is that display's **frozen frame**, with `full_annotated` drawn on it;
+  - `summary` follows the template `Explain on <app.name>: "<first 80 chars of the first comment>"`, or `Explain on <app.name> (H1, H2)` when there is no comment;
+  - `annotation_ids` lists the step's highlights and comments, and `why` is set from the first comment.
+- **Which step gets each comment.** Comments made in that freeze attach to the step for the display where they were typed, or to the first Explain step of the freeze.
+- **Timing.** Explain steps are ordered by time like any other step. Their time counts in `explain_ms`, not in `task_ms`.
+- **In PROCESS.md** the step shows `evidence explain`, and its Where line is `<app.name> › <window title> (explain)`.
+
+A narration segment attaches to the step whose `[t_start_ms − 3 s, t_end_ms + 1 s]` window it overlaps most; `anchor_confidence < 0.6` when it overlaps more than one step.
 
 ### 4.5 `gaps.jsonl`
 `{gap_id: "gap_0001", t_start_ms, t_end_ms, reason, after_step?, before_step?}` with reason ∈ `user_paused`, `helper_restart`, `capture_lost`, `permission_lost`. Freeze time is not a gap; it is `explain_ms`.
