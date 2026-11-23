@@ -21,7 +21,7 @@ Marked "(label may differ slightly)" because L4 has not landed (no Explain or pa
 |---|---|
 | `npm test` | 267 tests, 0 failed, 0 skipped (docs and one config removal only) |
 | `npm run build` | exit 0 |
-| CI Windows and macOS on HEAD | see the final section |
+| CI on code commit (docs, one config removal) | Windows https://github.com/WarpDevelopment/handover/actions/runs/45234103164 success; macOS https://github.com/WarpDevelopment/handover/actions/runs/45234103114 success. The evidence-link commit has its own runs on the branch page. |
 
 ## Unproven / for the orchestrator
 - After L4 merges, re-read the script against `src/FreezeOverlay.tsx`, `src/StepReview.tsx` and the floating bar, and delete the "label may differ" marks that turn out right. Also decide whether "Review sessions" is how L4 reaches the review screen.
