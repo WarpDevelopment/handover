@@ -31,6 +31,10 @@ function copyStaticAssets(): void {
     path.join(out, "video", "capture-preload.cjs"),
   );
   copyFileSync(
+    path.join(rootDir, "electron", "video", "thumb-diff.cjs"),
+    path.join(out, "video", "thumb-diff.cjs"),
+  );
+  copyFileSync(
     path.join(rootDir, "electron", "audio", "capture.html"),
     path.join(out, "audio", "capture.html"),
   );

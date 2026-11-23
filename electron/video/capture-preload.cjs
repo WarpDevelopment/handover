@@ -4,8 +4,9 @@
 // sends it to the main process as a JPEG. Main keeps the last ~2 s in a ring and writes to disk only
 // the frames a step needs. No video is recorded. Channel names mirror electron/video/recorder.ts.
 const { ipcRenderer } = require("electron");
+const { THUMB_WIDTH, THUMB_HEIGHT, isUnchanged } = require("./thumb-diff.cjs");
 
-/** @type {{ displayId: number, stream: MediaStream, video: HTMLVideoElement, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, hash: HTMLCanvasElement, hashCtx: CanvasRenderingContext2D, lastHash: string, lastSentAt: number, encoding: boolean }[]} */
+/** @type {{ displayId: number, stream: MediaStream, video: HTMLVideoElement, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, hash: HTMLCanvasElement, hashCtx: CanvasRenderingContext2D, lastThumb: Uint8ClampedArray | null, lastSentAt: number, encoding: boolean }[]} */
 let captures = [];
 /** @type {ReturnType<typeof setInterval> | null} */
 let timer = null;
@@ -17,27 +18,10 @@ function epochNow() {
   return performance.timeOrigin + performance.now();
 }
 
-function dhash(cap) {
-  cap.hashCtx.drawImage(cap.video, 0, 0, 9, 8);
-  const px = cap.hashCtx.getImageData(0, 0, 9, 8).data;
-  let bits = "";
-  for (let row = 0; row < 8; row++) {
-    for (let col = 0; col < 8; col++) {
-      const l = (row * 9 + col) * 4;
-      const r = l + 4;
-      const ll = px[l] * 0.299 + px[l + 1] * 0.587 + px[l + 2] * 0.114;
-      const rl = px[r] * 0.299 + px[r + 1] * 0.587 + px[r + 2] * 0.114;
-      bits += ll < rl ? "1" : "0";
-    }
-  }
-  return bits;
-}
-
-function hamming(a, b) {
-  if (!a || !b) return 64;
-  let d = 0;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
-  return d;
+/** The current frame as a 64x40 RGBA thumbnail (see thumb-diff.cjs). */
+function thumbnail(cap) {
+  cap.hashCtx.drawImage(cap.video, 0, 0, THUMB_WIDTH, THUMB_HEIGHT);
+  return cap.hashCtx.getImageData(0, 0, THUMB_WIDTH, THUMB_HEIGHT).data;
 }
 
 function toJpeg(canvas) {
@@ -57,8 +41,8 @@ async function grab(cap, force) {
   const epoch = Math.round(epochNow());
   // Unchanged screen: tell main to re-stamp the previous frame instead of encoding again. A
   // refresh is forced every second so tiny changes (a typed character) never go stale for long.
-  const hash = dhash(cap);
-  if (!force && cap.lastHash && hamming(hash, cap.lastHash) <= 2 && epoch - cap.lastSentAt < refreshMs) {
+  const thumb = thumbnail(cap);
+  if (!force && isUnchanged(cap.lastThumb, thumb) && epoch - cap.lastSentAt < refreshMs) {
     ipcRenderer.send("video:same", { displayId: cap.displayId, epoch });
     return;
   }
@@ -78,7 +62,7 @@ async function grab(cap, force) {
       height: cap.canvas.height,
       data,
     });
-    cap.lastHash = hash;
+    cap.lastThumb = thumb;
     cap.lastSentAt = epoch;
   } finally {
     cap.encoding = false;
@@ -113,8 +97,8 @@ async function openDisplay(source, opts) {
   await video.play();
   const canvas = document.createElement("canvas");
   const hash = document.createElement("canvas");
-  hash.width = 9;
-  hash.height = 8;
+  hash.width = THUMB_WIDTH;
+  hash.height = THUMB_HEIGHT;
   return {
     displayId: source.displayId,
     stream,
@@ -123,7 +107,7 @@ async function openDisplay(source, opts) {
     ctx: canvas.getContext("2d", { alpha: false }),
     hash,
     hashCtx: hash.getContext("2d", { alpha: false, willReadFrequently: true }),
-    lastHash: "",
+    lastThumb: null,
     lastSentAt: 0,
     encoding: false,
   };
