@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://warpdevelopment.com/handover/tester-package.schema.json",
+  "title": "Handover tester package (0.1-tester)",
+  "description": "manifest.json (#/$defs/manifest) and one line of each jsonl file (#/$defs/step, #/$defs/annotation, #/$defs/gap). See docs/recorder/tester-package.md.",
+  "$defs": {
+    "id_step": { "type": "string", "pattern": "^S[0-9]{2,4}$" },
+    "id_annotation": { "type": "string", "pattern": "^ann_[0-9]{4,6}$" },
+    "id_frame": { "type": "string", "pattern": "^frm_[0-9]{4,6}$" },
+    "id_gap": { "type": "string", "pattern": "^gap_[0-9]{4,6}$" },
+    "id_display": { "type": "string", "pattern": "^d[0-9]{1,2}$" },
+    "id_package": { "type": "string", "pattern": "^pkg_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "ms": { "type": "integer", "minimum": 0 },
+    "point": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+    "rect": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+    "text": {
+      "type": "object",
+      "required": ["text", "redacted", "classes"],
+      "properties": {
+        "text": { "type": "string" },
+        "redacted": { "type": "boolean" },
+        "classes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": ["path", "width", "height", "est_tokens"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^media/[A-Za-z0-9_.-]+\\.png$" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "est_tokens": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "required": ["frame_id", "t_ms", "display_id", "source_rect_dpx", "scale", "full", "redacted_regions_fpx"],
+      "properties": {
+        "frame_id": { "$ref": "#/$defs/id_frame" },
+        "t_ms": { "type": "integer" },
+        "display_id": { "$ref": "#/$defs/id_display" },
+        "source_rect_dpx": { "$ref": "#/$defs/rect" },
+        "scale": { "type": "number" },
+        "full": { "$ref": "#/$defs/image" },
+        "full_annotated": { "$ref": "#/$defs/image" },
+        "crop": {
+          "type": "object",
+          "required": ["path", "width", "height", "est_tokens", "crop_origin_fpx", "crop_scale"],
+          "properties": {
+            "path": { "type": "string", "pattern": "^media/[A-Za-z0-9_.-]+\\.png$" },
+            "width": { "type": "integer", "minimum": 1, "maximum": 800 },
+            "height": { "type": "integer", "minimum": 1, "maximum": 500 },
+            "est_tokens": { "type": "integer", "minimum": 1 },
+            "crop_origin_fpx": { "$ref": "#/$defs/point" },
+            "crop_scale": { "type": "number" }
+          }
+        },
+        "redacted_regions_fpx": { "type": "array", "items": { "$ref": "#/$defs/rect" } }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["app"],
+      "properties": {
+        "grounding": { "enum": ["accessibility", "accessibility_weak", "visual_only"] },
+        "grounding_source": { "enum": ["ax", "uia"] },
+        "unavailable": {
+          "type": "object",
+          "required": ["reason"],
+          "properties": {
+            "reason": {
+              "enum": ["helper_missing", "timeout", "permission_missing", "remote_session", "opaque_toolkit", "elevated_window", "secure_field"]
+            }
+          }
+        },
+        "app": {
+          "type": "object",
+          "required": ["name", "kind"],
+          "properties": {
+            "name": { "type": "string" },
+            "process": { "type": "string" },
+            "bundle_id": { "type": "string" },
+            "kind": { "enum": ["native", "browser", "remote_session", "unknown"] }
+          }
+        },
+        "window": { "type": "object", "required": ["title"], "properties": { "title": { "$ref": "#/$defs/text" } } },
+        "url": { "$ref": "#/$defs/text" },
+        "element": {
+          "type": "object",
+          "required": ["role", "native_role", "name", "is_password"],
+          "properties": {
+            "role": {
+              "enum": ["button", "textbox", "combobox", "option", "menuitem", "link", "tab", "checkbox", "radio", "cell", "row", "listitem", "treeitem", "dialog", "window", "pane", "document", "text", "image", "other"]
+            },
+            "native_role": { "type": "string" },
+            "name": { "$ref": "#/$defs/text" },
+            "automation_id": { "type": "string" },
+            "ax_identifier": { "type": "string" },
+            "is_password": { "type": "boolean" }
+          }
+        },
+        "ancestry": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "type": "object", "required": ["role", "name"], "properties": { "role": { "type": "string" }, "name": { "type": "string" } } }
+        },
+        "display_id": { "$ref": "#/$defs/id_display" },
+        "bounds_dpx": { "$ref": "#/$defs/rect" },
+        "bounds_fpx": { "$ref": "#/$defs/rect" },
+        "locators": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["strategy", "value", "rank", "stability"],
+            "properties": {
+              "strategy": { "enum": ["uia_automation_id", "ax_identifier", "role_name_path", "frame_point"] },
+              "value": { "type": "string" },
+              "rank": { "type": "integer", "minimum": 1 },
+              "stability": { "enum": ["high", "medium", "low"] }
+            }
+          }
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": ["step_id", "seq", "kind", "t_start_ms", "t_end_ms", "summary", "summary_provenance", "annotation_ids", "flags", "boundary", "boundary_source", "scope_verified"],
+      "properties": {
+        "step_id": { "$ref": "#/$defs/id_step" },
+        "seq": { "type": "integer", "minimum": 1 },
+        "kind": { "enum": ["action", "context", "manual"] },
+        "t_start_ms": { "$ref": "#/$defs/ms" },
+        "t_end_ms": { "$ref": "#/$defs/ms" },
+        "summary": { "type": "string", "minLength": 1 },
+        "summary_provenance": { "enum": ["observed", "user"] },
+        "observed_via": { "enum": ["pointer", "window_change"] },
+        "action": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "enum": ["click", "double_click", "right_click", "app_switch"] },
+            "point_dpx": {
+              "type": "object",
+              "required": ["display_id", "xy"],
+              "properties": { "display_id": { "$ref": "#/$defs/id_display" }, "xy": { "$ref": "#/$defs/point" } }
+            },
+            "point_fpx": { "$ref": "#/$defs/point" }
+          }
+        },
+        "target": { "$ref": "#/$defs/target" },
+        "before": { "$ref": "#/$defs/frame" },
+        "after": { "$ref": "#/$defs/frame" },
+        "why": {
+          "type": "object",
+          "required": ["text", "provenance", "source_annotation_ids"],
+          "properties": {
+            "text": { "type": "string" },
+            "provenance": { "const": "user" },
+            "source_annotation_ids": { "type": "array", "items": { "$ref": "#/$defs/id_annotation" } }
+          }
+        },
+        "annotation_ids": { "type": "array", "items": { "$ref": "#/$defs/id_annotation" } },
+        "flags": {
+          "type": "array",
+          "items": { "enum": ["user_edited", "user_added", "contains_redaction", "low_confidence_target"] }
+        },
+        "boundary": { "const": "not_assessed" },
+        "boundary_source": { "const": "none" },
+        "scope_verified": { "type": "boolean" }
+      }
+    },
+    "annotation": {
+      "type": "object",
+      "required": ["annotation_id", "kind", "step_ids", "t_ms"],
+      "properties": {
+        "annotation_id": { "$ref": "#/$defs/id_annotation" },
+        "kind": { "enum": ["highlight", "comment", "narration"] },
+        "step_ids": { "type": "array", "items": { "$ref": "#/$defs/id_step" } },
+        "t_ms": { "$ref": "#/$defs/ms" },
+        "t_end_ms": { "$ref": "#/$defs/ms" },
+        "mark": { "type": "string", "pattern": "^H[0-9]+$" },
+        "shape": { "enum": ["rect", "arrow", "highlighter", "freehand"] },
+        "frame_id": { "$ref": "#/$defs/id_frame" },
+        "geometry_fpx": { "type": "array", "items": { "$ref": "#/$defs/point" }, "minItems": 2 },
+        "snapped_to": {
+          "type": "object",
+          "required": ["role", "name", "bounds_fpx"],
+          "properties": { "role": { "type": "string" }, "name": { "type": "string" }, "bounds_fpx": { "$ref": "#/$defs/rect" } }
+        },
+        "text": { "$ref": "#/$defs/text" },
+        "source": { "enum": ["typed", "review"] },
+        "anchor_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "gap": {
+      "type": "object",
+      "required": ["gap_id", "t_start_ms", "t_end_ms", "reason"],
+      "properties": {
+        "gap_id": { "$ref": "#/$defs/id_gap" },
+        "t_start_ms": { "$ref": "#/$defs/ms" },
+        "t_end_ms": { "$ref": "#/$defs/ms" },
+        "reason": { "enum": ["user_paused", "helper_restart", "capture_lost", "permission_lost"] },
+        "after_step": { "$ref": "#/$defs/id_step" },
+        "before_step": { "$ref": "#/$defs/id_step" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["format", "schema_version", "package_id", "created_at", "recorder", "author", "process", "recording", "capture", "displays", "media", "privacy", "files"],
+      "properties": {
+        "format": { "const": "handover-package" },
+        "schema_version": { "const": "0.1-tester" },
+        "package_id": { "$ref": "#/$defs/id_package" },
+        "created_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}:[0-9]{2})$" },
+        "recorder": {
+          "type": "object",
+          "required": ["name", "version", "os", "os_version", "arch", "locale"],
+          "properties": {
+            "name": { "const": "Handover" },
+            "version": { "type": "string" },
+            "os": { "enum": ["macos", "windows"] },
+            "os_version": { "type": "string" },
+            "arch": { "enum": ["arm64", "x64"] },
+            "locale": { "type": "string" }
+          }
+        },
+        "author": {
+          "type": "object",
+          "required": ["pseudonym", "position"],
+          "properties": { "pseudonym": { "const": "author-1" }, "position": { "type": "string" } }
+        },
+        "process": {
+          "type": "object",
+          "required": ["title", "goal", "done_when", "trigger"],
+          "properties": {
+            "title": { "type": "string", "minLength": 1 },
+            "goal": { "type": "string" },
+            "done_when": { "type": "string" },
+            "trigger": {
+              "type": "object",
+              "required": ["kind", "text"],
+              "properties": {
+                "kind": { "enum": ["event", "schedule", "request", "manual", "unknown"] },
+                "text": { "type": "string" }
+              }
+            }
+          }
+        },
+        "recording": {
+          "type": "object",
+          "required": ["started_at", "ended_at", "timezone", "duration_ms", "task_ms", "explain_ms", "paused_ms", "step_count"],
+          "properties": {
+            "started_at": { "type": "string" },
+            "ended_at": { "type": "string" },
+            "timezone": { "type": "string" },
+            "duration_ms": { "$ref": "#/$defs/ms" },
+            "task_ms": { "$ref": "#/$defs/ms" },
+            "explain_ms": { "$ref": "#/$defs/ms" },
+            "paused_ms": { "$ref": "#/$defs/ms" },
+            "step_count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "capture": {
+          "type": "object",
+          "required": ["capabilities", "helper"],
+          "properties": {
+            "capabilities": {
+              "type": "object",
+              "required": ["input_mouse", "a11y_hit", "capture_backend", "keyboard"],
+              "properties": {
+                "input_mouse": { "type": "boolean" },
+                "a11y_hit": { "type": "boolean" },
+                "capture_backend": { "type": "string" },
+                "keyboard": { "const": "none" }
+              }
+            },
+            "helper": {
+              "type": "object",
+              "required": ["present"],
+              "properties": { "present": { "type": "boolean" }, "version": { "type": "string" }, "error": { "type": "string" } }
+            }
+          }
+        },
+        "displays": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["display_id", "global_space", "origin_global", "size_dpx", "scale_factor", "primary"],
+            "properties": {
+              "display_id": { "$ref": "#/$defs/id_display" },
+              "global_space": { "enum": ["macos_global_points", "windows_virtual_px"] },
+              "origin_global": { "$ref": "#/$defs/point" },
+              "size_dpx": { "$ref": "#/$defs/point" },
+              "scale_factor": { "type": "number" },
+              "primary": { "type": "boolean" }
+            }
+          }
+        },
+        "media": {
+          "type": "object",
+          "required": ["image_profile", "image_count", "format", "video_included", "audio_included"],
+          "properties": {
+            "image_profile": { "const": "standard" },
+            "image_count": { "type": "integer", "minimum": 0 },
+            "format": { "const": "png" },
+            "video_included": { "const": false },
+            "audio_included": { "const": false }
+          }
+        },
+        "privacy": {
+          "type": "object",
+          "required": ["reviewed_by_user", "reviewed_at", "test_build"],
+          "properties": {
+            "reviewed_by_user": { "const": true },
+            "reviewed_at": { "type": "string" },
+            "test_build": { "const": true }
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "sha256", "bytes"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

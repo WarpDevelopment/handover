@@ -1,0 +1,5 @@
+{
+  "model": "Xenova/whisper-small",
+  "language": "en",
+  "segments": [{ "atMs": 2500, "endMs": 4500, "text": "Now I save the file" }]
+}
