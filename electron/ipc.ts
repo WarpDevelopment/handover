@@ -31,6 +31,7 @@ import type { ScreenSourceService } from "./video/sources";
 import { exportPackage, suggestedZipName } from "./export";
 import { isReviewed, markReviewed } from "./reviewed-marker";
 import { deleteSessionFlow } from "./session-delete";
+import { reviewBlockedReason } from "./review-gate";
 import { isValidSessionId, sessionDir, sessionsRoot } from "./recorder/session-store";
 import type { SensitiveModelManager } from "./sensitive/model-manager";
 import { deleteSession, listSessions } from "./sessions";
@@ -207,6 +208,8 @@ export function registerIpc(
       if (recorder.status().sessionId === sessionId) {
         return { ok: false, error: "You can't export a recording while it's still in progress." };
       }
+      const narrating = reviewBlockedReason(sessionId, (id) => narration.isBusyWith(id));
+      if (narrating) return { ok: false, error: narrating };
       // SEC-2: the manifest says the user reviewed it, so they must have, and not edited since.
       if (!(await isReviewed(sessionDir(sessionId)))) {
         return { ok: false, error: "Review the steps and choose Done reviewing before exporting." };
@@ -230,9 +233,11 @@ export function registerIpc(
     },
   );
 
-  ipcMain.handle(IPC.markReviewed, async (event, sessionId: unknown): Promise<{ ok: boolean }> => {
+  ipcMain.handle(IPC.markReviewed, async (event, sessionId: unknown): Promise<{ ok: boolean; error?: string }> => {
     if (!isLibrarySender(event.sender) || !isValidSessionId(sessionId)) return { ok: false };
     if (recorder.status().sessionId === sessionId) return { ok: false };
+    const blocked = reviewBlockedReason(sessionId, (id) => narration.isBusyWith(id));
+    if (blocked) return { ok: false, error: blocked };
     try {
       await markReviewed(sessionDir(sessionId));
       return { ok: true };
