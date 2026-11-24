@@ -106,6 +106,32 @@ if (mode === "good") {
   // NAT-8: every run says hello and dies; the test counts how often it is relaunched.
   hello();
   setTimeout(() => process.exit(1), 20);
+} else if (mode === "blind-repeat") {
+  // G1: an administrator window comes to the front (twice in a row, as a repeating helper might), then leaves.
+  hello();
+  out({ type: "capabilities", hook: true, accessibility: null, space: "windows_virtual_px" });
+  setTimeout(() => out({ type: "blind", reason: "elevated_window", state: "start", process: "Taskmgr" }), 40);
+  setTimeout(() => out({ type: "blind", reason: "elevated_window", state: "start", process: "Taskmgr" }), 80);
+  setTimeout(() => out({ type: "blind", reason: "elevated_window", state: "end" }), 160);
+  waitForEnd();
+} else if (mode === "blind-hold") {
+  // G1: an administrator window comes to the front and stays there until the recording stops.
+  hello();
+  out({ type: "capabilities", hook: true, accessibility: null, space: "windows_virtual_px" });
+  setTimeout(() => out({ type: "blind", reason: "elevated_window", state: "start", process: "Taskmgr" }), 40);
+  waitForEnd();
+} else if (mode === "blind-crash-once") {
+  // G1: first run opens the blind spot and dies; the restarted run announces it again.
+  hello();
+  out({ type: "capabilities", hook: true, accessibility: null, space: "windows_virtual_px" });
+  if (stateFile && existsSync(stateFile)) {
+    setTimeout(() => out({ type: "blind", reason: "elevated_window", state: "start", process: "Taskmgr" }), 40);
+    waitForEnd();
+  } else {
+    if (stateFile) writeFileSync(stateFile, "crashed");
+    setTimeout(() => out({ type: "blind", reason: "elevated_window", state: "start", process: "Taskmgr" }), 40);
+    setTimeout(() => process.exit(1), 100);
+  }
 } else if (mode === "silent") {
   waitForEnd();
 }

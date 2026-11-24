@@ -13,6 +13,7 @@ export type HelperMessage =
   | { kind: "click"; click: Omit<PointerClickPayload, "space"> }
   | { kind: "error"; message: string }
   | { kind: "hook_lost" }
+  | { kind: "blind"; reason: "elevated_window"; state: "start" | "end"; process?: string }
   | { kind: "selftest" };
 
 /**
@@ -169,6 +170,15 @@ export function parseHelperLine(line: string): HelperMessage | null {
       return { kind: "hook_lost" };
     case "selftest":
       return { kind: "selftest" };
+    case "blind": {
+      if (m.reason !== "elevated_window") return null;
+      if (m.state !== "start" && m.state !== "end") return null;
+      const msg: HelperMessage = { kind: "blind", reason: "elevated_window", state: m.state };
+      // An executable name only: drop any path the helper might send, then control characters.
+      const raw = text(m.process, 120)?.split(/[\\/]/).pop()?.trim().slice(0, 60);
+      if (m.state === "start" && raw) msg.process = raw;
+      return msg;
+    }
     case "click": {
       const x = num(m.x);
       const y = num(m.y);

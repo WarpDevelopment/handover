@@ -24,6 +24,11 @@ export interface Collector {
   readonly name: string;
   start(ctx: CollectorContext): void | Promise<void>;
   stop(): void | Promise<void>;
+  /**
+   * Called by the controller when the user pauses (`true`) or resumes (`false`). Optional: only a collector
+   * that writes its own `gap` events needs it, so that nothing it writes spans paused time.
+   */
+  setPaused?(paused: boolean): void;
 }
 
 /**
@@ -59,6 +64,17 @@ export class CollectorHost {
         this.active.push(collector);
       } catch (err) {
         this.log.error(`"${collector.name}" failed to start:`, err);
+      }
+    }
+  }
+
+  /** Tells every running collector that implements `setPaused`; a throwing one never breaks the pause. */
+  setPaused(paused: boolean): void {
+    for (const collector of this.active) {
+      try {
+        collector.setPaused?.(paused);
+      } catch (err) {
+        this.log.error(`"${collector.name}" failed on setPaused:`, err);
       }
     }
   }

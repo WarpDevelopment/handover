@@ -185,7 +185,9 @@ export interface GapRecord {
   gap_id: string;
   t_start_ms: number;
   t_end_ms: number;
-  reason: "user_paused" | "helper_restart" | "capture_lost" | "permission_lost";
+  reason: "user_paused" | "helper_restart" | "capture_lost" | "permission_lost" | "elevated_window";
+  /** `elevated_window` only: executable name of the administrator window that was in front. */
+  process?: string;
   after_step?: string;
   before_step?: string;
 }

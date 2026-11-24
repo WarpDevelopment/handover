@@ -417,6 +417,7 @@ export class RecorderController {
       this.bus.publish({ type: EventType.Gap, source: "user", payload: { reason: "user_paused" } });
       this.paused = true;
       this.bus.setBlocked(true);
+      this.host.setPaused(true);
       this.emit();
       return { ok: true };
     });
@@ -433,7 +434,8 @@ export class RecorderController {
     });
   }
 
-  private closePauseGap(store: SessionStore): void {
+  /** `notifyCollectors` is false only when the recording is stopping: nothing is left to resume. */
+  private closePauseGap(store: SessionStore, notifyCollectors = true): void {
     this.closeQuiet(store);
     this.paused = false;
     this.bus.setBlocked(this.explain !== null);
@@ -442,6 +444,7 @@ export class RecorderController {
       source: "user",
       payload: { reason: "user_paused", tEndMs: Math.round(store.elapsedMs()) },
     });
+    if (notifyCollectors) this.host.setPaused(false);
   }
 
   /**
@@ -825,7 +828,7 @@ export class RecorderController {
       this.endExplainInternal({ cancelled: true });
       this.deps.onExplainAborted?.();
     }
-    if (this.paused) this.closePauseGap(store);
+    if (this.paused) this.closePauseGap(store, false);
     // Audio is flushed before
     // video so the mic-off boundary is anchored as close as possible to the click.
     try {

@@ -25,7 +25,17 @@ const GAP_REASON: Record<string, string> = {
   helper_restart: "the recorder's helper restarted",
   capture_lost: "screen capture was lost",
   permission_lost: "a permission was revoked",
+  elevated_window: "an administrator window the recorder cannot see into", // package-spec.md §11 fixed copy
 };
+
+/** The in-order notice for a stretch where Windows hid clicks from the recorder. */
+function notObservedLine(g: GapRecord): string {
+  const who = g.process ? ` (${oneLine(g.process)})` : "";
+  return (
+    `Not observed (${formatDuration(g.t_end_ms - g.t_start_ms)}): an administrator window${who} was in front. ` +
+    "Windows does not let Handover see clicks there. Ask the author what was done."
+  );
+}
 
 function tier(step: StepRecord): "T3" | "T2" | "T0" | "context" | "explain" {
   if (step.observed_via === "explain") return "explain";
@@ -115,6 +125,16 @@ export function renderProcessMd(d: ProcessMdData): string {
   lines.push("## Steps");
 
   const byId = new Map(d.annotations.map((a) => [a.annotation_id, a]));
+  const blind = d.gaps.filter((g) => g.reason === "elevated_window");
+  const noticesAfter = (stepId: string | undefined) => {
+    for (const g of blind) {
+      if (g.after_step === stepId) {
+        lines.push("");
+        lines.push(notObservedLine(g));
+      }
+    }
+  };
+  noticesAfter(undefined);
   for (const step of d.steps) {
     lines.push("");
     const marks = step.annotation_ids
@@ -146,6 +166,7 @@ export function renderProcessMd(d: ProcessMdData): string {
     }
     const images = imagesLine(step);
     if (images) lines.push(`- Images: ${images}`);
+    noticesAfter(step.step_id);
   }
 
   lines.push("");
