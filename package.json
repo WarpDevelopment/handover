@@ -29,9 +29,9 @@
     "compliance:review": "node scripts/review-compliance-sources.mjs",
     "compliance:test": "node --test scripts/compliance.test.mjs",
     "fix:lockfile-registry": "node scripts/check-lockfile-portability.mjs --fix",
-    "dist": "npm run models:fetch && npm run compliance:prepare &&node scripts/assert-generic-dist-platform.mjs && npm run build:vite && electron-builder --publish never",
-    "dist:win:x64": "npm run models:fetch && npm run compliance:prepare &&node scripts/assert-native-windows-arch.mjs x64 && npm run build:vite && electron-builder --config.npmRebuild=false --publish never --win nsis --x64",
-    "dist:mac": "npm run models:fetch && npm run compliance:prepare &&npm run build:vite && electron-builder --publish never --mac zip",
+    "dist": "npm run models:fetch && npm run compliance:prepare &&node scripts/assert-generic-dist-platform.mjs && npm run build:helper:mac && npm run build:vite && electron-builder --publish never",
+    "dist:win:x64": "npm run models:fetch && npm run compliance:prepare &&node scripts/assert-native-windows-arch.mjs x64 && npm run build:helper:win && npm run build:vite && electron-builder --config.npmRebuild=false --publish never --win nsis --x64",
+    "dist:mac": "npm run models:fetch && npm run compliance:prepare && npm run build:helper:mac && npm run build:vite && electron-builder --publish never --mac zip",
     "start": "node scripts/run-reviewed-electron.mjs start"
   },
   "dependencies": {
@@ -101,6 +101,7 @@
       "package.json",
       "LICENSE",
       "THIRD-PARTY-NOTICES.md",
+      "NOTICE",
       "!node_modules/@img/sharp-wasm32/**",
       "!node_modules/@img/sharp-freebsd-wasm32/**",
       "!node_modules/@img/sharp-webcontainers-wasm32/**",
@@ -161,6 +162,7 @@
         "package.json",
         "LICENSE",
         "THIRD-PARTY-NOTICES.md",
+        "NOTICE",
         "!node_modules/get-windows/**",
         "!node_modules/@img/sharp-wasm32/**",
         "!node_modules/@img/sharp-freebsd-wasm32/**",
