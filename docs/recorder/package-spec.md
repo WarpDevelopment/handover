@@ -23,7 +23,7 @@
 |---|---|
 | Product | Handover |
 | Package folder | `<slug>__<package_id>.handover/` |
-| Package zip | `<slug>__<package_id>.handover.zip` (same contents, folder at the zip root) |
+| Package zip | `handover-<slug>__<package_id>.zip` (same contents, folder at the zip root) |
 | Derived folder | `<slug>__<package_id>.derived/`, next to the package |
 | `manifest.format` | `"handover-package"` |
 | `manifest.schema_version` | `"0.1"` (pattern `^0\.1(\.[0-9]+)?$`) |

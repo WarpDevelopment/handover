@@ -1,6 +1,6 @@
 import type { SupportedShellId } from "../../common/terminal";
 
-export const RECORDER_OSC_PREFIX = "\u001b]6973;skill-recorder;1;";
+export const RECORDER_OSC_PREFIX = "\u001b]6973;handover;1;";
 export const RECORDER_OSC_BEL = "\u0007";
 const RECORDER_OSC_ST = "\u001b\\";
 const MAX_MARKER_LENGTH = 64 * 1024;

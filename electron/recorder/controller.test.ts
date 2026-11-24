@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -542,17 +542,81 @@ test("start recovers to idle when collector setup throws", async () => {
   });
 });
 
+test("the display layout is recorded at start and again only when it changes, and the video feed sees every event", async () => {
+  await withSessionsRoot(async (root) => {
+    const layoutA = {
+      globalSpace: "macos_global_points" as const,
+      displays: [{ id: 1, originGlobal: [0, 0] as [number, number], sizeDpx: [2880, 1800] as [number, number], scaleFactor: 2, primary: true }],
+    };
+    const layoutB = {
+      ...layoutA,
+      displays: [...layoutA.displays, { id: 2, originGlobal: [-1280, 0] as [number, number], sizeDpx: [2560, 1440] as [number, number], scaleFactor: 2, primary: false }],
+    };
+    let current = layoutA;
+    const fed: string[] = [];
+    const controller = new RecorderController({
+      resolveConfig: () => ({ ...FULL_CAPTURE }),
+      buildCollectors: () => [],
+      createVideoRecorder: () => ({
+        start: async () => undefined,
+        stop: async () => null,
+        onEvent: (ev) => {
+          fed.push(ev.type);
+        },
+      }),
+      deleteSession: async () => undefined,
+      getDisplays: () => current,
+    });
+
+    controller.publishDisplays(); // idle: nothing is recorded
+    const started = await controller.start();
+    assert.equal(started.ok, true);
+    controller.publishDisplays(); // unchanged: no second event
+    current = layoutB;
+    controller.publishDisplays(); // changed: a second event
+    controller.marker("note");
+    assert.equal((await controller.stop()).ok, true);
+
+    const lines = (await readFile(path.join(root, started.sessionId!, "events.jsonl"), "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { type: string; payload: Record<string, unknown> });
+    const displays = lines.filter((l) => l.type === "displays");
+    assert.equal(displays.length, 2);
+    assert.equal((displays[0].payload.displays as unknown[]).length, 1);
+    assert.equal((displays[1].payload.displays as unknown[]).length, 2);
+    // The sidecar is told the starting layout first, then sees the later events.
+    assert.deepEqual(fed.slice(0, 3), ["displays", "displays", "marker"]);
+    assert.ok(!fed.includes("session.stop"), "the feed ends before the session stops");
+  });
+});
+
+test("the helper's status is saved with the session when recording stops", async () => {
+  await withSessionsRoot(async (root) => {
+    const controller = new RecorderController({
+      resolveConfig: () => ({ ...FULL_CAPTURE, video: false }),
+      buildCollectors: () => [],
+      deleteSession: async () => undefined,
+      getHelperStatus: () => ({ present: true, version: "0.2.1" }),
+    });
+    const started = await controller.start();
+    assert.equal((await controller.stop()).ok, true);
+    const saved = JSON.parse(await readFile(path.join(root, started.sessionId!, "helper.json"), "utf8"));
+    assert.deepEqual(saved, { present: true, version: "0.2.1" });
+  });
+});
+
 async function withSessionsRoot(
   run: (root: string) => Promise<void>,
 ): Promise<void> {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-controller-"));
-  const previousRoot = process.env.SKILL_RECORDER_SESSIONS_DIR;
-  process.env.SKILL_RECORDER_SESSIONS_DIR = root;
+  const root = await mkdtemp(path.join(tmpdir(), "handover-controller-"));
+  const previousRoot = process.env.HANDOVER_SESSIONS_DIR;
+  process.env.HANDOVER_SESSIONS_DIR = root;
   try {
     await run(root);
   } finally {
-    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
+    if (previousRoot === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
+    else process.env.HANDOVER_SESSIONS_DIR = previousRoot;
     await rm(root, { recursive: true, force: true });
   }
 }

@@ -28,9 +28,10 @@ export function createTray(
   stopRecording: () => Promise<unknown>,
   showRecorderWindow: () => void,
   showRecordingControls: () => void,
+  saveDiagnostics: () => void = () => undefined,
 ): Tray {
   const tray = new Tray(trayIcon() ?? fallbackTrayIcon());
-  tray.setToolTip("Skill Recorder");
+  tray.setToolTip("Handover");
 
   const rebuild = () => {
     const recording = recorder.state === "recording";
@@ -51,6 +52,8 @@ export function createTray(
             showRecorderWindow();
           },
         },
+        { label: "Save diagnostics…", click: () => saveDiagnostics() },
+        { type: "separator" },
         { label: "Quit", role: "quit" },
       ]),
     );

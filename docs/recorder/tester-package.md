@@ -29,7 +29,7 @@ Build lanes implement **this** document. Use the full spec only to look up a fie
     ├── S02_before_full_annotated.png    only when the step has highlights
     └── S05_after_full.png               last step only
 ```
-The export also writes `<slug>__<package_id>.zip` holding the same folder. `<slug>` is the process title in lower kebab case, at most 40 characters. `package_id` is `pkg_` + a ULID.
+The export also writes `handover-<slug>__<package_id>.zip` (it starts with `handover-` so it is easy to find) holding the same folder. `<slug>` is the process title in lower kebab case, at most 40 characters. `package_id` is `pkg_` + a ULID.
 
 All JSON is UTF-8 with sorted keys and LF line endings. `jsonl` files have one object per line in id order. Images are PNG with metadata stripped, and blurs are burned into the pixels.
 
@@ -59,11 +59,11 @@ One step is one click, one app/window switch, or one manual step the user added.
 |---|---|---|
 | `step_id` | yes | `S01…`, renumbered at export in `seq` order |
 | `seq` | yes | 1-based |
-| `kind` | yes | `action` (click), `context` (app/window switch), `manual` (added in review) |
-| `t_start_ms`, `t_end_ms` | yes | ms from recording start, half-open interval |
+| `kind` | yes | `action` (click), `context` (app/window switch, or an Explain freeze, see §4.4), `manual` (added in review) |
+| `t_start_ms`, `t_end_ms` | yes | ms from recording start, half-open interval. A click is timed when the user acted (the helper's report time minus its control-lookup time), not when the helper reported it. |
 | `summary` | yes | one imperative sentence from a template, e.g. `Click button "Save" in Excel`; or the user's edited text |
 | `summary_provenance` | yes | `observed` (template) or `user` (edited) |
-| `observed_via` | action/context | `pointer` or `window_change` |
+| `observed_via` | action/context | `pointer`, `window_change` or `explain` |
 | `action` | action | `{type: "click"\|"double_click"\|"right_click"\|"app_switch", point_dpx: {display_id, xy}, point_fpx: [x,y]}` |
 | `target` | action/context | §4.2 |
 | `before` | action/context | frame §4.3 |
@@ -89,30 +89,51 @@ One step is one click, one app/window switch, or one manual step the user added.
 | `display_id`, `bounds_dpx`, `bounds_fpx` | element bounds, when known |
 | `locators` | at least one; the last is always `{strategy: "frame_point", value: "x,y", rank, stability: "low"}`. Above it, when available: `uia_automation_id` / `ax_identifier` (rank 1), `role_name_path` (rank 2) |
 
+**Context steps (app or window switches)** have no clicked control. Their `target` is:
+- `grounding: "none"`, with no `grounding_source`, no `element` and no `unavailable`. Nothing failed; there was no control to find.
+- `app`, `window` and `url` as observed.
+- `display_id`, set when the window's display is known.
+- `locators: [{strategy: "frame_point", value: "<window centre in fpx, else frame centre>", rank: 1, stability: "low"}]`.
+
+In PROCESS.md a context step shows evidence as `context` instead of a tier, and its Where line is `<app.name> › <url, else window title> (app switch)`. It is not listed under "What the recorder could not see".
+
 ### 4.3 Frame
 `{frame_id: "frm_0001", t_ms, display_id, source_rect_dpx: [x,y,w,h], scale, full: {path, width, height, est_tokens}, full_annotated?, crop?: {path, width, height, est_tokens, crop_origin_fpx, crop_scale}, redacted_regions_fpx: [[x,y,w,h]…]}`
 
 - **Before:** the newest captured frame at least 50 ms before the click. The app keeps a small in-memory ring of recent frames for this.
 - **After:** a frame about 500 ms after the last step's action.
 - **Full** images are resized so the long edge is at most 1,568 px and `ceil(w/28)×ceil(h/28) ≤ 1,568`. `est_tokens = ceil(w/28)×ceil(h/28)`. The transform is `fpx = (dpx − source_rect_dpx[0:2]) × scale`.
-- **Crop:** 800×500 logical px (×`scale_factor` in dpx) centred on the target bounds, or else on the click point. It is shifted to stay inside the frame, cut from the redacted frame, and output at most 800×500.
+- **Crop:** 800×500 logical px (×`scale_factor` in dpx) centred on the target bounds, or else on the click point. It is centred on the click point instead when the bounds are larger than the crop (a pane or a document) or when a crop centred on them would not contain the click, so the click is always inside the crop. It is shifted to stay inside the frame, cut from the redacted frame, and output at most 800×500.
+- **No frame:** a step can have no `before` only where the session had no frame yet (the first second of capture) or the frozen frame of an Explain step was not saved. Such a step carries the flag `low_confidence_target`, and its `frame_point` locator and `point_fpx` are computed at the scale a frame of that display would have (never `0,0`). `validatePackage` rejects an action or context step with neither a `before` nor that flag.
 
 ### 4.4 `annotations.jsonl`
 | Kind | Required fields |
 |---|---|
-| `highlight` | `annotation_id` (`ann_0001`), `kind`, `step_ids`, `t_ms`, `mark` (`H1`…), `shape` ∈ `rect`, `arrow`, `highlighter`, `freehand`, `frame_id`, `geometry_fpx` (rect/arrow exactly 2 points; others ≥2), optional `snapped_to: {role, name, bounds_fpx}` |
+| `highlight` | `annotation_id` (`ann_0001`), `kind`, `step_ids`, `t_ms`, `mark` (`H1`…), `shape` ∈ `rect`, `arrow`, `highlighter`, `freehand`, `frame_id`, `geometry_fpx` (rect/arrow exactly 2 points; others ≥2), optional `snapped_to: {role, name, bounds_fpx}`. `frame_id` is absent only when the step has no picture to draw on (see §4.3, No frame); the geometry is then at the expected scale of that display. |
 | `comment` | `annotation_id`, `kind`, `step_ids`, `t_ms`, `text: {text, redacted, classes}`, `source` ∈ `typed`, `review` |
 | `narration` | `annotation_id`, `kind`, `step_ids`, `t_ms`, `t_end_ms`, `text: {text, redacted, classes}`, `anchor_confidence` (0–1) |
 
 Highlight render (fixed): rect and arrow 3 px `#E5484D`, arrow with a 12 px filled head; highlighter 14 px `#FFD60A` at 40%; freehand 3 px `#E5484D`. The H-mark label goes in a 20 px white-on-`#E5484D` box outside the top-left corner. Highlights are drawn only into `*_full_annotated.png`.
 
-A highlight or comment made during a freeze attaches to the step whose before frame was frozen (the last step before the freeze, or the first step after it when none came before). A narration segment attaches to the step whose `[t_start_ms − 3 s, t_end_ms + 1 s]` window it overlaps most; `anchor_confidence < 0.6` when it overlaps more than one step.
+**Explain steps.** Each Explain freeze becomes its own step, so the marks are always drawn on the exact picture the user annotated.
+- **Which displays.** One step per display that received at least one highlight. When the freeze has comments but no highlights, there is one step for the display under the pointer at freeze time.
+- **Step fields:**
+  - `kind: "context"`, `observed_via: "explain"`, with `t_start_ms` set to `explain.start` and `t_end_ms` to `explain.end`;
+  - `target` is as for a context step (§4.2: `grounding: "none"`), using the app and window that were frontmost at freeze time;
+  - `before` is that display's **frozen frame**, with `full_annotated` drawn on it;
+  - `summary` follows the template `Explain on <app.name>: "<first 80 chars of the first comment>"`, or `Explain on <app.name> (H1, H2)` when there is no comment;
+  - `annotation_ids` lists the step's highlights and comments, and `why` is set from the first comment.
+- **Which step gets each comment.** Comments made in that freeze attach to the step for the display where they were typed, or to the first Explain step of the freeze.
+- **Timing.** Explain steps are ordered by time like any other step. Their time counts in `explain_ms`, not in `task_ms`.
+- **In PROCESS.md** the step shows `evidence explain`, and its Where line is `<app.name> › <window title> (explain)`.
+
+A narration segment attaches to the step whose `[t_start_ms − 3 s, t_end_ms + 1 s]` window it overlaps most; `anchor_confidence < 0.6` when it overlaps more than one step.
 
 ### 4.5 `gaps.jsonl`
-`{gap_id: "gap_0001", t_start_ms, t_end_ms, reason, after_step?, before_step?}` with reason ∈ `user_paused`, `helper_restart`, `capture_lost`, `permission_lost`. Freeze time is not a gap; it is `explain_ms`.
+`{gap_id: "gap_0001", t_start_ms, t_end_ms, reason, after_step?, before_step?}` with reason ∈ `user_paused`, `helper_restart`, `capture_lost`, `permission_lost`, `elevated_window` (an administrator window was in front; optional `process` names it). Freeze time is not a gap; it is `explain_ms`.
 
 ### 4.6 Redaction in the tester build
-The only redaction is the user's **blur** in review: a rectangle on a step's before frame. It is burned into the full, annotated and crop images of that step and listed in `redacted_regions_fpx`. The step then gets the flag `contains_redaction`. A comment or summary can be edited by hand. There are no automatic detectors in the tester build.
+The only redaction is the user's **blur** in review: a rectangle on a step's before frame, or, on the last step, on its after frame (`blur_rect` carries `frame: "before" | "after"`, default `before`; the rectangle is in that image's pixels). A before-frame rectangle also covers the after frame of the same step, since it is the same screen a moment later. A rectangle is burned into the full, annotated and crop images of that step and listed in `redacted_regions_fpx` of the frame it is on. The step then gets the flag `contains_redaction`. A password field on a step is blurred automatically in its before frame and, on the last step, in its after frame; the blurred rectangle is clamped to the frame first, and what is listed in `redacted_regions_fpx` is what was blurred. When the user edits a step's summary, the control's name is replaced by `[REDACTED]` in `target.element.name` (`redacted: true`, class `user_marked`), in `target.ancestry` and in the `role_name_path` locator, because the same words would otherwise survive there. A comment or summary can be edited by hand. There are no automatic detectors in the tester build.
 
 ## 5. `PROCESS.md`
 Rendered by deterministic code from the package data (no model), following `package-spec.md` §11.1, reduced to:

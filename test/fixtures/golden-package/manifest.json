@@ -1,0 +1,188 @@
+{
+  "author": {
+    "position": "finance analyst",
+    "pseudonym": "author-1"
+  },
+  "capture": {
+    "capabilities": {
+      "a11y_hit": true,
+      "capture_backend": "electron-desktop-capturer",
+      "input_mouse": true,
+      "keyboard": "none"
+    },
+    "helper": {
+      "present": true,
+      "version": "0.1.0"
+    }
+  },
+  "created_at": "2026-11-24T09:30:00+02:00",
+  "displays": [
+    {
+      "display_id": "d0",
+      "global_space": "macos_global_points",
+      "origin_global": [
+        0,
+        0
+      ],
+      "primary": true,
+      "scale_factor": 2,
+      "size_dpx": [
+        2880,
+        1800
+      ]
+    },
+    {
+      "display_id": "d1",
+      "global_space": "macos_global_points",
+      "origin_global": [
+        -1280,
+        -100
+      ],
+      "primary": false,
+      "scale_factor": 2,
+      "size_dpx": [
+        2560,
+        1440
+      ]
+    }
+  ],
+  "files": [
+    {
+      "bytes": 3514,
+      "path": "CLAUDE_HANDOFF.md",
+      "sha256": "228ec11b01e91da86de6e39b4bb968d50b52a3ea57aa4c49e3e808dd57bceb9e"
+    },
+    {
+      "bytes": 2133,
+      "path": "PROCESS.md",
+      "sha256": "30df0e7510766d4697fbb748f5918f1b390be5db58dae6d5ef4e71ff024ee6e4"
+    },
+    {
+      "bytes": 135,
+      "path": "README.txt",
+      "sha256": "f41ca46cea40b28c937345722cfd0151d794cfcc7a9c9a3a541cc1a430b10492"
+    },
+    {
+      "bytes": 628,
+      "path": "annotations.jsonl",
+      "sha256": "e6e1bdc70dfc67b74ee7680d09e3e44e26b81ed20a4fbdd71a635daa70a03cfd"
+    },
+    {
+      "bytes": 120,
+      "path": "gaps.jsonl",
+      "sha256": "b4184b8c4774668cc683697d96d82a1f21f7ec328eadb252ac07e0aee7a3d7d9"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S01_before_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S02_before_crop.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S02_before_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S03_before_crop.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S03_before_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S04_before_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S04_before_full_annotated.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S05_before_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S06_before_crop.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S06_before_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S07_after_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S07_before_crop.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 0,
+      "path": "media/S07_before_full.png",
+      "sha256": "<png>"
+    },
+    {
+      "bytes": 8707,
+      "path": "steps.jsonl",
+      "sha256": "2c97e0f5df4baec0eebc6167328cf13d8ce3cbec751806ea2b665973dd4da610"
+    }
+  ],
+  "format": "handover-package",
+  "media": {
+    "audio_included": false,
+    "format": "png",
+    "image_count": 13,
+    "image_profile": "standard",
+    "video_included": false
+  },
+  "package_id": "pkg_01KAT8ZJ3Q5R7M9N2B4C6D8E0F",
+  "privacy": {
+    "reviewed_at": "2026-11-24T09:30:00+02:00",
+    "reviewed_by_user": true,
+    "test_build": true
+  },
+  "process": {
+    "done_when": "The file is saved and mail is open",
+    "goal": "Keep the budget file saved",
+    "title": "Save the budget and open mail",
+    "trigger": {
+      "kind": "manual",
+      "text": "Every Friday"
+    }
+  },
+  "recorder": {
+    "arch": "arm64",
+    "locale": "en-ZA",
+    "name": "Handover",
+    "os": "macos",
+    "os_version": "26.1",
+    "version": "0.1.0"
+  },
+  "recording": {
+    "duration_ms": 20000,
+    "ended_at": "2026-11-24T08:00:20+02:00",
+    "explain_ms": 3000,
+    "paused_ms": 2000,
+    "started_at": "2026-11-24T08:00:00+02:00",
+    "step_count": 7,
+    "task_ms": 15000,
+    "timezone": "Africa/Johannesburg"
+  },
+  "schema_version": "0.1-tester"
+}

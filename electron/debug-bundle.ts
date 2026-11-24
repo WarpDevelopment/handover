@@ -55,21 +55,18 @@ export function buildDebugInfo(sessionId: string): DebugInfo {
 }
 
 /**
- * Stream a single recording into a downloadable `.zip` at `destZipPath`: the
- * entire session directory (events, frames, screen video, voice audio, analysis,
- * …) is included verbatim under `session/`, next to a top-level `debug-info.json`.
- *
- * The whole folder is copied on purpose — this is a debug bundle, so completeness
- * beats size — which means it contains **private capture data**; callers must warn
- * before invoking this. The id is validated via {@link sessionDir}, so it can
- * never escape the sessions root.
+ * Write a per-recording debug `.zip` at `destZipPath` holding only a top-level
+ * `debug-info.json` (machine state and the doctor report). It carries **no media
+ * and no session content**: no screenshots, video, audio, events, transcript or
+ * comments. The id is still validated via {@link sessionDir}, so a bad id is refused
+ * and it can never escape the sessions root.
  */
 export function writeDebugBundle(
   sessionId: string,
   destZipPath: string,
   debugInfo: unknown,
 ): Promise<void> {
-  const dir = sessionDir(sessionId); // throws on traversal / invalid id
+  sessionDir(sessionId); // throws on traversal / invalid id
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     const done = (err?: Error): void => {
@@ -93,7 +90,6 @@ export function writeDebugBundle(
 
     archive.pipe(output);
     archive.append(JSON.stringify(debugInfo, null, 2), { name: "debug-info.json" });
-    archive.directory(dir, "session");
     void archive.finalize();
   });
 }

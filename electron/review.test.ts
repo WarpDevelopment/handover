@@ -1,0 +1,276 @@
+// L4: the review backend appends edits to edits.jsonl and the export applies them.
+
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+import { UnsupportedEditError } from "../common/handover/edits";
+import { finishReview, reviewDataFrom } from "../common/handover/review";
+import { exportPackage } from "./export";
+import { ReviewService } from "./review";
+import { EXPORT_NOT_REVIEWED_MESSAGE, exportBlockedReason } from "./review-gate";
+import { isReviewed, markReviewed, readReviewedMarker } from "./reviewed-marker";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE = path.resolve(here, "../test/fixtures/session-synthetic");
+
+async function withCopy(run: (dir: string) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "handover-review-"));
+  const dir = path.join(root, "session");
+  try {
+    await cp(FIXTURE, dir, { recursive: true });
+    await run(dir);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+const service = (): ReviewService =>
+  new ReviewService({ toolVersion: "0.1.0", now: () => new Date("2026-11-24T09:00:00Z"), random: () => new Uint8Array([1, 2, 3, 4]) });
+
+async function edits(dir: string): Promise<Record<string, unknown>[]> {
+  try {
+    return (await readFile(path.join(dir, "edits.jsonl"), "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+}
+
+test("load returns the steps with their pre-edit ids, comments, highlights and the image to show", async () => {
+  await withCopy(async (dir) => {
+    const data = await service().load(dir, "s1");
+    assert.equal(data.steps.length, 7);
+    assert.deepEqual(data.steps.map((s) => s.stepId), ["S01", "S02", "S03", "S04", "S05", "S06", "S07"]);
+    assert.deepEqual(data.steps.map((s) => s.preEditId), ["S01", "S02", "S03", "S04", "S05", "S06", "S07"]);
+    const explain = data.steps[3]; // the freeze is its own step
+    assert.deepEqual(explain.comment, { annotationId: "ann_0002", text: "Always save before closing the file" });
+    assert.equal(explain.highlightCount, 1);
+    assert.equal(explain.image?.path, "media/S04_before_full_annotated.png", "annotated image when there are highlights");
+    assert.equal(data.steps[1].image?.path, "media/S02_before_full.png");
+    assert.equal(data.steps[5].blurredFpx.length, 1, "the password field is already blurred");
+    assert.ok(data.steps[5].flags.includes("contains_redaction"));
+  });
+});
+
+test("images are served only from the last build and only from media/", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "nothing before load");
+    await svc.load(dir, "s1");
+    const url = svc.image("s1", "media/S02_before_full.png");
+    assert.ok(url?.startsWith("data:image/png;base64,"));
+    assert.equal(svc.image("s1", "../session.json"), null);
+    assert.equal(svc.image("s1", "media/../../x.png"), null);
+    assert.equal(svc.image("s1", "steps.jsonl"), null);
+    assert.equal(svc.image("other", "media/S02_before_full.png"), null);
+  });
+});
+
+test("APP-9: only the latest session's pictures are kept, and they can be evicted", async () => {
+  await withCopy(async (dir) => {
+    await withCopy(async (other) => {
+      const svc = service();
+      await svc.load(dir, "s1");
+      assert.ok(svc.image("s1", "media/S02_before_full.png"));
+      await svc.load(other, "s2");
+      assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "the earlier session was dropped");
+      assert.ok(svc.image("s2", "media/S02_before_full.png"));
+      await svc.evict("s1"); // not the current one: nothing happens
+      assert.ok(svc.image("s2", "media/S02_before_full.png"));
+      await svc.evict("s2");
+      assert.equal(svc.image("s2", "media/S02_before_full.png"), null, "evicted when it is deleted or the library closes");
+      await svc.load(dir, "s1");
+      await svc.evict();
+      assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "evict() with no id clears everything");
+    });
+  });
+});
+
+test("N3: the review remembers the narration hash it was built from", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    assert.equal(svc.currentNarrationSha256("s1"), null, "nothing loaded");
+    await svc.load(dir, "s1");
+    const want = `sha256:${createHash("sha256").update(await readFile(path.join(dir, "narration.json"))).digest("hex")}`;
+    assert.equal(svc.currentNarrationSha256("s1"), want);
+    assert.equal(svc.currentNarrationSha256("other"), null);
+    await svc.applyEdit(dir, "s1", { op: "edit_summary", preEditId: "S02", text: "x" });
+    assert.equal(svc.currentNarrationSha256("s1"), want, "kept across edits");
+    await svc.evict("s1");
+    assert.equal(svc.currentNarrationSha256("s1"), null);
+  });
+});
+
+test("Done reviewing: closes only on ok; otherwise the app's reason is shown and the review stays open", async () => {
+  assert.deepEqual(await finishReview(async () => ({ ok: true }), "s1"), { done: true });
+  assert.deepEqual(
+    await finishReview(async () => ({ ok: false, error: "The narration is still being transcribed." }), "s1"),
+    { done: false, error: "The narration is still being transcribed." },
+  );
+  assert.deepEqual(await finishReview(async () => ({ ok: false }), "s1"), {
+    done: false,
+    error: "Could not record that the review is done.",
+  });
+  assert.deepEqual(
+    await finishReview(async () => { throw new Error("ipc"); }, "s1"),
+    { done: false, error: "Could not record that the review is done." },
+  );
+  let asked = "";
+  await finishReview(async (id) => { asked = id; return { ok: true }; }, "s9");
+  assert.equal(asked, "s9");
+});
+
+test("D7: an evict issued while a load is still running wins, so a deleted session is not cached again", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    const loading = svc.load(dir, "s1");
+    const evicting = svc.evict("s1"); // the session is deleted while its build is in flight
+    await Promise.all([loading, evicting]);
+    assert.equal(svc.image("s1", "media/S02_before_full.png"), null);
+  });
+});
+
+test("APP-9: the filmstrip asks for small previews, and only the opened step loads the full picture", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    const data = await svc.load(dir, "s1");
+    const path = data.steps[1].image!.path;
+    const full = svc.image("s1", path)!;
+    const thumb = svc.image("s1", `thumb/${path}`)!;
+    assert.ok(thumb.startsWith("data:image/png;base64,"));
+    assert.ok(thumb.length < full.length / 2, `preview ${thumb.length} is much smaller than full ${full.length}`);
+    assert.equal(svc.image("s1", "thumb/../session.json"), null);
+    assert.equal(svc.image("s1", "thumb/steps.jsonl"), null);
+    assert.equal(svc.image("s1", "thumb/media/S99_before_full.png"), null);
+  });
+});
+
+test("SEC-1: the last step's after image is its own review item, and a blur on it is stored with its frame", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    const data = await svc.load(dir, "s1");
+    assert.equal(data.steps[5].afterImage, null, "only the last step has one");
+    const last = data.steps[6];
+    assert.equal(last.afterImage?.path, "media/S07_after_full.png");
+    assert.ok(svc.image("s1", last.afterImage!.path), "and it can be shown");
+    const next = await svc.applyEdit(dir, "s1", { op: "blur_rect", preEditId: "S07", rectFpx: [50, 50, 120, 60], frame: "after" });
+    assert.deepEqual(next.steps[6].blurredAfterFpx, [[50, 50, 120, 60]]);
+    assert.deepEqual(next.steps[6].blurredFpx, [], "the before picture is unchanged");
+    assert.deepEqual((await edits(dir)).at(-1)?.frame, "after");
+  });
+});
+
+test("PKG-8: an empty note is refused, and a multi-line note is stored on one line", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    await svc.load(dir, "s1");
+    await assert.rejects(() => svc.applyEdit(dir, "s1", { op: "edit_comment", annotationId: "ann_0002", text: "  " }), /cannot be empty/);
+    assert.equal((await edits(dir)).length, 0);
+    const next = await svc.applyEdit(dir, "s1", { op: "edit_comment", annotationId: "ann_0002", text: "Save\n## first" });
+    assert.equal(next.steps[3].comment?.text, "Save ## first");
+  });
+});
+
+test("edits are appended to edits.jsonl, ids stay pre-edit, and the export applies them", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    await svc.load(dir, "s1");
+    // Delete the step shown as S02, then edit the summary and blur the step shown as S02 now (old S03).
+    let data = await svc.applyEdit(dir, "s1", { op: "delete_step", preEditId: "S02" });
+    assert.deepEqual(data.steps.map((s) => [s.stepId, s.preEditId]), [
+      ["S01", "S01"], ["S02", "S03"], ["S03", "S04"], ["S04", "S05"], ["S05", "S06"], ["S06", "S07"],
+    ]);
+    data = await svc.applyEdit(dir, "s1", { op: "edit_summary", preEditId: "S03", text: "  Save the budget  " });
+    data = await svc.applyEdit(dir, "s1", { op: "edit_comment", annotationId: "ann_0002", text: "Save first, always" });
+    data = await svc.applyEdit(dir, "s1", { op: "blur_rect", preEditId: "S03", rectFpx: [100, 100, 200, 100] });
+    assert.equal(data.editCount, 4);
+    assert.equal(data.steps[1].summary, "Save the budget");
+    assert.equal(data.steps[1].summaryEdited, true);
+    assert.equal(data.steps[2].comment?.text, "Save first, always", "the note belongs to the Explain step");
+    assert.deepEqual(data.steps[1].blurredFpx, [[100, 100, 200, 100]]);
+
+    const lines = await edits(dir);
+    assert.deepEqual(lines.map((l) => l.op), ["delete_step", "edit_summary", "edit_comment", "blur_rect"]);
+    assert.deepEqual(lines[0].step_id, "S02");
+    assert.deepEqual(lines[3].step_id, "S03", "the blur refers to the pre-edit id");
+    assert.deepEqual(lines[3].rect_fpx, [100, 100, 200, 100]);
+    assert.equal(new Set(lines.map((l) => l.edit_id)).size, 1, "ids come from the injected random here");
+
+    // A fresh service (a restart) sees the same edits, and the real exporter applies them.
+    const fresh = await service().load(dir, "s1");
+    assert.deepEqual(fresh, data);
+    const out = await mkdtemp(path.join(os.tmpdir(), "handover-review-export-"));
+    try {
+      const result = await exportPackage({ sessionDir: dir, destZip: path.join(out, "x.zip"), toolVersion: "0.1.0" });
+      assert.equal(result.ok, true, JSON.stringify(result.validationErrors ?? result.error));
+      assert.equal(result.stepCount, 6);
+      const stepsJsonl = await readFile(path.join(result.folder!, "steps.jsonl"), "utf8");
+      assert.ok(stepsJsonl.includes("Save the budget"));
+      assert.ok(!stepsJsonl.includes('Click button \\"Save\\"'), "the deleted step is gone");
+      assert.ok(stepsJsonl.includes('"redacted_regions_fpx":[[100,100,200,100]]'));
+    } finally {
+      await rm(out, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a bad edit writes nothing: blur outside the image, unknown step, empty summary, unknown operation", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    await svc.load(dir, "s1");
+    await assert.rejects(() => svc.applyEdit(dir, "s1", { op: "blur_rect", preEditId: "S02", rectFpx: [9000, 9000, 10, 10] }), /outside its image/);
+    await assert.rejects(() => svc.applyEdit(dir, "s1", { op: "delete_step", preEditId: "S42" }), /unknown step/);
+    await assert.rejects(() => svc.applyEdit(dir, "s1", { op: "edit_summary", preEditId: "S02", text: "   " }), /cannot be empty/);
+    await assert.rejects(() => svc.applyEdit(dir, "s1", { op: "blur_rect", preEditId: "S02", rectFpx: [0, 0, 0, 5] }), /positive size/);
+    await assert.rejects(
+      () => svc.applyEdit(dir, "s1", { op: "crop_everything" } as unknown as Parameters<ReviewService["applyEdit"]>[2]),
+      UnsupportedEditError,
+    );
+    assert.deepEqual(await edits(dir), []);
+  });
+});
+
+test("reviewDataFrom falls back to the output id when no pre-edit ids are given", async () => {
+  const files = new Map<string, Uint8Array>([
+    ["steps.jsonl", new TextEncoder().encode('{"step_id":"S01","seq":1,"kind":"action","summary":"x","summary_provenance":"observed","annotation_ids":[],"flags":[]}\n')],
+  ]);
+  const d = reviewDataFrom({ files, stepIds: [], sessionId: "s", title: "t", editCount: 0 });
+  assert.equal(d.steps[0].preEditId, "S01");
+  assert.equal(d.steps[0].image, null);
+});
+
+test("G2 item 2: edits made in the review make the marker stale; Done reviewing rewrites it; only then export is allowed", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    await svc.load(dir, "s1");
+    // The tester pressed Done reviewing before editing anything (12:45): the marker says 0 edits.
+    const first = await markReviewed(dir, () => new Date("2026-11-24T12:45:00Z"));
+    assert.equal(first.edit_count, 0);
+    const gate = {
+      isRecording: () => false,
+      isTranscribing: () => false,
+      isReviewed: () => isReviewed(dir),
+    };
+    assert.equal(await exportBlockedReason("s1", gate), null, "reviewed, nothing edited: export allowed");
+
+    // Then four edits (12:47 to 12:51): two deletes, a wording change and a blur, all through the review service.
+    await svc.applyEdit(dir, "s1", { op: "delete_step", preEditId: "S02" });
+    await svc.applyEdit(dir, "s1", { op: "delete_step", preEditId: "S03" });
+    await svc.applyEdit(dir, "s1", { op: "edit_summary", preEditId: "S04", text: "Save the budget" });
+    await svc.applyEdit(dir, "s1", { op: "blur_rect", preEditId: "S04", rectFpx: [100, 100, 200, 100] });
+    assert.equal((await edits(dir)).length, 4, "every edit, blur and delete included, lands in edits.jsonl");
+    assert.equal(await isReviewed(dir), false, "the 0-edit marker no longer vouches for the session");
+    assert.equal(await exportBlockedReason("s1", gate), EXPORT_NOT_REVIEWED_MESSAGE, "export is blocked until Done reviewing again");
+
+    // Done reviewing again rewrites reviewed.json with the new time and count; now export is allowed.
+    const second = await markReviewed(dir, () => new Date("2026-11-24T12:52:00Z"));
+    assert.equal(second.edit_count, 4);
+    assert.equal(second.reviewed_at, "2026-11-24T12:52:00.000Z");
+    assert.deepEqual(await readReviewedMarker(dir), second, "reviewed.json on disk is the new one");
+    assert.equal(await exportBlockedReason("s1", gate), null);
+  });
+});

@@ -9,8 +9,10 @@ import {
   initialRecordingControlsBounds,
   resizeRecordingControlsBounds,
 } from "./recording-controls-bounds";
+import { overlayBounds } from "../common/handover/overlay-geometry";
 import { RECORDER_WINDOW_WIDTH } from "./recorder-window-sizing";
 import { windowIcon } from "./icons";
+import { windowPreferences } from "./web-preferences";
 export { fitRecorderHeight } from "./recorder-window-sizing";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -53,15 +55,10 @@ export function createRecorderWindow(): BrowserWindow {
     resizable: false,
     maximizable: false,
     fullscreenable: false,
-    title: "Skill Recorder",
+    title: "Handover",
     icon: windowIcon(),
     backgroundColor: "#faf8f5",
-    webPreferences: {
-      preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+    webPreferences: windowPreferences({ preload: path.join(dirname, "preload.cjs") }),
   });
   registerDevelopmentDevToolsShortcut(win);
   loadRoute(win);
@@ -97,14 +94,8 @@ export function createRecordingControlsWindow(): BrowserWindow {
     fullscreenable: false,
     closable: false,
     skipTaskbar: true,
-    title: "Skill Recorder: Recording controls",
-    webPreferences: {
-      preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      backgroundThrottling: false,
-    },
+    title: "Handover: Recording controls",
+    webPreferences: windowPreferences({ preload: path.join(dirname, "preload.cjs"), backgroundThrottling: false }),
   });
   win.setAlwaysOnTop(true, "floating");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -123,6 +114,45 @@ export function createRecordingControlsWindow(): BrowserWindow {
   return win;
 }
 
+/**
+ * One opaque, frameless window over one display, showing that display's frozen frame for the
+ * Explain tool. It sits above everything (`screen-saver` level) and is excluded from screen capture.
+ * Created from `screen.getAllDisplays()` bounds; one window per display, never one across displays.
+ */
+export function createFreezeOverlay(display: Electron.Display): BrowserWindow {
+  const bounds = overlayBounds(display);
+  const win = new BrowserWindow({
+    ...bounds,
+    show: false,
+    frame: false,
+    transparent: false,
+    backgroundColor: "#000000",
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    enableLargerThanScreen: true,
+    title: "Handover: Explain",
+    webPreferences: windowPreferences({
+      preload: path.join(dirname, "preload.cjs"),
+      backgroundThrottling: false,
+      kind: "freeze",
+    }),
+  });
+  win.setAlwaysOnTop(true, "screen-saver");
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  win.setContentProtection(true);
+  // A window created on a display with a different scale factor can come up at the wrong size on
+  // Windows; setting the bounds again once it exists puts it on the right display at the right size.
+  win.setBounds(bounds);
+  registerDevelopmentDevToolsShortcut(win);
+  loadRoute(win, `freeze/${display.id}`);
+  return win;
+}
+
 /** Resizable app-owned terminal; the PTY remains in the main process. */
 export function createTerminalWindow(): BrowserWindow {
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
@@ -134,16 +164,10 @@ export function createTerminalWindow(): BrowserWindow {
     minWidth: 560,
     minHeight: 360,
     show: false,
-    title: "Skill Recorder: Recorded terminal",
+    title: "Handover: Recorded terminal",
     icon: windowIcon(),
     backgroundColor: "#211f1e",
-    webPreferences: {
-      preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      backgroundThrottling: false,
-    },
+    webPreferences: windowPreferences({ preload: path.join(dirname, "preload.cjs"), backgroundThrottling: false }),
   });
   registerDevelopmentDevToolsShortcut(win);
   win.setContentProtection(true);
@@ -217,15 +241,10 @@ export function createLibraryWindow(recorder: BrowserWindow): BrowserWindow {
     minWidth: LIBRARY.floorWidth,
     minHeight: 480,
     show: false,
-    title: "Skill Recorder: Sessions",
+    title: "Handover: Sessions",
     icon: windowIcon(),
     backgroundColor: "#faf8f5",
-    webPreferences: {
-      preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+    webPreferences: windowPreferences({ preload: path.join(dirname, "preload.cjs") }),
   });
   registerDevelopmentDevToolsShortcut(win);
   // Move the recorder and reveal the library together so the pair appears docked.

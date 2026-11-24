@@ -1,204 +1,144 @@
-import { createWriteStream, existsSync, type WriteStream } from "node:fs";
-import { mkdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { BrowserWindow, desktopCapturer, ipcMain, type IpcMainEvent } from "electron";
+import { BrowserWindow, desktopCapturer, ipcMain, screen, type IpcMainEvent } from "electron";
 
-import {
-  CAPTURED_FRAME_MANIFEST_VERSION,
-  type CapturedFrameManifest,
-  type CapturedVideoFrame,
-} from "../../common/frames";
+import type { RecEvent } from "../../common/types";
+import { ShotStore } from "../frames/shot-store";
 import { createLogger } from "../logger";
 
-const log = createLogger("Video");
+const log = createLogger("Capture");
 const dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VIDEO_FRAMES_FILE = "video-frames.json";
-export const VIDEO_FRAMES_DIR = "video-frames";
 
-/** Result metadata written alongside the webm as `video.json`. */
+/** Result of a capture run. No video is recorded; `startEpoch` still anchors narration. */
 export interface VideoResult {
-  file: string;
-  /** Wall-clock epoch (ms) when MediaRecorder actually started — the anchor that
-   *  maps `event_t → video offset` for frame extraction. */
   startEpoch: number;
   stopEpoch: number;
   durationMs: number;
-  bytes: number;
   fps: number;
-  /** Present on recordings that use captured snapshots, even when capture yielded none. */
-  framesVersion?: number;
-  /** Versioned source-frame manifest captured alongside the WebM. */
+  displayIds: number[];
+  /** Legacy fields read by the post-processing pipeline; absent for frame-ring capture. */
   framesFile?: string;
   frameCount?: number;
 }
 
-// Screen capture's real cost is WindowServer (the OS compositor) grabbing the
-// framebuffer at the capture rate — not our encoder. So we keep the rate and
-// resolution deliberately low: this is opportunistic enrichment anchored to
-// events, never something anyone watches. 1 fps @ 720p is plenty to recover a
-// keyframe near each event while keeping the compositor (and the mouse) smooth.
-const FPS = 1;
-const BITS_PER_SECOND = 500_000;
-const MAX_WIDTH = 1280;
-const MAX_HEIGHT = 720;
+// Capture at native resolution up to 2,560 px wide, ~3 frames per second per display, JPEG q=0.9.
+// Frames live in a ~2 s in-memory ring; only the frames a step needs reach the session folder.
+const FPS = 3;
+const MAX_WIDTH = 2560;
+const MAX_HEIGHT = 4320;
+const JPEG_QUALITY = 0.9;
+const REFRESH_MS = 1000;
 const START_TIMEOUT_MS = 10_000;
-const STOP_TIMEOUT_MS = 10_000;
-const MAX_FRAME_BYTES = 5 * 1024 * 1024;
-const FRAME_HEARTBEAT_MS = 5000;
+const STOP_TIMEOUT_MS = 5_000;
+const SNAPSHOT_WAIT_MS = 400;
+const MAX_FRAME_BYTES = 12 * 1024 * 1024;
 
-interface FrameMessage {
-  data: Uint8Array;
-  tMs: number;
-  offsetMs: number;
+interface ShotMessage {
+  displayId: number;
+  epoch: number;
   width: number;
   height: number;
+  data: Uint8Array;
 }
 
 /**
- * Captures a low-fps screen recording for a session. The heavy lifting
- * (getUserMedia + MediaRecorder) happens in a hidden renderer window
- * (electron/video/capture.html + capture-preload.cjs); this class orchestrates
- * it from the main process and writes the webm + `video.json` to the session
- * folder. Capture is strictly best-effort: if there is no screen source or the
- * Screen Recording permission is absent, it logs and the session proceeds
- * without video.
+ * Captures every display into an in-memory ring (hidden renderer: electron/video/capture-preload.cjs)
+ * and persists the frames each step needs. Strictly best-effort: without a screen source or the
+ * Screen Recording permission it logs and the session proceeds without frames.
  */
 export class VideoRecorder {
   private win: BrowserWindow | null = null;
-  private stream: WriteStream | null = null;
-  private file = "";
-  private dir = "";
-  private bytes = 0;
+  private store: ShotStore | null = null;
   private startEpoch: number | null = null;
-  private stopEpoch: number | null = null;
+  private displayIds: number[] = [];
   private startedResolve: (() => void) | null = null;
   private stoppedResolve: (() => void) | null = null;
-  private failed = false;
-  private frameDir = "";
-  private frameSequence = 0;
-  private readonly capturedFrames: CapturedVideoFrame[] = [];
-  private readonly frameWrites = new Set<Promise<void>>();
 
-  private readonly onChunk = (e: IpcMainEvent, chunk: Uint8Array) => {
-    if (e.sender !== this.win?.webContents || !this.stream) return;
-    const buf = Buffer.from(chunk);
-    this.bytes += buf.byteLength;
-    this.stream.write(buf);
-  };
-
-  private readonly onStarted = (e: IpcMainEvent, epoch: number) => {
-    if (e.sender !== this.win?.webContents) return;
-    this.startEpoch = epoch;
-    this.startedResolve?.();
-    this.startedResolve = null;
-    log.info("recording started; anchor epoch", epoch);
-  };
-
-  private readonly onFrame = (e: IpcMainEvent, frame: FrameMessage) => {
-    if (e.sender !== this.win?.webContents || !this.frameDir) return;
+  private readonly onShot = (e: IpcMainEvent, shot: ShotMessage) => {
+    if (e.sender !== this.win?.webContents || !this.store) return;
     if (
-      !(frame?.data instanceof Uint8Array) ||
-      frame.data.byteLength === 0 ||
-      frame.data.byteLength > MAX_FRAME_BYTES ||
-      !Number.isFinite(frame.tMs) ||
-      !Number.isFinite(frame.offsetMs) ||
-      !validFrameDimension(frame.width) ||
-      !validFrameDimension(frame.height)
+      !(shot?.data instanceof Uint8Array) ||
+      shot.data.byteLength === 0 ||
+      shot.data.byteLength > MAX_FRAME_BYTES ||
+      !Number.isFinite(shot.epoch) ||
+      !Number.isInteger(shot.displayId) ||
+      !(shot.width > 0 && shot.width <= 16_384) ||
+      !(shot.height > 0 && shot.height <= 16_384)
     ) {
-      log.warn("ignored captured frame with invalid payload or metadata");
+      log.warn("ignored a captured frame with an invalid payload");
       return;
     }
-
-    const name = `frame_${String(++this.frameSequence).padStart(6, "0")}.jpg`;
-    const absolute = path.join(this.frameDir, name);
-    const relative = path.posix.join(VIDEO_FRAMES_DIR, name);
-    const pending = writeFile(absolute, Buffer.from(frame.data))
-      .then(() => {
-        this.capturedFrames.push({
-          file: relative,
-          tMs: Math.round(frame.tMs),
-          offsetMs: Math.max(0, Math.round(frame.offsetMs)),
-          width: Math.round(frame.width),
-          height: Math.round(frame.height),
-        });
-      })
-      .catch((err) => {
-        log.warn("failed to persist captured frame:", err instanceof Error ? err.message : err);
-      });
-    this.frameWrites.add(pending);
-    void pending.finally(() => this.frameWrites.delete(pending));
+    this.store.ingest({
+      displayId: shot.displayId,
+      epoch: Math.round(shot.epoch),
+      width: shot.width,
+      height: shot.height,
+      data: shot.data,
+    });
   };
 
-  private readonly onFrameError = (e: IpcMainEvent, message: string) => {
-    if (e.sender === this.win?.webContents) log.warn("snapshot capture unavailable:", message);
+  private readonly onSame = (e: IpcMainEvent, msg: { displayId: number; epoch: number }) => {
+    if (e.sender !== this.win?.webContents || !this.store) return;
+    if (Number.isInteger(msg?.displayId) && Number.isFinite(msg?.epoch)) {
+      this.store.ingestSame(msg.displayId, Math.round(msg.epoch));
+    }
   };
 
-  private readonly onStopped = (e: IpcMainEvent, epoch: number) => {
+  private readonly onStarted = (e: IpcMainEvent, epoch: number, displayIds: number[]) => {
     if (e.sender !== this.win?.webContents) return;
-    this.stopEpoch = Number.isFinite(epoch) ? epoch : Date.now();
-    this.stoppedResolve?.();
+    this.startEpoch = epoch;
+    this.displayIds = Array.isArray(displayIds) ? displayIds.filter(Number.isInteger) : [];
+    this.startedResolve?.();
+    this.startedResolve = null;
+    log.info("capturing displays", this.displayIds.join(","), "from epoch", epoch);
+  };
+
+  private readonly onStopped = (e: IpcMainEvent) => {
+    if (e.sender === this.win?.webContents) this.stoppedResolve?.();
   };
 
   private readonly onError = (e: IpcMainEvent, message: string) => {
     if (e.sender !== this.win?.webContents) return;
-    this.failed = true;
     log.warn("capture unavailable:", message);
     this.startedResolve?.();
     this.startedResolve = null;
-    // Unblock a pending stop() if the recorder never really started.
     this.stoppedResolve?.();
   };
 
-  /** Begin capturing into `<sessionDir>/video.webm`. Never throws. */
-  async start(
-    sessionDir: string,
-    sourceId?: string,
-    displayId?: string,
-  ): Promise<void> {
+  private readonly onDisplayError = (e: IpcMainEvent, displayId: number, message: string) => {
+    if (e.sender === this.win?.webContents) log.warn(`display ${displayId} not captured:`, message);
+  };
+
+  /** Begin capturing every display. The legacy source arguments are ignored. Never throws. */
+  async start(sessionDir: string, _sourceId?: string, _displayId?: string): Promise<void> {
     try {
       const sources = await desktopCapturer.getSources({
         types: ["screen"],
         thumbnailSize: { width: 0, height: 0 },
       });
       if (sources.length === 0) {
-        log.warn("no screen source available; skipping video");
+        log.warn("no screen source available; continuing without frames");
         return;
       }
-      const source = displayId
-        ? sources.find((candidate) => candidate.display_id === displayId)
-        : sourceId
-          ? sources.find((candidate) => candidate.id === sourceId)
-          : sources[0];
-      if (!source) {
-        log.warn("selected screen source is unavailable; skipping video");
-        return;
-      }
-
-      this.dir = sessionDir;
-      this.file = path.join(sessionDir, "video.webm");
-      this.bytes = 0;
-      this.startEpoch = null;
-      this.stopEpoch = null;
-      this.failed = false;
-      this.frameDir = path.join(sessionDir, VIDEO_FRAMES_DIR);
-      this.frameSequence = 0;
-      this.capturedFrames.length = 0;
-      this.frameWrites.clear();
-      await mkdir(this.frameDir, { recursive: true });
-      this.stream = createWriteStream(this.file);
-      this.stream.on("error", (err) => {
-        this.failed = true;
-        log.warn("video stream write failed:", err instanceof Error ? err.message : err);
+      const displays = screen.getAllDisplays();
+      const primaryId = screen.getPrimaryDisplay().id;
+      const mapped = sources.map((source, i) => {
+        const parsed = Number.parseInt(source.display_id, 10);
+        // Some platforms leave display_id empty; the sources then follow the display order.
+        const displayId = Number.isInteger(parsed) ? parsed : (displays[i]?.id ?? primaryId);
+        return { sourceId: source.id, displayId };
       });
 
-      ipcMain.on("video:chunk", this.onChunk);
-      ipcMain.on("video:frame", this.onFrame);
-      ipcMain.on("video:frame-error", this.onFrameError);
+      this.store = new ShotStore(sessionDir);
+      this.startEpoch = null;
+      this.displayIds = [];
+      ipcMain.on("video:shot", this.onShot);
+      ipcMain.on("video:same", this.onSame);
       ipcMain.on("video:started", this.onStarted);
       ipcMain.on("video:stopped", this.onStopped);
       ipcMain.on("video:error", this.onError);
+      ipcMain.on("video:display-error", this.onDisplayError);
 
       this.win = new BrowserWindow({
         show: false,
@@ -207,6 +147,7 @@ export class VideoRecorder {
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: false,
+          spellcheck: false,
           backgroundThrottling: false,
         },
       });
@@ -216,138 +157,90 @@ export class VideoRecorder {
         this.startedResolve = resolve;
       });
       this.win.webContents.send("video:start", {
-        sourceId: source.id,
+        sources: mapped,
         fps: FPS,
-        bitsPerSecond: BITS_PER_SECOND,
+        captureFps: 4,
         maxWidth: MAX_WIDTH,
         maxHeight: MAX_HEIGHT,
+        jpegQuality: JPEG_QUALITY,
+        refreshMs: REFRESH_MS,
       });
-      log.info("capture requested for screen source", source.id, "->", this.file);
+      log.info("capture requested for", mapped.length, "display(s)");
       await Promise.race([started, delay(START_TIMEOUT_MS)]);
       if (this.startEpoch == null) {
-        log.warn("screen capture did not start; continuing without video");
+        log.warn("screen capture did not start; continuing without frames");
         await this.teardown();
-        await this.removeEmptyArtifacts();
       }
     } catch (err) {
-      log.warn("failed to start video:", err instanceof Error ? err.message : err);
+      log.warn("failed to start capture:", err instanceof Error ? err.message : err);
       await this.teardown();
-      await this.removeEmptyArtifacts();
     }
   }
 
-  /** Stop capturing and return the result, or null if no usable video was produced. */
+  /** Feed a recorded event: steps get their before frame, and an after frame ~500 ms later. */
+  onEvent(ev: RecEvent): void {
+    this.store?.onEvent(ev);
+  }
+
+  /** A forced frame of every display right now, persisted for a freeze (`purpose: annotation`). */
+  async snapshot(force = true): Promise<Awaited<ReturnType<ShotStore["persistSnapshot"]>>> {
+    if (!this.win || !this.store) return [];
+    if (force) {
+      this.win.webContents.send("video:snapshot");
+      await delay(SNAPSHOT_WAIT_MS);
+    }
+    return this.store.persistSnapshot();
+  }
+
+  /** Stop capturing, persist the pending frames and return the result, or null if none ran. */
   async stop(): Promise<VideoResult | null> {
-    if (!this.win || !this.stream) {
+    if (!this.win || !this.store) {
       await this.teardown();
-      await this.removeEmptyArtifacts();
       return null;
     }
-
     const stopped = new Promise<void>((resolve) => {
       this.stoppedResolve = resolve;
       this.win?.webContents.send("video:stop");
     });
     await Promise.race([stopped, delay(STOP_TIMEOUT_MS)]);
-
-    const stopEpoch = this.stopEpoch ?? Date.now();
-    await this.closeStream();
-    await Promise.allSettled([...this.frameWrites]);
-
-    const bytes = this.bytes;
+    const stopEpoch = Date.now();
     const startEpoch = this.startEpoch;
-    const file = this.file;
-    const failed = this.failed;
-    await this.teardown();
-
-    if (bytes === 0 || startEpoch == null) {
-      // Remove a useless/empty file so the session folder stays clean.
-      if (existsSync(file)) await unlink(file).catch(() => undefined);
-      await rm(this.frameDir, { recursive: true, force: true });
-      log.warn("no usable video captured");
-      return null;
+    const displayIds = this.displayIds;
+    try {
+      await this.store.flush();
+    } catch (err) {
+      log.warn("could not write the captured frames:", err instanceof Error ? err.message : err);
     }
-    if (failed) log.warn("capture ended with an error; preserving the usable partial recording");
-
-    const framesFile = await this.writeFrameManifest();
-    const result: VideoResult = {
-      file: path.basename(file),
+    const count = this.store.entries().length;
+    await this.teardown();
+    if (startEpoch == null) return null;
+    log.info(`capture stopped: ${count} frame(s) kept for steps`);
+    return {
       startEpoch,
       stopEpoch,
       durationMs: stopEpoch - startEpoch,
-      bytes,
       fps: FPS,
-      framesVersion: CAPTURED_FRAME_MANIFEST_VERSION,
-      ...(framesFile ? { framesFile, frameCount: this.capturedFrames.length } : {}),
+      displayIds,
+      frameCount: count,
     };
-    await writeFile(path.join(this.dirFor(file), "video.json"), JSON.stringify(result, null, 2)).catch(
-      (err) => log.warn("failed to write video.json:", err instanceof Error ? err.message : err),
-    );
-    log.info(
-      `video saved: ${result.file} (${(bytes / 1_000_000).toFixed(1)} MB, ` +
-        `${result.durationMs} ms, ${this.capturedFrames.length} source frames)`,
-    );
-    return result;
-  }
-
-  private async writeFrameManifest(): Promise<string | null> {
-    if (this.capturedFrames.length === 0) {
-      await rm(this.frameDir, { recursive: true, force: true });
-      return null;
-    }
-    const manifest: CapturedFrameManifest = {
-      version: CAPTURED_FRAME_MANIFEST_VERSION,
-      format: "jpeg",
-      heartbeatMs: FRAME_HEARTBEAT_MS,
-      frames: [...this.capturedFrames].sort((a, b) => a.tMs - b.tMs),
-    };
-    const file = path.join(this.dir, VIDEO_FRAMES_FILE);
-    const temp = `${file}.tmp.${process.pid}.${Date.now()}`;
-    try {
-      await writeFile(temp, JSON.stringify(manifest, null, 2));
-      await rename(temp, file);
-      return VIDEO_FRAMES_FILE;
-    } finally {
-      await rm(temp, { force: true });
-    }
-  }
-
-  private dirFor(file: string): string {
-    return this.dir || path.dirname(file);
-  }
-
-  private closeStream(): Promise<void> {
-    return new Promise((resolve) => {
-      if (!this.stream) return resolve();
-      this.stream.end(() => resolve());
-    });
   }
 
   private async teardown(): Promise<void> {
-    ipcMain.removeListener("video:chunk", this.onChunk);
-    ipcMain.removeListener("video:frame", this.onFrame);
-    ipcMain.removeListener("video:frame-error", this.onFrameError);
+    ipcMain.removeListener("video:shot", this.onShot);
+    ipcMain.removeListener("video:same", this.onSame);
     ipcMain.removeListener("video:started", this.onStarted);
     ipcMain.removeListener("video:stopped", this.onStopped);
     ipcMain.removeListener("video:error", this.onError);
+    ipcMain.removeListener("video:display-error", this.onDisplayError);
     this.stoppedResolve = null;
     this.startedResolve = null;
-    await this.closeStream();
-    this.stream = null;
+    this.store?.dispose();
+    this.store = null;
     if (this.win && !this.win.isDestroyed()) this.win.destroy();
     this.win = null;
-  }
-
-  private async removeEmptyArtifacts(): Promise<void> {
-    if (this.file && existsSync(this.file)) await unlink(this.file).catch(() => undefined);
-    if (this.frameDir) await rm(this.frameDir, { recursive: true, force: true });
   }
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function validFrameDimension(value: number): boolean {
-  return Number.isFinite(value) && value > 0 && value <= 16_384;
 }

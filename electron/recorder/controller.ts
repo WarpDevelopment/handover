@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 
 import { app } from "electron";
 
 import type { CaptureConfig } from "../../common/config";
 import { EventType } from "../../common/events";
-import type { TerminalCommandPayload } from "../../common/events";
+import type { DisplaysPayload, PointerClickPayload, TerminalCommandPayload } from "../../common/events";
+import { layoutChanged } from "../../common/handover/displays";
+import { sanitizeExplainResult } from "../../common/handover/explain";
+import { HELPER_FILE } from "../../common/handover/helper";
+import { clickLookupMs } from "../../common/handover/steps";
+import type { HelperStatus } from "../../common/handover/types";
 import type {
   DiscardResult,
   MarkerResult,
@@ -20,7 +27,8 @@ import {
   isNarrationLanguage,
   type NarrationLanguage,
 } from "../../common/narration";
-import type { RecorderState, SessionMeta } from "../../common/types";
+import type { RecEvent, RecorderState, SessionMeta } from "../../common/types";
+import { isOwnAppEvent } from "./own-events";
 import {
   SYSTEM_DEFAULT_MICROPHONE_ID,
   type MicrophoneDevice,
@@ -49,6 +57,39 @@ export interface SessionVideoRecorder {
     displayId?: string,
   ): Promise<void>;
   stop(): Promise<unknown>;
+  /** Every recorded event, so the sidecar can keep the frames a step needs. */
+  onEvent?(ev: RecEvent): void;
+  /** A forced frame of every display, saved in the session folder, for the Explain freeze. */
+  snapshot?(force?: boolean): Promise<FrozenFrame[]>;
+}
+
+/** One frozen frame saved for an Explain freeze (`ShotEntry` with `purpose: "annotation"`). */
+export interface FrozenFrame {
+  /** Path relative to the session folder, e.g. `shots/000012.jpg`. */
+  file: string;
+  /** Electron `Display.id` the frame shows. */
+  displayId: number;
+  epoch: number;
+}
+
+export interface PauseResult {
+  ok: boolean;
+  error?: string;
+}
+
+export interface BeginExplainResult {
+  ok: boolean;
+  error?: string;
+  /** The session folder the frozen frames are in. */
+  sessionDir?: string;
+  frames?: FrozenFrame[];
+}
+
+export interface EndExplainResult {
+  ok: boolean;
+  error?: string;
+  /** Ids of the annotation events written. */
+  annotationIds?: string[];
 }
 
 /** Microphone sidecar that can create multiple capture intervals per session. */
@@ -86,6 +127,19 @@ export interface RecorderDeps {
   terminalBusy?: () => { busy: boolean; command: string | null };
   /** Flush and close the recorded terminal before the event stream is finalized. */
   finishTerminal?: () => Promise<void>;
+  /** The current display layout, recorded as a `displays` event at start and on changes. */
+  getDisplays?: () => DisplaysPayload | null;
+  /** The native helper's status when a recording stops, saved as `helper.json`. */
+  getHelperStatus?: () => HelperStatus;
+  /** The freeze was closed by the recorder (the recording stopped while frozen): close the overlay. */
+  onExplainAborted?: () => void;
+  /**
+   * True when a click landed on Handover's own recording bar. Such a click is never recorded, so
+   * pressing Explain, Pause or Resume does not become a step (or take the freeze's annotations).
+   */
+  isOwnWindowClick?: (click: PointerClickPayload) => boolean;
+  /** The Electron id of the display under the pointer, recorded on `explain.start`. */
+  pointerDisplayId?: () => number | undefined;
 }
 
 type FinishIntent = "save" | "discard";
@@ -102,6 +156,9 @@ export class RecorderController {
   private readonly host: CollectorHost;
   private activeCollectors: readonly Collector[] = [];
   private video: SessionVideoRecorder | null = null;
+  private videoUnsubscribe: (() => void) | null = null;
+  private lastDisplays: DisplaysPayload | null = null;
+  private lastDisplaysEvent: RecEvent | null = null;
   private audio: SessionAudioRecorder | null = null;
   private transition: RecorderStatus["transition"] = "none";
   private narrationLanguage = DEFAULT_NARRATION_LANGUAGE;
@@ -116,9 +173,40 @@ export class RecorderController {
   private readonly processing = new Set<Promise<void>>();
   private lastCompleted: { id: string; dir: string } | null = null;
   private lastProcessed = false;
+  private paused = false;
+  private explain: { frames: FrozenFrame[]; displaySizes: Map<number, [number, number]> } | null = null;
+  private annotationCounter = 0;
+  /** Store-clock spans (ms) of every pause and freeze so far; `end` is null while one is open. */
+  private quiet: { start: number; end: number | null }[] = [];
+
+  private openQuiet(store: SessionStore): void {
+    this.quiet.push({ start: store.elapsedMs(), end: null });
+  }
+
+  private closeQuiet(store: SessionStore): void {
+    const last = this.quiet[this.quiet.length - 1];
+    if (last && last.end === null) last.end = store.elapsedMs();
+  }
+
+  private actedWhileQuiet(click: PointerClickPayload): boolean {
+    const store = this.store;
+    if (!store || this.quiet.length === 0) return false;
+    const acted = store.elapsedMs() - clickLookupMs(click);
+    return this.quiet.some((q) => acted >= q.start && (q.end === null || acted < q.end));
+  }
 
   constructor(private readonly deps: RecorderDeps) {
     this.host = new CollectorHost(this.bus);
+    this.bus.setFilter((input) => {
+      if (input.type === EventType.PointerClick) {
+        if (this.deps.isOwnWindowClick?.(input.payload) ?? false) return true;
+        // N7: a click is judged by when the user acted (report time minus the helper's lookup), so one
+        // made just before a pause or freeze still counts, and one made inside it never reaches disk
+        // (its control name could be private, and it is not a step).
+        return this.actedWhileQuiet(input.payload);
+      }
+      return isOwnAppEvent(input);
+    });
     // Every persisted event refreshes live status (event count, etc.).
     this.bus.subscribe(() => this.emit());
   }
@@ -137,6 +225,35 @@ export class RecorderController {
     return store
       ? { id: store.meta.id, dir: store.dir, startedAt: store.meta.startedAt }
       : null;
+  }
+
+  /**
+   * Record the display layout as a `displays` event when it differs from the last one recorded.
+   * Called at session start and on every display change; a no-op while idle.
+   */
+  publishDisplays(): void {
+    if (!this.store || !this.deps.getDisplays) return;
+    const layout = this.deps.getDisplays();
+    if (!layout || !layoutChanged(this.lastDisplays, layout)) return;
+    const ev = this.bus.publish({ type: EventType.Displays, source: "screen", payload: layout });
+    if (!ev) return;
+    this.lastDisplays = layout;
+    this.lastDisplaysEvent = ev;
+  }
+
+  /** Save the native helper's status next to the events, for the package manifest. Best effort. */
+  private writeHelperStatus(dir: string): void {
+    if (!this.deps.getHelperStatus) return;
+    try {
+      writeFileSync(path.join(dir, HELPER_FILE), JSON.stringify(this.deps.getHelperStatus(), null, 2));
+    } catch (error) {
+      log.warn("could not write helper status:", error instanceof Error ? error.message : error);
+    }
+  }
+
+  private releaseVideoFeed(): void {
+    this.videoUnsubscribe?.();
+    this.videoUnsubscribe = null;
   }
 
   recordTerminalCommand(payload: TerminalCommandPayload): boolean {
@@ -169,6 +286,8 @@ export class RecorderController {
       startedAt: this.store?.meta.startedAt ?? null,
       narrationLanguage: this.narrationLanguage,
       eventCount: this.store?.eventCount ?? 0,
+      paused: this.paused,
+      explaining: this.explain !== null,
       transition: this.transition,
       microphone: {
         ...this.microphone,
@@ -193,7 +312,7 @@ export class RecorderController {
   start(options?: StartOptions): Promise<StartResult> {
     return this.enqueue(() =>
       this.shuttingDown
-        ? Promise.resolve({ ok: false, error: "Skill Recorder is shutting down." })
+        ? Promise.resolve({ ok: false, error: "Handover is shutting down." })
         : this.startInternal(options),
     );
   }
@@ -285,6 +404,141 @@ export class RecorderController {
     });
   }
 
+  /**
+   * Pause the recording. Writes `gap{user_paused}` (open: no `tEndMs`) and drops every collector
+   * event until {@link resume}. Screen capture keeps running, so the frame ring stays warm.
+   */
+  pause(): Promise<PauseResult> {
+    return this.enqueue(async () => {
+      if (!this.store || this.transition !== "none") return { ok: false, error: "Not recording" };
+      if (this.paused) return { ok: true };
+      if (this.explain) return { ok: false, error: "Finish the Explain step before pausing." };
+      this.openQuiet(this.store);
+      this.bus.publish({ type: EventType.Gap, source: "user", payload: { reason: "user_paused" } });
+      this.paused = true;
+      this.bus.setBlocked(true);
+      this.host.setPaused(true);
+      this.emit();
+      return { ok: true };
+    });
+  }
+
+  /** Resume after {@link pause}: closes the open gap with `tEndMs`. */
+  resume(): Promise<PauseResult> {
+    return this.enqueue(async () => {
+      if (!this.store || this.transition !== "none") return { ok: false, error: "Not recording" };
+      if (!this.paused) return { ok: true };
+      this.closePauseGap(this.store);
+      this.emit();
+      return { ok: true };
+    });
+  }
+
+  /** `notifyCollectors` is false only when the recording is stopping: nothing is left to resume. */
+  private closePauseGap(store: SessionStore, notifyCollectors = true): void {
+    this.closeQuiet(store);
+    this.paused = false;
+    this.bus.setBlocked(this.explain !== null);
+    this.bus.publish({
+      type: EventType.Gap,
+      source: "user",
+      payload: { reason: "user_paused", tEndMs: Math.round(store.elapsedMs()) },
+    });
+    if (notifyCollectors) this.host.setPaused(false);
+  }
+
+  /**
+   * Freeze the screen for an explanation: takes one frozen frame per display, writes
+   * `explain.start`, and drops collector events until {@link endExplain}. The caller opens the
+   * overlay windows from the returned frames.
+   */
+  beginExplain(): Promise<BeginExplainResult> {
+    return this.enqueue(async () => {
+      const store = this.store;
+      if (!store || this.transition !== "none") return { ok: false, error: "Not recording" };
+      if (this.paused) return { ok: false, error: "Resume the recording before explaining something." };
+      if (this.explain) return { ok: false, error: "The screen is already frozen." };
+      let frames: FrozenFrame[] = [];
+      try {
+        frames = (await this.video?.snapshot?.(true)) ?? [];
+      } catch (error) {
+        log.warn("freeze snapshot failed:", error instanceof Error ? error.message : error);
+      }
+      if (frames.length === 0) {
+        return { ok: false, error: "Screen capture is not available, so the screen cannot be frozen." };
+      }
+      // The recording may have stopped while the snapshot was taken.
+      if (this.store !== store || this.transition !== "none") return { ok: false, error: "Not recording" };
+      const displaySizes = new Map<number, [number, number]>();
+      for (const d of this.lastDisplays?.displays ?? []) displaySizes.set(d.id, d.sizeDpx);
+      const pointer = this.deps.pointerDisplayId?.();
+      this.openQuiet(store);
+      this.bus.publish({
+        type: EventType.ExplainStart,
+        source: "user",
+        payload: {
+          displayIds: frames.map((f) => f.displayId),
+          ...(pointer !== undefined ? { pointerDisplayId: pointer } : {}),
+        },
+      });
+      this.explain = { frames, displaySizes };
+      this.bus.setBlocked(true);
+      this.emit();
+      return { ok: true, sessionDir: store.dir, frames };
+    });
+  }
+
+  /**
+   * End the freeze. `result` is what the overlay returned; it is validated here. Highlights and
+   * comments become `annotation` events, then `explain.end` is written. A cancelled result writes
+   * only `explain.end`: the time was still spent explaining.
+   */
+  endExplain(result: unknown): Promise<EndExplainResult> {
+    return this.enqueue(async () => this.endExplainInternal(result));
+  }
+
+  private endExplainInternal(raw: unknown): EndExplainResult {
+    const ex = this.explain;
+    if (!ex || !this.store) return { ok: false, error: "The screen is not frozen." };
+    const result = sanitizeExplainResult(raw, ex.displaySizes);
+    const ids: string[] = [];
+    for (const a of result.annotations) {
+      const annotationId = `ann_${String(++this.annotationCounter).padStart(4, "0")}`;
+      if (a.kind === "comment") {
+        this.bus.publish({
+          type: EventType.Annotation,
+          source: "freeze",
+          payload: { annotationId, kind: "comment", text: a.text, source: "typed" },
+        });
+      } else {
+        const frame = ex.frames.find((f) => f.displayId === a.displayId);
+        this.bus.publish({
+          type: EventType.Annotation,
+          source: "freeze",
+          payload: {
+            annotationId,
+            kind: "highlight",
+            displayId: a.displayId,
+            ...(frame ? { frameFile: frame.file } : {}),
+            shape: a.shape,
+            pointsDpx: a.pointsDpx,
+          },
+        });
+      }
+      ids.push(annotationId);
+    }
+    this.bus.publish({
+      type: EventType.ExplainEnd,
+      source: "user",
+      payload: { displayIds: ex.frames.map((f) => f.displayId) },
+    });
+    if (this.store) this.closeQuiet(this.store);
+    this.explain = null;
+    this.bus.setBlocked(this.paused);
+    this.emit();
+    return { ok: true, annotationIds: ids };
+  }
+
   // Marker capture is intentionally retained even though the "Add marker" HUD
   // button was removed in favor of voice narration (see docs/future-features.md).
   marker(note: string): MarkerResult {
@@ -343,18 +597,25 @@ export class RecorderController {
 
     this.store = store;
     this.bus.attach(store);
+    this.paused = false;
+    this.explain = null;
+    this.quiet = [];
+    this.annotationCounter = 0;
     this.bus.publish({
       type: EventType.SessionStart,
       source: "recorder",
       payload: { platform: store.meta.platform },
     });
-    log.info("Recording started:", store.meta.id, "->", store.dir);
+    this.lastDisplays = null;
+    this.lastDisplaysEvent = null;
+    this.publishDisplays();
+    log.info("Recording started:", store.meta.id); // the id only: the folder path names the OS user (SEC-8)
     this.emit();
 
     try {
       const config = this.deps.resolveConfig();
       this.activeCollectors = this.deps.buildCollectors(config);
-      await this.host.startAll(this.activeCollectors, store.dir);
+      await this.host.startAll(this.activeCollectors, store.dir, () => store.elapsedMs());
 
       // Video remains a best-effort sidecar; it never blocks the event recording.
       if (config.video && this.deps.createVideoRecorder) {
@@ -365,6 +626,17 @@ export class RecorderController {
             options?.screenSourceId,
             options?.screenDisplayId,
           );
+          const video = this.video;
+          if (video.onEvent) {
+            // The sidecar learns the layout first, then sees every later event.
+            if (this.lastDisplaysEvent) video.onEvent(this.lastDisplaysEvent);
+            this.videoUnsubscribe = this.bus.subscribe((ev) => {
+              // A click now reaches the log while paused or frozen (PKG-11), but it must not take
+              // before/after frames of the screen: the user paused so nothing would be captured.
+              if (ev.type === EventType.PointerClick && (this.paused || this.explain !== null)) return;
+              video.onEvent?.(ev);
+            });
+          }
         } catch (error) {
           log.warn("video start failed:", error instanceof Error ? error.message : error);
           this.video = null;
@@ -416,6 +688,7 @@ export class RecorderController {
     } catch (error) {
       log.warn("collector rollback failed:", error instanceof Error ? error.message : error);
     }
+    this.releaseVideoFeed();
     if (this.video) {
       try {
         await this.video.stop();
@@ -550,6 +823,12 @@ export class RecorderController {
         };
       }
     }
+    // A recording stopped while paused or frozen closes both, so the time sums stay exact.
+    if (this.explain) {
+      this.endExplainInternal({ cancelled: true });
+      this.deps.onExplainAborted?.();
+    }
+    if (this.paused) this.closePauseGap(store, false);
     // Audio is flushed before
     // video so the mic-off boundary is anchored as close as possible to the click.
     try {
@@ -566,6 +845,7 @@ export class RecorderController {
     }
 
     let videoStartEpoch: number | null = null;
+    this.releaseVideoFeed();
     if (this.video) {
       try {
         const result = await this.video.stop();
@@ -587,6 +867,7 @@ export class RecorderController {
 
     this.bus.publish({ type: EventType.SessionStop, source: "recorder", payload: {} });
     this.bus.detach();
+    this.writeHelperStatus(store.dir);
     // A finalize failure (disk full, session dir removed) must not wedge the state
     // machine in "stopping": capture it, release the stream, and fall through to a
     // clean idle state below so the recorder can start again.

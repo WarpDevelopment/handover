@@ -15,10 +15,6 @@ function copyStaticAssets(): void {
   mkdirSync(out, { recursive: true });
   mkdirSync(path.join(out, "video"), { recursive: true });
   mkdirSync(path.join(out, "audio"), { recursive: true });
-  mkdirSync(path.join(out, "imports"), { recursive: true });
-  for (const file of ["media.html", "media-preload.cjs"]) {
-    copyFileSync(path.join(rootDir, "electron", "imports", file), path.join(out, "imports", file));
-  }
   const icons = path.join(out, "assets", "icons");
   mkdirSync(icons, { recursive: true });
   const iconSrc = path.join(rootDir, "electron", "assets", "icons");
@@ -33,6 +29,10 @@ function copyStaticAssets(): void {
   copyFileSync(
     path.join(rootDir, "electron", "video", "capture-preload.cjs"),
     path.join(out, "video", "capture-preload.cjs"),
+  );
+  copyFileSync(
+    path.join(rootDir, "electron", "video", "thumb-diff.cjs"),
+    path.join(out, "video", "thumb-diff.cjs"),
   );
   copyFileSync(
     path.join(rootDir, "electron", "audio", "capture.html"),
@@ -67,7 +67,6 @@ export default defineConfig({
               // large CJS dependency graph, so it's required at runtime too.
               external: [
                 "electron",
-                "@github/copilot-sdk",
                 "archiver",
                 "get-windows",
                 "koffi",

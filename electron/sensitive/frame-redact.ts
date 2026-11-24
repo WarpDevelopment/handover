@@ -1,9 +1,9 @@
 // Frame OCR + blur for the Advanced protection layer. When Advanced
-// protection is on, screen frames the describer would send to GitHub Copilot are
-// first OCR'd on-device; any word whose text trips the same detectors used for the
-// session's text (secrets, structured PII) — or matches a value already detected
-// elsewhere in the session — is covered with an opaque box before the JPEG leaves
-// the machine. The OCR text itself is never sent; only the blurred image is. Boxes
+// protection is on, screen frames are first OCR'd on-device; any word whose text
+// trips the same detectors used for the session's text (secrets, structured PII)
+// — or matches a value already detected elsewhere in the session — is covered
+// with an opaque box before the JPEG is used. The OCR text itself is never
+// kept; only the blurred image is. Boxes
 // are solid and irreversible (safer than a reversible blur).
 
 import { createRequire } from "node:module";

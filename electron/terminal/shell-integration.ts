@@ -23,7 +23,7 @@ export interface IntegratedShellLaunch {
   cleanup: () => Promise<void>;
 }
 
-const OSC = "6973;skill-recorder;1";
+const OSC = "6973;handover;1";
 
 function environment(input: NodeJS.ProcessEnv): Record<string, string> {
   return Object.fromEntries(
@@ -56,7 +56,7 @@ __sr_pct() {
 `;
 
 function zshScript(nonce: string, profile: string): string {
-  return `# Skill Recorder generated shell integration. This file is session-local.
+  return `# Handover generated shell integration. This file is session-local.
 if [[ -r ${shQuote(profile)} ]]; then
   source ${shQuote(profile)}
 fi
@@ -103,7 +103,7 @@ add-zsh-hook precmd __sr_precmd
 }
 
 function bashScript(nonce: string, profile: string): string {
-  return `# Skill Recorder generated shell integration. This file is session-local.
+  return `# Handover generated shell integration. This file is session-local.
 if [ -r ${shQuote(profile)} ]; then
   . ${shQuote(profile)}
 fi
@@ -193,7 +193,7 @@ __sr_guard=0
 }
 
 function fishScript(nonce: string, profile: string): string {
-  return `# Skill Recorder generated shell integration. This file is session-local.
+  return `# Handover generated shell integration. This file is session-local.
 if test -r ${shQuote(profile)}
   source ${shQuote(profile)}
 end
@@ -233,7 +233,7 @@ function powershellScript(
   nonce: string,
   shell: "pwsh" | "windows-powershell",
 ): string {
-  return `# Skill Recorder generated shell integration. This file is session-local.
+  return `# Handover generated shell integration. This file is session-local.
 $__srProfile = $PROFILE
 if (Test-Path -LiteralPath $__srProfile) { . $__srProfile }
 
@@ -356,7 +356,7 @@ export async function prepareShellIntegration(
   const baseEnv = options.env ?? process.env;
   const home = options.homeDir ?? homedir();
   const root = options.temporaryRoot ?? tmpdir();
-  const directory = await mkdtemp(path.join(root, "skill-recorder-terminal-"));
+  const directory = await mkdtemp(path.join(root, "handover-terminal-"));
   const env = environment(baseEnv);
   let scriptPath: string;
   let script: string;

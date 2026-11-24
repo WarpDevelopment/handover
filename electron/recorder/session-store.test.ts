@@ -5,7 +5,32 @@ import path from "node:path";
 import test from "node:test";
 
 import type { SessionMeta } from "../../common/types";
-import { SessionStore } from "./session-store";
+import { resolveSessionsRoot, SessionStore } from "./session-store";
+
+test("APP-11: on Windows the sessions root is under LOCALAPPDATA, not roaming AppData", () => {
+  const root = resolveSessionsRoot({
+    platform: "win32",
+    env: { LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local", APPDATA: "C:\\Users\\tester\\AppData\\Roaming" },
+    userData: () => "C:\\Users\\tester\\AppData\\Roaming\\Handover",
+  });
+  assert.equal(root, "C:\\Users\\tester\\AppData\\Local\\Handover\\sessions");
+  assert.ok(root.startsWith("C:\\Users\\tester\\AppData\\Local\\"));
+});
+
+test("APP-11: other platforms, a missing LOCALAPPDATA and the test override keep their old roots", () => {
+  assert.equal(
+    resolveSessionsRoot({ platform: "darwin", env: { LOCALAPPDATA: "/x" }, userData: () => "/u" }),
+    path.join("/u", "sessions"),
+  );
+  assert.equal(
+    resolveSessionsRoot({ platform: "win32", env: {}, userData: () => "C:\\u" }),
+    path.join("C:\\u", "sessions"),
+  );
+  assert.equal(
+    resolveSessionsRoot({ platform: "win32", env: { HANDOVER_SESSIONS_DIR: "/tmp/s", LOCALAPPDATA: "C:\\L" }, userData: () => "/u" }),
+    path.resolve("/tmp/s"),
+  );
+});
 
 function makeMeta(id: string): SessionMeta {
   return {
@@ -49,14 +74,14 @@ test("dispose releases the events stream without hanging", async () => {
 });
 
 async function withSessionsRoot(run: () => Promise<void>): Promise<void> {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-store-"));
-  const previous = process.env.SKILL_RECORDER_SESSIONS_DIR;
-  process.env.SKILL_RECORDER_SESSIONS_DIR = root;
+  const root = await mkdtemp(path.join(tmpdir(), "handover-store-"));
+  const previous = process.env.HANDOVER_SESSIONS_DIR;
+  process.env.HANDOVER_SESSIONS_DIR = root;
   try {
     await run();
   } finally {
-    if (previous === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previous;
+    if (previous === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
+    else process.env.HANDOVER_SESSIONS_DIR = previous;
     await rm(root, { recursive: true, force: true });
   }
 }

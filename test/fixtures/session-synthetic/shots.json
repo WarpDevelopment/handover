@@ -1,0 +1,14 @@
+[
+  { "file": "shots/000001.png", "epoch": 1795500000000, "displayId": 1, "purpose": "before" },
+  { "file": "shots/000002.png", "epoch": 1795500002700, "displayId": 1, "purpose": "before" },
+  { "file": "shots/000003.png", "epoch": 1795500002980, "displayId": 1, "purpose": "before" },
+  { "file": "shots/000004.png", "epoch": 1795500005000, "displayId": 1, "purpose": "before" },
+  { "file": "shots/000005.png", "epoch": 1795500005170, "displayId": 1, "purpose": "before" },
+  { "file": "shots/000006.png", "epoch": 1795500009700, "displayId": 2, "purpose": "before" },
+  { "file": "shots/000007.png", "epoch": 1795500011700, "displayId": 2, "purpose": "before" },
+  { "file": "shots/000008.png", "epoch": 1795500011990, "displayId": 2, "purpose": "before" },
+  { "file": "shots/000009.png", "epoch": 1795500015700, "displayId": 2, "purpose": "before" },
+  { "file": "shots/000010.png", "epoch": 1795500016500, "displayId": 2, "purpose": "after" },
+  { "file": "shots/000011.png", "epoch": 1795500020000, "displayId": 2, "purpose": "after" },
+  { "file": "shots/000012.png", "epoch": 1795500006900, "displayId": 1, "purpose": "annotation" }
+]

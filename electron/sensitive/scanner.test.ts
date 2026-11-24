@@ -59,14 +59,14 @@ async function seedSession(root: string, id: string): Promise<void> {
 }
 
 async function withSessionRoot(fn: (root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-sensitive-"));
-  const previousRoot = process.env.SKILL_RECORDER_SESSIONS_DIR;
-  process.env.SKILL_RECORDER_SESSIONS_DIR = root;
+  const root = await mkdtemp(path.join(tmpdir(), "handover-sensitive-"));
+  const previousRoot = process.env.HANDOVER_SESSIONS_DIR;
+  process.env.HANDOVER_SESSIONS_DIR = root;
   try {
     await fn(root);
   } finally {
-    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
+    if (previousRoot === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
+    else process.env.HANDOVER_SESSIONS_DIR = previousRoot;
     await rm(root, { recursive: true, force: true });
   }
 }

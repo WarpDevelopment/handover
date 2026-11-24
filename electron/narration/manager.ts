@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readdir, rename, rm, writeFile } from "node:fs/promises";
+import { rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -22,14 +22,9 @@ import type { SessionMeta } from "../../common/types";
 import { createLogger } from "../logger";
 import { isValidSessionId, sessionDir } from "../recorder/session-store";
 import { shouldTranscribeBeforeAnalyze } from "./analyze-gate";
+import { NO_NARRATION_ERROR, transcribeIfCachedWith } from "./no-narration";
 import { transcribeNarration } from "./transcribe";
-import {
-  getAsrPipeline,
-  isNarrationModelCached,
-  narrationModelCacheDir,
-  removeLegacyNarrationModelCache,
-  type ModelLoadProgress,
-} from "./whisper";
+import { getAsrPipeline, isNarrationModelCached } from "./whisper";
 
 const log = createLogger("Narration");
 
@@ -75,25 +70,6 @@ async function writeTranscript(file: string, transcript: NarrationTranscript): P
   }
 }
 
-async function removePartialDownloads(dir: string): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  await Promise.all(
-    entries.map(async (entry) => {
-      const file = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await removePartialDownloads(file);
-      } else if (/\.tmp\.\d+\./.test(entry.name)) {
-        await rm(file, { force: true });
-      }
-    }),
-  );
-}
-
 export class NarrationManager {
   private current: NarrationStatus = {
     model: "missing",
@@ -105,9 +81,7 @@ export class NarrationManager {
     error: null,
   };
   private queue: Promise<void> = Promise.resolve();
-  private downloadTask: Promise<NarrationActionResult> | null = null;
   private readonly sessionTasks = new Map<string, Promise<NarrationActionResult>>();
-  private lastProgress = -1;
 
   constructor(private readonly emitStatus: (status: NarrationStatus) => void) {}
 
@@ -118,7 +92,6 @@ export class NarrationManager {
       phase: "idle",
       error: null,
     });
-    if (ready) void this.cleanupLegacyModel();
   }
 
   status(): NarrationStatus {
@@ -129,40 +102,13 @@ export class NarrationManager {
     return this.sessionTasks.has(sessionId);
   }
 
-  downloadModel(): Promise<NarrationActionResult> {
-    if (this.current.model === "ready") {
-      return Promise.resolve({ ok: true, outcome: "ready" });
-    }
-    if (this.downloadTask) return this.downloadTask;
-    const task = this.enqueue(async () => {
-      try {
-        await this.loadModel(true, null);
-        return { ok: true, outcome: "ready" } satisfies NarrationActionResult;
-      } catch (err) {
-        const error = message(err);
-        this.update({
-          model: isNarrationModelCached() ? "ready" : "error",
-          phase: "idle",
-          activeSessionId: null,
-          error,
-        });
-        return { ok: false, error } satisfies NarrationActionResult;
-      }
-    });
-    this.downloadTask = task;
-    void task.finally(() => {
-      if (this.downloadTask === task) this.downloadTask = null;
-    });
-    return task;
-  }
-
   transcribeSession(sessionId: string): Promise<NarrationActionResult> {
     if (!isValidSessionId(sessionId)) {
       return Promise.resolve({ ok: false, error: "Unknown session." });
     }
     const existing = this.sessionTasks.get(sessionId);
     if (existing) return existing;
-    const task = this.enqueue(() => this.runTranscription(sessionId, true));
+    const task = this.enqueue(() => this.runTranscription(sessionId));
     this.sessionTasks.set(sessionId, task);
     void task.finally(() => {
       if (this.sessionTasks.get(sessionId) === task) this.sessionTasks.delete(sessionId);
@@ -188,7 +134,7 @@ export class NarrationManager {
     if (!shouldTranscribeBeforeAnalyze(hasAudio, hasTranscript)) {
       return hasTranscript ? { ok: true, outcome: "already-transcribed" } : { ok: true };
     }
-    const result = await this.transcribeSessionWithDownload(sessionId, true, signal);
+    const result = await this.transcribeSessionWithDownload(sessionId, signal);
     if (!result.ok) {
       log.warn(
         `pre-analysis transcription failed for ${sessionId}:`,
@@ -199,23 +145,24 @@ export class NarrationManager {
   }
 
   async transcribeIfCached(dir: string): Promise<void> {
-    if (!isNarrationModelCached()) return;
-    const id = path.basename(dir);
-    if (!isValidSessionId(id)) return;
-    const result = await this.transcribeSessionWithDownload(id, false);
-    if (!result.ok && result.outcome !== "model-missing") {
-      log.warn("cached narration transcription failed:", result.error);
-    }
+    await transcribeIfCachedWith(
+      {
+        modelCached: isNarrationModelCached,
+        isValidSessionId,
+        transcribe: (id) => this.transcribeSessionWithDownload(id),
+        warn: (...args) => log.warn(...args),
+      },
+      dir,
+    );
   }
 
   private transcribeSessionWithDownload(
     sessionId: string,
-    allowDownload: boolean,
     signal?: AbortSignal,
   ): Promise<NarrationActionResult> {
     const existing = this.sessionTasks.get(sessionId);
     if (existing) return existing;
-    const task = this.enqueue(() => this.runTranscription(sessionId, allowDownload, signal));
+    const task = this.enqueue(() => this.runTranscription(sessionId, signal));
     this.sessionTasks.set(sessionId, task);
     void task.finally(() => {
       if (this.sessionTasks.get(sessionId) === task) this.sessionTasks.delete(sessionId);
@@ -234,7 +181,6 @@ export class NarrationManager {
 
   private async runTranscription(
     sessionId: string,
-    allowDownload: boolean,
     signal?: AbortSignal,
   ): Promise<NarrationActionResult> {
     const dir = sessionDir(sessionId);
@@ -245,7 +191,7 @@ export class NarrationManager {
     await rm(narrationFile, { force: true });
 
     const audioJson = path.join(dir, "audio.json");
-    if (!existsSync(audioJson)) return { ok: false, error: "This recording has no saved narration." };
+    if (!existsSync(audioJson)) return { ok: false, error: NO_NARRATION_ERROR };
 
     let meta: SessionMeta;
     let audioSources: AudioSource[];
@@ -260,7 +206,7 @@ export class NarrationManager {
     }
 
     if (audioSources.length === 0) {
-      return { ok: false, error: "This recording has no saved narration." };
+      return { ok: false, error: NO_NARRATION_ERROR };
     }
     let sourceFiles: Array<AudioSource & { audioPath: string }>;
     try {
@@ -275,7 +221,7 @@ export class NarrationManager {
       return { ok: false, error: "One or more saved narration segments are missing." };
     }
 
-    if (!allowDownload && !isNarrationModelCached()) {
+    if (!isNarrationModelCached()) {
       this.update({
         model: "missing",
         phase: "idle",
@@ -287,7 +233,7 @@ export class NarrationManager {
 
     try {
       signal?.throwIfAborted();
-      const pipe = await this.loadModel(allowDownload, sessionId);
+      const pipe = await this.loadModel(sessionId);
       signal?.throwIfAborted();
       this.update({
         model: "ready",
@@ -333,7 +279,7 @@ export class NarrationManager {
       const error = message(err);
       const modelReady = isNarrationModelCached();
       this.update({
-        model: modelReady ? "ready" : allowDownload ? "error" : "missing",
+        model: modelReady ? "ready" : "missing",
         phase: "idle",
         activeSessionId: sessionId,
         error,
@@ -343,32 +289,21 @@ export class NarrationManager {
     }
   }
 
-  private async loadModel(
-    allowDownload: boolean,
-    activeSessionId: string | null,
-  ): ReturnType<typeof getAsrPipeline> {
-    const cached = isNarrationModelCached();
-    const downloading = allowDownload && !cached;
-    if (!allowDownload && !cached) throw new Error("Voice model is not downloaded.");
-    if (downloading) await removePartialDownloads(narrationModelCacheDir());
+  private async loadModel(activeSessionId: string | null): ReturnType<typeof getAsrPipeline> {
+    // The model ships inside the app (resources/models); it is never downloaded.
+    if (!isNarrationModelCached()) throw new Error("The bundled voice model is missing.");
 
-    this.lastProgress = -1;
     this.update({
-      model: cached ? "ready" : "downloading",
-      phase: cached ? "loading" : "downloading",
-      progress: cached ? null : 0,
-      loadedBytes: cached ? null : 0,
+      model: "ready",
+      phase: "loading",
+      progress: null,
+      loadedBytes: null,
       totalBytes: null,
       activeSessionId,
       error: null,
     });
 
-    const pipe = await getAsrPipeline({
-      allowDownload,
-      onProgress: (progress) =>
-        this.onModelProgress(progress, activeSessionId, downloading),
-    });
-    await this.cleanupLegacyModel();
+    const pipe = await getAsrPipeline();
     this.update({
       model: "ready",
       phase: "idle",
@@ -379,34 +314,6 @@ export class NarrationManager {
       error: null,
     });
     return pipe;
-  }
-
-  private async cleanupLegacyModel(): Promise<void> {
-    try {
-      await removeLegacyNarrationModelCache();
-    } catch (error) {
-      log.warn("could not remove the superseded English narration model:", message(error));
-    }
-  }
-
-  private onModelProgress(
-    progress: ModelLoadProgress,
-    activeSessionId: string | null,
-    downloading: boolean,
-  ): void {
-    if (!downloading || progress.status !== "progress_total") return;
-    const percent = Math.max(0, Math.min(100, Math.floor(progress.progress ?? 0)));
-    if (percent === this.lastProgress) return;
-    this.lastProgress = percent;
-    this.update({
-      model: "downloading",
-      phase: "downloading",
-      progress: percent,
-      loadedBytes: progress.loaded ?? null,
-      totalBytes: progress.total ?? null,
-      activeSessionId,
-      error: null,
-    });
   }
 
   private update(patch: Partial<NarrationStatus>): void {

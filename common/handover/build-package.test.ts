@@ -1,0 +1,700 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+import sharp from "sharp";
+
+import { buildPackage } from "./build-package";
+import { sha256Hex } from "./canonical";
+import { UnsupportedEditError } from "./edits";
+import { readSessionInput } from "./read-session";
+import type { BuildContext, Edit, PackageBytes, SessionInput } from "./types";
+import { validatePackage } from "./validate";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE = path.resolve(here, "../../test/fixtures/session-synthetic");
+const GOLDEN = path.resolve(here, "../../test/fixtures/golden-package");
+const CTX: BuildContext = {
+  package_id: "pkg_01KAT8ZJ3Q5R7M9N2B4C6D8E0F",
+  exported_at: "2026-11-24T09:30:00+02:00",
+  timezone: "Africa/Johannesburg",
+  tool_version: "0.1.0",
+};
+const EXTRAS = {
+  environment: { os: "macos" as const, os_version: "26.1", arch: "arm64" as const, locale: "en-ZA" },
+  helper: { present: true, version: "0.1.0" },
+  captureBackend: "electron-desktop-capturer",
+};
+const TEXT_FILES = ["manifest.json", "steps.jsonl", "annotations.jsonl", "gaps.jsonl", "PROCESS.md", "CLAUDE_HANDOFF.md", "README.txt"];
+
+async function load(): Promise<{ session: SessionInput; edits: Edit[] }> {
+  return readSessionInput(FIXTURE, EXTRAS);
+}
+
+/** PNG bytes may differ between sharp/libvips builds, so the golden manifest masks PNG hashes. */
+function maskPngHashes(manifestJson: string): string {
+  const m = JSON.parse(manifestJson) as { files: { path: string; sha256: string; bytes: number }[] };
+  for (const f of m.files) {
+    if (f.path.endsWith(".png")) {
+      f.sha256 = "<png>";
+      f.bytes = 0;
+    }
+  }
+  return JSON.stringify(m, null, 2) + "\n";
+}
+
+function text(files: PackageBytes, p: string): string {
+  const b = files.get(p);
+  assert.ok(b, `${p} is in the package`);
+  return new TextDecoder().decode(b);
+}
+
+async function writeTo(dir: string, files: PackageBytes): Promise<void> {
+  for (const [p, bytes] of files) {
+    await mkdir(path.dirname(path.join(dir, p)), { recursive: true });
+    await writeFile(path.join(dir, p), bytes);
+  }
+}
+
+async function topLeft(png: Uint8Array): Promise<[number, number, number]> {
+  const { data } = await sharp(Buffer.from(png)).raw().toBuffer({ resolveWithObject: true });
+  return [data[0], data[1], data[2]];
+}
+
+function steps(files: PackageBytes): Record<string, any>[] {
+  return text(files, "steps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+}
+function anns(files: PackageBytes): Record<string, any>[] {
+  return text(files, "annotations.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+}
+
+test("golden: the synthetic session builds a byte-stable package that validates", async () => {
+  const { session, edits } = await load();
+  const files = await buildPackage(session, edits, CTX);
+
+  // Deterministic: a second build is byte-identical for every file, PNGs included.
+  const again = await buildPackage(session, edits, CTX);
+  assert.deepEqual([...again.keys()], [...files.keys()]);
+  for (const [p, bytes] of files) assert.equal(sha256Hex(bytes), sha256Hex(again.get(p)!), `${p} is stable`);
+
+  if (process.env.UPDATE_GOLDEN === "1") {
+    await mkdir(GOLDEN, { recursive: true });
+    for (const name of TEXT_FILES) {
+      const body = name === "manifest.json" ? maskPngHashes(text(files, name)) : text(files, name);
+      await writeFile(path.join(GOLDEN, name), body);
+    }
+  }
+  for (const name of TEXT_FILES) {
+    const want = await readFile(path.join(GOLDEN, name), "utf8");
+    const got = name === "manifest.json" ? maskPngHashes(text(files, name)) : text(files, name);
+    assert.equal(got, want, `${name} matches the golden file`);
+  }
+
+  // The manifest hashes verify and validatePackage passes on the written folder.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "handover-golden-"));
+  try {
+    await writeTo(dir, files);
+    const result = await validatePackage(dir);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.ok, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("steps, timing and frames of the synthetic session", async () => {
+  const { session, edits } = await load();
+  const files = await buildPackage(session, edits, CTX);
+  const s = steps(files);
+  assert.deepEqual(
+    s.map((x) => [x.step_id, x.kind, x.summary]),
+    [
+      ["S01", "context", "Switch to Microsoft Excel"],
+      ["S02", "action", 'Click button "Save" in Microsoft Excel'],
+      ["S03", "action", "Double-click at (400, 300) in Microsoft Excel"],
+      ["S04", "context", 'Explain on Microsoft Excel: "Always save before closing the file"'],
+      ["S05", "context", "Switch to Google Chrome"],
+      ["S06", "action", 'Click text box "Password" in Google Chrome'],
+      ["S07", "action", 'Right-click pane "Mail list" in Google Chrome'],
+    ],
+  );
+  const manifest = JSON.parse(text(files, "manifest.json"));
+  assert.deepEqual(
+    [manifest.recording.task_ms, manifest.recording.explain_ms, manifest.recording.paused_ms, manifest.recording.duration_ms],
+    [15000, 3000, 2000, 20000],
+  );
+  assert.equal(manifest.recording.started_at.endsWith("+02:00"), true);
+  assert.equal(manifest.recording.step_count, 7);
+  assert.equal(manifest.media.image_count, [...files.keys()].filter((p) => p.endsWith(".png")).length);
+
+  // The before frame is the newest frame at least 50 ms before the click: S02 (click at 3,000)
+  // uses shot 2 (t=2,700), not shot 3 (t=2,980), which is only 20 ms before.
+  const pick = async (n: number) => topLeft(new Uint8Array(await readFile(path.join(FIXTURE, `shots/${String(n).padStart(6, "0")}.png`))));
+  // Resizing blends the fine stripes, so compare colours with a tolerance; shots differ by far more.
+  const near = (a: number[], b: number[]) => a.every((v, i) => Math.abs(v - b[i]) <= 12);
+  assert.ok(near(await topLeft(files.get("media/S02_before_full.png")!), await pick(2)));
+  assert.ok(!near(await topLeft(files.get("media/S02_before_full.png")!), await pick(3)));
+  assert.ok(near(await topLeft(files.get("media/S03_before_full.png")!), await pick(4))); // not 5 (t=5,170)
+  assert.ok(!near(await topLeft(files.get("media/S03_before_full.png")!), await pick(5)));
+  assert.equal(s[1].before.t_ms, 2700);
+  assert.equal(s[2].before.t_ms, 5000);
+
+  // Negative-origin display: macOS dpx = (p - origin) x scale.
+  assert.deepEqual(s[5].action.point_dpx, { display_id: "d1", xy: [1160, 700] });
+  assert.deepEqual(s[1].action.point_dpx, { display_id: "d0", xy: [1400, 800] });
+  // Full images respect the 1,568 rules.
+  for (const x of s) {
+    if (!x.before) continue;
+    assert.ok(Math.max(x.before.full.width, x.before.full.height) <= 1568);
+    assert.ok(x.before.full.est_tokens <= 1568);
+  }
+  // Crops are at most 800x500 and only exist for clicks.
+  assert.equal(s[0].before.crop, undefined);
+  assert.ok(s[1].before.crop.width <= 800 && s[1].before.crop.height <= 500);
+  // The after frame is only on the last step.
+  assert.equal(s[6].after.t_ms, 16500);
+  assert.ok(s.slice(0, 6).every((x) => x.after === undefined));
+  // Flags and grounding.
+  assert.deepEqual(s[5].flags, ["contains_redaction"]);
+  assert.deepEqual(s[2].flags, ["low_confidence_target"]);
+  assert.equal(s[2].target.grounding, "visual_only");
+  assert.deepEqual(s[2].target.unavailable, { reason: "timeout" });
+  assert.equal(s[4].target.url.text, "https://mail.example.com/inbox"); // query and fragment dropped
+  const last = s[1].target.locators.at(-1);
+  assert.equal(last.strategy, "frame_point");
+  assert.equal(last.stability, "low");
+  assert.equal(s[1].target.locators[0].strategy, "ax_identifier");
+});
+
+test("the before frame is chosen before the click, not before the time the helper reported it", async () => {
+  const { session } = await load();
+  // The S02 click is reported at t=3,000 after a 400 ms lookup, so the user clicked at 2,600.
+  // Shots at 2,700 and 2,980 are therefore after the click; the newest frame before it is t=0.
+  const slow: SessionInput = {
+    ...session,
+    events: session.events.map((e) =>
+      e.seq === 3 ? { ...e, payload: { ...e.payload, lookupMs: 400 } } : e,
+    ),
+  };
+  const files = await buildPackage(slow, [], CTX);
+  const s2 = steps(files)[1];
+  assert.equal(s2.before.t_ms, 0);
+  assert.equal(s2.t_start_ms, 2600, "the step is timed when the user acted, not when the helper reported it");
+  // Without a lookup time the same click still uses the t=2,700 frame.
+  const fast = await buildPackage(session, [], CTX);
+  assert.equal(steps(fast)[1].before.t_ms, 2700);
+});
+
+test("PROCESS.md lists only steps with no control as unseen; a weak control is not listed", async () => {
+  const { session, edits } = await load();
+  const md = text(await buildPackage(session, edits, CTX), "PROCESS.md");
+  const unseen = md.slice(md.indexOf("## What the recorder could not see"));
+  assert.match(unseen, /- S03: no control identified \(timeout\); the target is pixels only\./);
+  assert.ok(!unseen.includes("- S07:"), "S07 found a weak control (T2), so it is not pixels only");
+  assert.ok(!unseen.includes("- S04:"), "an Explain step is not a step the recorder failed to see");
+  assert.match(md, /evidence T2 \(opaque_toolkit\)/);
+  assert.match(unseen, /- gap_0001 \(S06 → S07\): paused by the user, 2\.0 s\./);
+});
+
+test("annotations: a freeze's highlight and comment belong to its own Explain step; narration by overlap", async () => {
+  const { session, edits } = await load();
+  const files = await buildPackage(session, edits, CTX);
+  const a = anns(files);
+  const hl = a.find((x) => x.kind === "highlight")!;
+  const comment = a.find((x) => x.kind === "comment")!;
+  const narr = a.find((x) => x.kind === "narration")!;
+  assert.deepEqual(hl.step_ids, ["S04"]);
+  assert.deepEqual(comment.step_ids, ["S04"]);
+  assert.equal(hl.mark, "H1");
+  assert.equal(hl.frame_id, steps(files)[3].before.frame_id);
+  assert.equal(hl.geometry_fpx.length, 2);
+  // fpx = dpx x scale.
+  const scale = steps(files)[3].before.scale;
+  assert.ok(Math.abs(hl.geometry_fpx[0][0] - 1300 * scale) < 0.01);
+  assert.equal(hl.snapped_to.role, "button");
+  // Narration overlapping two steps gets a low anchor confidence.
+  assert.ok(narr.anchor_confidence < 0.6);
+  assert.deepEqual(narr.step_ids, ["S02"]);
+  // The comment is the step's why, and PROCESS.md cites it.
+  assert.equal(steps(files)[3].why.text, "Always save before closing the file");
+  assert.match(text(files, "PROCESS.md"), /- Why: Always save before closing the file `\[user, ann_0002\]`/);
+  assert.match(text(files, "PROCESS.md"), /\*\*S04\. .*\*\* \(H1\)/);
+});
+
+test("password field: the before frame is blurred and the step is flagged", async () => {
+  const { session } = await load();
+  const files = await buildPackage(session, [], CTX);
+  const s5 = steps(files)[5];
+  assert.equal(s5.before.redacted_regions_fpx.length, 1);
+  const [x, y, w, h] = s5.before.redacted_regions_fpx[0];
+  assert.ok(w > 0 && h > 0);
+  // The same frame without the password flag has different pixels inside the region only.
+  const noPw: SessionInput = {
+    ...session,
+    events: session.events.map((e) =>
+      e.seq === 10 ? { ...e, payload: { ...e.payload, target: { ...(e.payload.target as object), isPassword: false } } } : e,
+    ),
+  };
+  const plain = await buildPackage(noPw, [], CTX);
+  const a = await sharp(Buffer.from(files.get("media/S06_before_full.png")!)).raw().toBuffer({ resolveWithObject: true });
+  const b = await sharp(Buffer.from(plain.get("media/S06_before_full.png")!)).raw().toBuffer({ resolveWithObject: true });
+  assert.equal(a.info.width, b.info.width);
+  let inside = 0;
+  let outside = 0;
+  const pad = 3; // resampling blends a pixel or two across the edge
+  for (let py = 0; py < a.info.height; py++) {
+    for (let px = 0; px < a.info.width; px++) {
+      const o = (py * a.info.width + px) * 3;
+      const differs = a.data[o] !== b.data[o] || a.data[o + 1] !== b.data[o + 1] || a.data[o + 2] !== b.data[o + 2];
+      if (!differs) continue;
+      if (px >= x - pad && px <= x + w + pad && py >= y - pad && py <= y + h + pad) inside++;
+      else outside++;
+    }
+  }
+  assert.equal(outside, 0, "no pixel outside the blurred rectangle changes");
+  assert.ok(inside > 0, "pixels inside the rectangle changed");
+});
+
+test("edits: delete renumbers ids and drops its annotations; edit_summary and edit_comment apply", async () => {
+  const { session } = await load();
+  const edits: Edit[] = [
+    { edit_id: "e1", at: "2026-11-24T09:00:00+02:00", op: "delete_step", step_id: "S02" },
+    { edit_id: "e2", at: "2026-11-24T09:00:01+02:00", op: "edit_summary", step_id: "S03", text: "Open the budget cell" },
+    { edit_id: "e3", at: "2026-11-24T09:00:02+02:00", op: "edit_comment", annotation_id: "ann_0002", text: "Save first" },
+  ];
+  const files = await buildPackage(session, edits, CTX);
+  const s = steps(files);
+  assert.deepEqual(s.map((x) => x.step_id), ["S01", "S02", "S03", "S04", "S05", "S06"]);
+  assert.deepEqual(s.map((x) => x.seq), [1, 2, 3, 4, 5, 6]);
+  assert.ok(!s.some((x) => x.summary.includes('"Save"')), "the deleted step is gone");
+  assert.equal(s[1].summary, "Open the budget cell");
+  assert.equal(s[1].summary_provenance, "user");
+  assert.deepEqual(s[1].flags, ["low_confidence_target", "user_edited"]);
+  assert.ok(!files.has("media/S07_before_full.png"), "images are renumbered with the steps");
+  const a = anns(files);
+  assert.deepEqual(a.find((x) => x.kind === "comment")!.text.text, "Save first");
+  assert.equal(a.find((x) => x.kind === "comment")!.source, "review");
+  // Narration attached to the deleted step goes with it; the Explain step (now S03) keeps its marks.
+  assert.ok(!a.some((x) => x.kind === "narration"));
+  assert.deepEqual(a.find((x) => x.kind === "highlight")!.step_ids, ["S03"]);
+  // The result still validates.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "handover-edit-"));
+  try {
+    await writeTo(dir, files);
+    assert.deepEqual((await validatePackage(dir)).errors, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("context steps: grounding none, a frame_point at the window centre, 'context' evidence, '(app switch)', not listed as unseen", async () => {
+  const { session } = await load();
+  const files = await buildPackage(session, [], CTX);
+  const s = steps(files);
+  const t = s[0].target; // Excel, window {100,60,1000,700} points on display 1 (scale 2)
+  assert.equal(t.grounding, "none");
+  assert.equal(t.grounding_source, undefined);
+  assert.equal(t.element, undefined);
+  assert.equal(t.unavailable, undefined);
+  assert.equal(t.display_id, "d0");
+  assert.equal(t.app.name, "Microsoft Excel");
+  assert.equal(t.window.title.text, "Budget.xlsx");
+  // Window centre (600, 410) points = (1200, 820) dpx; fpx = dpx x scale.
+  const scale = s[0].before.scale;
+  assert.deepEqual(t.locators, [
+    { strategy: "frame_point", value: `${Math.round(1200 * scale)},${Math.round(820 * scale)}`, rank: 1, stability: "low" },
+  ]);
+  // Chrome sits on display 2 (origin -1280,-100): centre (-650, 300) = (1260, 800) dpx.
+  assert.equal(s[4].target.display_id, "d1");
+  assert.equal(s[4].target.locators[0].value, `${Math.round(1260 * s[4].before.scale)},${Math.round(800 * s[4].before.scale)}`);
+  const md = text(files, "PROCESS.md");
+  assert.match(md, /\*\*S01\. Switch to Microsoft Excel\*\* `\[observed\]` · evidence context\n- Where: Microsoft Excel › Budget\.xlsx \(app switch\)/);
+  assert.match(md, /evidence T3/);
+  const unseen = md.slice(md.indexOf("## What the recorder could not see"));
+  assert.ok(!unseen.includes("S01") && !unseen.includes("S04") && !unseen.includes("S05"));
+  // Without window bounds or any frame it falls back to the display centre and still validates.
+  const bare: SessionInput = {
+    ...session,
+    shots: [],
+    events: session.events.map((e) => (e.seq === 2 ? { ...e, payload: { ...e.payload, bounds: undefined } } : e)),
+  };
+  const b = steps(await buildPackage(bare, [], CTX))[0];
+  assert.equal(b.target.locators[0].strategy, "frame_point");
+  assert.equal(b.target.grounding, "none");
+});
+
+test("manifest.capture reflects the helper: it ran, it did not, it failed", async () => {
+  const { session } = await load();
+  const noClicks = session.events.filter((e) => e.type !== "pointer.click");
+  const manifest = async (s: SessionInput) => JSON.parse(text(await buildPackage(s, [], CTX), "manifest.json")).capture;
+  // Helper ran but nothing was clicked: both capabilities are true.
+  const ran = await manifest({ ...session, events: noClicks, helper: { present: true, version: "0.2.1" } });
+  assert.deepEqual(ran.helper, { present: true, version: "0.2.1" });
+  assert.equal(ran.capabilities.input_mouse, true);
+  assert.equal(ran.capabilities.a11y_hit, true);
+  // No helper and no clicks: false, with the error carried through.
+  const none = await manifest({ ...session, events: noClicks, helper: { present: false, error: "Helper binary not found" } });
+  assert.deepEqual(none.helper, { present: false, error: "Helper binary not found" });
+  assert.equal(none.capabilities.input_mouse, false);
+  assert.equal(none.capabilities.a11y_hit, false);
+});
+
+test("gap convention: open without tEndMs, closed by a later gap with the same reason, unclosed runs to the end", async () => {
+  const { session } = await load();
+  const base = session.events.filter((e) => e.type !== "gap");
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...base,
+    gap(50, 13000, { reason: "user_paused" }), // opens
+    gap(51, 14000, { reason: "helper_restart" }), // opens another reason; never closed
+    gap(52, 15000, { reason: "user_paused", tEndMs: 15000 }), // closes the pause
+    gap(53, 18000, { reason: "capture_lost", tEndMs: 19000 }), // complete on its own
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(
+    gaps.map((g) => [g.reason, g.t_start_ms, g.t_end_ms]),
+    [["user_paused", 13000, 15000], ["helper_restart", 14000, 20000], ["capture_lost", 18000, 19000]],
+  );
+  const m = JSON.parse(text(files, "manifest.json"));
+  assert.equal(m.recording.paused_ms, 2000);
+  assert.equal(m.recording.task_ms + m.recording.explain_ms + m.recording.paused_ms, m.recording.duration_ms);
+  // An unclosed pause runs to session end.
+  const open = await buildPackage({ ...session, events: [...base, gap(50, 13000, { reason: "user_paused" })] }, [], CTX);
+  assert.equal(JSON.parse(text(open, "manifest.json")).recording.paused_ms, 7000);
+});
+
+test("G1: an elevated_window gap reaches gaps.jsonl, validates, and PROCESS.md says it was not observed between the right steps", async () => {
+  const { session } = await load();
+  const base = session.events.filter((e) => e.type !== "gap");
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...base,
+    gap(60, 3100, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(61, 5100, { reason: "elevated_window", tEndMs: 5100 }),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(gaps.length, 1);
+  assert.equal(gaps[0].reason, "elevated_window");
+  assert.equal(gaps[0].process, "Taskmgr");
+  assert.deepEqual([gaps[0].t_start_ms, gaps[0].t_end_ms, gaps[0].after_step, gaps[0].before_step], [3100, 5100, "S02", "S03"]);
+
+  const md = text(files, "PROCESS.md");
+  const line =
+    "Not observed (2.0 s): an administrator window (Taskmgr) was in front. " +
+    "Windows does not let Handover see clicks there. Ask the author what was done.";
+  const at = md.indexOf(line);
+  assert.ok(at > md.indexOf("**S02."), "after step S02");
+  assert.ok(at < md.indexOf("**S03."), "before step S03");
+  assert.equal(md.split(line).length - 1, 1, "stated once in the step order");
+  assert.ok(md.slice(md.indexOf("## What the recorder could not see")).includes("gap_0001 (S02 → S03): an administrator window the recorder cannot see into, 2.0 s."));
+
+  // It is not a pause: no paused time, and the timing sum still holds.
+  const m = JSON.parse(text(files, "manifest.json"));
+  assert.equal(m.recording.paused_ms, 0);
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "g1-"));
+  try {
+    await writeTo(dir, files);
+    assert.deepEqual((await validatePackage(dir)).errors, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G1: an elevated_window gap with no process name still reads plainly", async () => {
+  const { session } = await load();
+  const base = session.events.filter((e) => e.type !== "gap");
+  const events = [
+    ...base,
+    { seq: 60, t: 3100, epoch: 1795500003100, type: "gap", source: "t", payload: { reason: "elevated_window", tEndMs: 5100 } },
+  ];
+  const md = text(await buildPackage({ ...session, events }, [], CTX), "PROCESS.md");
+  assert.match(md, /Not observed \(2\.0 s\): an administrator window was in front\. Windows does not let Handover see clicks there\. Ask the author what was done\./);
+});
+
+/** The synthetic session plus a switch to Task Manager and a switch away, around an elevated_window gap. */
+async function blindSession(opts: { start: number; end?: number; process?: string; switchIn: number; switchOut: number }) {
+  const { session } = await load();
+  const activate = (seq: number, t: number, app: string, file: string) => ({
+    seq, t, epoch: 1795500000000 + t, type: "app.activate", source: "t",
+    payload: { app, title: app, path: file, bounds: { x: 0, y: 0, width: 800, height: 600 } },
+  });
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    activate(70, opts.switchIn, "Task Manager", "C:\\Windows\\System32\\Taskmgr.exe"),
+    activate(71, opts.switchOut, "Notepad", "C:\\Windows\\System32\\notepad.exe"),
+    gap(72, opts.start, { reason: "elevated_window", ...(opts.process ? { process: opts.process } : {}) }),
+    ...(opts.end === undefined ? [] : [gap(73, opts.end, { reason: "elevated_window", tEndMs: opts.end })]),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const steps = text(files, "steps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const idOf = (summary: string) => steps.find((s) => s.summary === summary)?.step_id as string;
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  return { files, gaps, taskmgr: idOf("Switch to Task Manager"), notepad: idOf("Switch to Notepad"), md: text(files, "PROCESS.md") };
+}
+
+test("G1 F1: a switch to the admin window just AFTER the gap opened is the step the gap follows", async () => {
+  // The helper's tick reported the stretch at 3,100; the active-window poll saw the switch at 3,400.
+  const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  assert.ok(r.taskmgr && r.notepad, "both switch steps exist");
+  assert.equal(r.gaps[0].after_step, r.taskmgr);
+  // D2: the written interval starts no earlier than the step it follows (3,400, not 3,100).
+  assert.equal(r.gaps[0].t_start_ms, 3400);
+  const notObserved = r.md.indexOf("Not observed (1.4 s)");
+  assert.ok(notObserved > r.md.indexOf(`**${r.taskmgr}.`), "the notice is below 'Switch to Task Manager'");
+  assert.ok(notObserved < r.md.indexOf(`**${r.notepad}.`), "and above the step that leaves");
+});
+
+test("G1 F1: the step that leaves the admin window just BEFORE the gap closed is the step after the gap", async () => {
+  const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  assert.equal(r.gaps[0].before_step, r.notepad, "a step 300 ms before the end is not inside the gap");
+  // D2: the written interval ends no later than the step after it (4,800, not 5,100).
+  assert.equal(r.gaps[0].t_end_ms, 4800);
+});
+
+test("G1 D2: no named step lies inside the written interval of an elevated_window gap", async () => {
+  const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  const steps = text(r.files, "steps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const g = r.gaps[0];
+  const inside = steps.filter((s) => s.t_start_ms > g.t_start_ms && s.t_start_ms < g.t_end_ms);
+  assert.deepEqual(inside.map((s) => s.step_id), []);
+  assert.ok(g.t_end_ms >= g.t_start_ms);
+});
+
+/** The tester's quick in-out-in visit: Task Manager, Notepad, Task Manager, Notepad. */
+async function inOutIn(extra: Record<string, unknown>[] = []) {
+  const { session } = await load();
+  const activate = (seq: number, t: number, app: string, file: string) => ({
+    seq, t, epoch: 1795500000000 + t, type: "app.activate", source: "t",
+    payload: { app, title: app, path: file, bounds: { x: 0, y: 0, width: 800, height: 600 } },
+  });
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const TM = "C:\\Windows\\System32\\Taskmgr.exe";
+  const NP = "C:\\Windows\\System32\\notepad.exe";
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    activate(70, 16500, "Task Manager", TM),
+    activate(71, 17500, "Notepad", NP),
+    activate(72, 18500, "Task Manager", TM),
+    activate(73, 19500, "Notepad", NP),
+    gap(80, 16100, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(81, 17100, { reason: "elevated_window", tEndMs: 17100 }),
+    gap(82, 18100, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(83, 19100, { reason: "elevated_window", tEndMs: 19100 }),
+    ...(extra as never[]),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const steps = text(files, "steps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  return { files, steps, gaps, md: text(files, "PROCESS.md") };
+}
+
+test("G1 E1: a quick in-out-in visit gives two gaps, each after its own switch-in and before its own switch-out", async () => {
+  const r = await inOutIn();
+  assert.deepEqual(
+    r.steps.slice(7).map((s) => [s.step_id, s.t_start_ms, s.summary]),
+    [["S08", 16500, "Switch to Task Manager"], ["S09", 17500, "Switch to Notepad"],
+     ["S10", 18500, "Switch to Task Manager"], ["S11", 19500, "Switch to Notepad"]],
+  );
+  assert.deepEqual(
+    r.gaps.map((g) => [g.gap_id, g.after_step, g.before_step, g.t_start_ms, g.t_end_ms]),
+    [["gap_0001", "S08", "S09", 16500, 17100], ["gap_0002", "S10", "S11", 18500, 19100]],
+  );
+  assert.ok(r.gaps.every((g) => g.t_end_ms > g.t_start_ms), "a positive length");
+  assert.equal(r.md.includes("(0.0 s)"), false, "no 'Not observed (0.0 s)'");
+  assert.equal(r.md.split("Not observed (0.6 s)").length - 1, 2);
+  // In the step order: first notice between S08 and S09, second between S10 and S11.
+  const first = r.md.indexOf("Not observed");
+  assert.ok(first > r.md.indexOf("**S08.") && first < r.md.indexOf("**S09."));
+  const second = r.md.indexOf("Not observed", first + 1);
+  assert.ok(second > r.md.indexOf("**S10.") && second < r.md.indexOf("**S11."));
+});
+
+test("G1 E1: an elevated gap whose written length is 0 is dropped: no notice, not listed, not in gaps.jsonl", async () => {
+  const r = await inOutIn([
+    { seq: 90, t: 12500, epoch: 1795500012500, type: "gap", source: "t", payload: { reason: "elevated_window", process: "Taskmgr", tEndMs: 12500 } },
+  ]);
+  assert.equal(r.gaps.length, 2, "only the two real gaps");
+  assert.equal(r.md.includes("0.0 s"), false);
+  assert.deepEqual(r.gaps.map((g) => g.gap_id), ["gap_0001", "gap_0002"], "ids stay consecutive");
+});
+
+test("G1 E3: resolveGaps ignores a tStartMs that is NaN, negative or later than the event", async () => {
+  const { resolveGaps } = await import("./build-package");
+  const ev = (seq: number, t: number, payload: Record<string, unknown>) =>
+    ({ seq, t, epoch: 0, type: "gap", source: "t", payload }) as never;
+  for (const [i, bad] of [Number.NaN, -5, 7001, Infinity].entries()) {
+    const [g] = resolveGaps([ev(1 + i, 7000, { reason: "elevated_window", tStartMs: bad })], 20000);
+    assert.equal(g?.start, 7000, `tStartMs ${bad} is ignored`);
+  }
+  const [ok] = resolveGaps([ev(9, 7000, { reason: "elevated_window", tStartMs: 6500 })], 20000);
+  assert.equal(ok?.start, 6500);
+});
+
+test("G1 D1: an elevated_window open event with tStartMs starts the gap there, not at the event's own time", async () => {
+  const { session } = await load();
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    gap(60, 6400, { reason: "elevated_window", process: "Taskmgr", tStartMs: 6000 }), // written 400 ms after the resume
+    gap(61, 8000, { reason: "elevated_window", tEndMs: 8000 }),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const g = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l))[0];
+  assert.equal(g.t_start_ms, 6000);
+});
+
+test("G1 D3: the switch-in tolerance is 2.5 s (the poll runs every 1.6 s after a browser)", async () => {
+  // Placed after the session's own clicks and its freeze (6,000 to 9,000), which would otherwise absorb the switch.
+  const within = await blindSession({ start: 16200, end: 19600, process: "Taskmgr", switchIn: 18600, switchOut: 19400 });
+  assert.ok(within.taskmgr, "the switch step exists");
+  assert.equal(within.gaps[0].after_step, within.taskmgr, "2.4 s after the start still counts");
+  const beyond = await blindSession({ start: 16200, end: 19600, process: "Taskmgr", switchIn: 18800, switchOut: 19400 });
+  assert.ok(beyond.taskmgr, "the switch step exists");
+  assert.notEqual(beyond.gaps[0].after_step, beyond.taskmgr, "2.6 s after the start does not");
+});
+
+test("G1 F1: without a process name the tolerance does not apply to the switch-in", async () => {
+  const r = await blindSession({ start: 3100, end: 5100, switchIn: 3400, switchOut: 4800 });
+  assert.notEqual(r.gaps[0].after_step, r.taskmgr, "cannot match a switch to a process we were not told");
+});
+
+test("G1: an elevated_window gap that never closes runs to the end of the session", async () => {
+  const r = await blindSession({ start: 3100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  const m = JSON.parse(text(r.files, "manifest.json"));
+  assert.equal(r.gaps[0].t_end_ms, m.recording.duration_ms);
+  assert.equal(m.recording.paused_ms, 0, "a blind spot is never paused time");
+});
+
+test("G1: an elevated_window gap overlapping a user_paused gap keeps both, and counts pause time once", async () => {
+  const { session } = await load();
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    gap(60, 12000, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(61, 13000, { reason: "user_paused" }),
+    gap(62, 15000, { reason: "user_paused", tEndMs: 15000 }),
+    gap(63, 16000, { reason: "elevated_window", tEndMs: 16000 }),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(
+    gaps.map((g) => [g.reason, g.t_start_ms, g.t_end_ms]).sort(),
+    [["elevated_window", 12000, 16000], ["user_paused", 13000, 15000]],
+  );
+  const m = JSON.parse(text(files, "manifest.json"));
+  assert.equal(m.recording.paused_ms, 2000);
+  assert.equal(m.recording.task_ms + m.recording.explain_ms + m.recording.paused_ms, m.recording.duration_ms);
+  const dir = await mkdtemp(path.join(os.tmpdir(), "g1b-"));
+  try {
+    await writeTo(dir, files);
+    assert.deepEqual((await validatePackage(dir)).errors, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("deleting the last step leaves no after frame: a frame taken after the deleted action is not 'about 500 ms after' the new last step", async () => {
+  const { session } = await load();
+  const files = await buildPackage(session, [{ edit_id: "e1", at: "t", op: "delete_step", step_id: "S07" }], CTX);
+  const s = steps(files);
+  assert.equal(s.length, 6);
+  assert.equal(s[5].after, undefined);
+  assert.ok(![...files.keys()].some((p) => p.includes("_after_")));
+});
+
+test("edits: unknown edit types fail closed, and an edit for an unknown step is an error", async () => {
+  const { session } = await load();
+  const unknown = { edit_id: "e2", at: "t", op: "crop_everything" } as unknown as Edit;
+  await assert.rejects(() => buildPackage(session, [unknown], CTX), UnsupportedEditError);
+  await assert.rejects(
+    () => buildPackage(session, [{ edit_id: "e3", at: "t", op: "delete_step", step_id: "S99" }], CTX),
+    /unknown step S99/,
+  );
+});
+
+test("Windows layout: dpx = p - origin (no scale factor), negative origin, synthetic events only", async () => {
+  const { session } = await load();
+  const base = 1795500000000;
+  const mk = (seq: number, t: number, type: string, payload: Record<string, unknown>) => ({
+    seq, t, epoch: base + t, type, source: "test", payload,
+  });
+  const win: SessionInput = {
+    ...session,
+    meta: { ...session.meta, platform: "win32" },
+    environment: { os: "windows", os_version: "11", arch: "x64", locale: "en-ZA" },
+    narration: [],
+    events: [
+      mk(0, 0, "session.start", { platform: "win32" }),
+      mk(1, 0, "displays", {
+        globalSpace: "windows_virtual_px",
+        displays: [
+          { id: 1, originGlobal: [0, 0], sizeDpx: [2880, 1800], scaleFactor: 1.5, primary: true },
+          { id: 2, originGlobal: [-2560, 100], sizeDpx: [2560, 1440], scaleFactor: 1, primary: false },
+        ],
+      }),
+      // On display 2 (negative origin): dpx = (-1400 - -2560, 500 - 100) = (1160, 400).
+      mk(2, 12000, "pointer.click", { button: "left", clickCount: 1, space: "windows_virtual_px", x: -1400, y: 500 }),
+      // On display 1 with scale 1.5: still dpx = p.
+      mk(3, 16000, "pointer.click", { button: "left", clickCount: 1, space: "windows_virtual_px", x: 900, y: 700 }),
+      mk(4, 20000, "session.stop", {}),
+    ],
+  };
+  const files = await buildPackage(win, [], CTX);
+  const s = steps(files);
+  assert.deepEqual(s[0].action.point_dpx, { display_id: "d1", xy: [1160, 400] });
+  assert.deepEqual(s[1].action.point_dpx, { display_id: "d0", xy: [900, 700] });
+  assert.equal(s[0].summary, "Click at (1160, 400)");
+  const manifest = JSON.parse(text(files, "manifest.json"));
+  assert.equal(manifest.recorder.os, "windows");
+  assert.equal(manifest.displays[1].global_space, "windows_virtual_px");
+});
+
+test("the builder handles every shared event type: displays, pointer.click, annotation, gap, explain.*", async () => {
+  const { session } = await load();
+  const types = new Set(session.events.map((e) => e.type));
+  for (const t of ["displays", "pointer.click", "annotation", "gap", "explain.start", "explain.end"]) {
+    assert.ok(types.has(t), `fixture covers ${t}`);
+  }
+  // An empty session still builds and validates (no steps, no frames).
+  const empty: SessionInput = { ...session, events: session.events.filter((e) => e.type === "session.start" || e.type === "session.stop"), narration: [], shots: [], files: new Map() };
+  const files = await buildPackage(empty, [], CTX);
+  assert.equal(text(files, "steps.jsonl"), "");
+  assert.equal(JSON.parse(text(files, "manifest.json")).recording.step_count, 0);
+});
+
+test("no keyboard, value or clipboard text reaches the package", async () => {
+  const { session } = await load();
+  const hostile: SessionInput = {
+    ...session,
+    events: [
+      ...session.events,
+      { seq: 99, t: 8000, epoch: 1795500008000, type: "clipboard.change", source: "test", payload: { formats: ["text/plain"], length: 9, hash: "h", textPreview: "TOPSECRET-CLIP" } },
+      { seq: 100, t: 8100, epoch: 1795500008100, type: "terminal.command", source: "test", payload: { commandId: "c", command: "echo TOPSECRET-CMD", cwd: "/" } },
+    ],
+  };
+  const files = await buildPackage(hostile, [], CTX);
+  for (const [p, bytes] of files) {
+    if (p.endsWith(".png")) continue;
+    const body = new TextDecoder().decode(bytes);
+    assert.ok(!body.includes("TOPSECRET"), `${p} has no clipboard or command text`);
+  }
+});

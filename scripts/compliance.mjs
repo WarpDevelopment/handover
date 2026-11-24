@@ -60,12 +60,20 @@ const requiredComplianceFiles = [
   "LICENSE-INVENTORY.json",
   "NATIVE-COMPONENTS.json",
   "NATIVE-THIRD-PARTY-NOTICES.md",
+  "NOTICE",
   "RELINKING.md",
   "REMOTE-MATERIALS.json",
   "SOURCE-MANIFEST.json",
   "THIRD-PARTY-LICENSES.txt",
   "THIRD-PARTY-NOTICES.md",
+  ...narrationModelLicenseFiles().map((file) => `narration-model/${file}`),
 ];
+
+// Licence material for the Whisper model that ships inside the Windows installer
+// (REL-1). Vendored under third_party/narration-model/ and copied into the bundle.
+export function narrationModelLicenseFiles() {
+  return ["Apache-2.0.txt", "Whisper-MIT.txt", "model-card-README.md"];
+}
 
 export const legalTextSpecs = [
   {
@@ -856,7 +864,15 @@ export async function prepareCompliance({
   await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
 
+  await mkdir(path.join(outputDir, "narration-model"), { recursive: true });
   await Promise.all([
+    copyFile(path.join(rootDir, "NOTICE"), path.join(outputDir, "NOTICE")),
+    ...narrationModelLicenseFiles().map((file) =>
+      copyFile(
+        path.join(rootDir, "third_party", "narration-model", file),
+        path.join(outputDir, "narration-model", file),
+      ),
+    ),
     copyFile(path.join(rootDir, "LICENSE"), path.join(outputDir, "LICENSE")),
     copyFile(
       path.join(rootDir, "THIRD-PARTY-NOTICES.md"),
@@ -1133,8 +1149,6 @@ function collectProductionPackages(rootDir, lock) {
 }
 
 function validateReviewedVersions(packages, lock, policy, rootDir) {
-  assertInstalledVersion(packages, "@github/copilot-sdk", policy.copilotSdk);
-  assertReviewedCopilotCliVersions(lock, policy.copilotCli);
   assertInstalledVersion(packages, "sharp", policy.sharp);
   for (const name of [
     "@secretlint/core",
@@ -1176,27 +1190,6 @@ function validateReviewedVersions(packages, lock, policy, rootDir) {
 
   for (const pkg of packages.filter(({ name }) => name.startsWith("onnxruntime-"))) {
     onnxRefForVersion(pkg.version, policy);
-  }
-}
-
-export function assertReviewedCopilotCliVersions(lock, expected) {
-  const versions = new Set(
-    Object.entries(lock.packages ?? {})
-      .filter(
-        ([lockPath]) =>
-          lockPath === "node_modules/@github/copilot" ||
-          /^node_modules\/@github\/copilot-(?:darwin|linux|linuxmusl|win32)-/.test(
-            lockPath,
-          ),
-      )
-      .map(([, entry]) => entry.version),
-  );
-  if (versions.size !== 1 || !versions.has(expected)) {
-    throw new Error(
-      `GitHub Copilot CLI versions have not been reviewed: ${
-        [...versions].join(", ") || "(missing)"
-      }; expected ${expected}.`,
-    );
   }
 }
 
@@ -1275,16 +1268,6 @@ function buildLicenseInventory(rootDir, packages, policy) {
         licenseSource: "koffi/LICENSE.txt",
         text: readFileSync(parent, "utf8").trim(),
       };
-    }
-
-    if (pkg.name === "@github/copilot-sdk") {
-      if (pkg.version !== policy.copilotSdk) {
-        throw new Error(`No reviewed Copilot SDK license override exists for ${pkg.version}.`);
-      }
-      return overrideEntry(
-        pkg,
-        path.join(rootDir, "third_party", "package-licenses", "github-copilot-sdk-MIT.txt"),
-      );
     }
 
     if (pkg.name.startsWith("onnxruntime-")) {
@@ -1449,10 +1432,10 @@ function renderLicenseInventory(inventory, lock, rootDir) {
       ].join("\n"),
   );
   return [
-    "SKILL RECORDER THIRD-PARTY LICENSES",
+    "HANDOVER THIRD-PARTY LICENSES",
     "",
-    "These terms apply to the identified third-party components, not to Skill",
-    "Recorder's own MIT-licensed code.",
+    "These terms apply to the identified third-party components, not to",
+    "Handover's own MIT-licensed code.",
     "",
     `Platform: ${process.platform}-${process.arch}`,
     `package-lock.json SHA-256: ${packageLockHash}`,
@@ -1879,7 +1862,7 @@ async function obtainGitArchive(spec, cache, rootDir) {
   await rm(cache, { force: true });
   const repository = path.join(
     tmpdir(),
-    "skill-recorder-compliance-git",
+    "handover-compliance-git",
     `${createHash("sha256").update(spec.id).digest("hex").slice(0, 16)}-${process.pid}`,
   );
   const temporary = `${cache}.partial`;
@@ -2001,8 +1984,7 @@ async function downloadWithRetry(url, target, fetchImpl) {
         headers: {
           accept: "application/octet-stream, text/plain;q=0.9, */*;q=0.8",
           "user-agent":
-            "Mozilla/5.0 (compatible; SkillRecorderCompliance/1.0; " +
-            "+https://github.com/microsoft/skill-recorder)",
+            "Mozilla/5.0 (compatible; HandoverCompliance/1.0)",
         },
       });
       if (!response.ok || !response.body) {
@@ -2043,8 +2025,8 @@ export function renderRelinking(native, sourceManifest, policy, platform = proce
     platform === "darwin"
       ? "Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries/libffmpeg.dylib"
       : platform === "win32"
-        ? "ffmpeg.dll beside the Skill Recorder executable"
-        : "libffmpeg.so beside the Skill Recorder executable";
+        ? "ffmpeg.dll beside the Handover executable"
+        : "libffmpeg.so beside the Handover executable";
   const sharpBuildSource = sourceFile("sharp-libvips-build");
   const electronSource = sourceFile("electron");
   const ffmpegSource = sourceFile("electron-ffmpeg");
@@ -2057,9 +2039,9 @@ export function renderRelinking(native, sourceManifest, policy, platform = proce
   return [
     "# Replacing and relinking native libraries",
     "",
-    "Skill Recorder's own source is available under the MIT License at",
-    "https://github.com/microsoft/skill-recorder. The native libraries listed in",
-    "`NATIVE-COMPONENTS.json` remain under their own licenses.",
+    "Handover is MIT-licensed software derived from microsoft/skill-recorder (see",
+    "`NOTICE`). The native libraries listed in `NATIVE-COMPONENTS.json` remain under",
+    "their own licenses.",
     "",
     "The packaged application keeps Sharp, libvips, and related native modules outside",
     `the ASAR archive under \`${nativeLocation}\`. Installed native packages:`,
@@ -2076,7 +2058,7 @@ export function renderRelinking(native, sourceManifest, policy, platform = proce
     "You may replace these files with ABI-compatible modified builds. The application",
     "loads them from the plain filesystem locations above; it does not verify their",
     "signatures or hashes at run time and takes no technical measure to prevent a",
-    "modified replacement from running. You may also reverse engineer Skill Recorder to",
+    "modified replacement from running. You may also reverse engineer Handover to",
     "the extent necessary to debug modifications you make to those libraries.",
     "",
     "Exact upstream sources, packaging scripts, and build patches are included under",
@@ -2095,7 +2077,7 @@ export function renderRelinking(native, sourceManifest, policy, platform = proce
     "3. Run the packaging build for this platform and architecture as documented by the",
     "   unpacked scripts.",
     `4. Copy the rebuilt libraries over the files listed above under \`${nativeLocation}\`,`,
-    "   keeping the same file names, then start Skill Recorder normally.",
+    "   keeping the same file names, then start Handover normally.",
     "",
     `For Electron FFmpeg, start from \`${ffmpegSource}\`, apply \`${ffmpegPatch}\`,`,
     `and use the Electron build integration in \`${electronSource}\`. Replace the`,
@@ -2122,7 +2104,7 @@ function renderComplianceReadme(includeSources) {
   return [
     "# License and source materials",
     "",
-    "Keep this entire directory with every distributed copy of Skill Recorder.",
+    "Keep this entire directory with every distributed copy of Handover.",
     "",
     "- `THIRD-PARTY-LICENSES.txt` contains per-package license and attribution text.",
     "- `NATIVE-THIRD-PARTY-NOTICES.md` identifies libraries embedded in native payloads.",

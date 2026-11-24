@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 
@@ -6,34 +5,15 @@ import { CAPTURE_SOURCES, FULL_CAPTURE } from "../common/config";
 import type {
   ActiveWindowInfo,
   BrowserUrlInfo,
-  CopilotInfo,
   DoctorReport,
   DoctorSource,
 } from "../common/ipc";
+import { helperTracker } from "./collectors/helper-status";
 import { browserUrlProviderKind } from "./collectors/url-provider";
-import { resolveCopilotCliPath } from "./copilot-cli-path";
 import { sessionsRoot } from "./recorder/session-store";
+import { redactHome } from "./redact-paths";
 
 const require = createRequire(import.meta.url);
-
-function which(cmd: string): string | null {
-  try {
-    const finder = process.platform === "win32" ? "where" : "which";
-    const out = execFileSync(finder, [cmd], { encoding: "utf8" })
-      .trim()
-      .split(/\r?\n/)[0];
-    return out || null;
-  } catch {
-    return null;
-  }
-}
-
-function checkCopilot(): CopilotInfo {
-  // The app ships its own Copilot CLI in node_modules, so a global `copilot` on PATH is
-  // optional — check the bundled binary first or one-liner installs look broken here.
-  const p = resolveCopilotCliPath() ?? which("copilot");
-  return { ok: Boolean(p), path: p ?? null };
-}
 
 function checkActiveWindow(): ActiveWindowInfo {
   try {
@@ -52,6 +32,14 @@ function checkActiveWindow(): ActiveWindowInfo {
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+function redactActiveWindow(info: ActiveWindowInfo): ActiveWindowInfo {
+  return {
+    ...info,
+    path: info.path === null ? null : redactHome(info.path),
+    ...(info.error ? { error: redactHome(info.error) } : {}),
+  };
 }
 
 function checkBrowserUrl(): BrowserUrlInfo {
@@ -79,10 +67,11 @@ export function runDoctor(): DoctorReport {
 
   return {
     platform: process.platform,
-    copilotCli: checkCopilot(),
-    activeWindow: checkActiveWindow(),
+    activeWindow: redactActiveWindow(checkActiveWindow()),
     browserUrl,
-    sessionsDir: sessionsRoot(),
+    // The doctor report goes into the diagnostics zip: no path may name the OS user (SEC-8).
+    sessionsDir: redactHome(sessionsRoot()),
     activeSources,
+    helper: helperTracker.report(),
   };
 }

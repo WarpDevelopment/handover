@@ -1,7 +1,6 @@
 // Renderer-safe types, masking, and structured-PII detectors for the on-device
-// pre-send scan Skill Recorder runs before it sends captured text to GitHub
-// Copilot on Analyze (window/document titles, URLs, clipboard previews, terminal
-// commands, markers, and voice narration).
+// on-device scan Handover runs over captured text (window/document titles, URLs,
+// clipboard previews, terminal commands, markers, and voice narration).
 //
 // This module is pure and dependency-free so it can run in either process and be
 // unit-tested in isolation. It owns only the *structured* PII detectors (email,

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { ADVANCED_PROTECTION_AVAILABLE } from "../common/config";
 import type { SensitiveModelStatus } from "../common/ipc";
 
 /** Human-readable status for the on-device protection model shown in the sheet. */
@@ -21,7 +22,7 @@ function protectionModelNote(status: SensitiveModelStatus | null): string {
 
 /**
  * Plain-language disclosure of what the recorder captures, where it is stored,
- * and what leaves the machine on analysis. Every claim here is grounded in the
+ * and that nothing leaves the machine. Every claim here is grounded in the
  * actual collectors and describer behavior, so it must be kept in sync with them.
  *
  * Also home to the Advanced-protection opt-out toggle: protection is on by default,
@@ -126,7 +127,7 @@ export function WhatsRecorded({
               long-running or noisy commands can make the saved recording much larger.
             </li>
             <li>
-              Skill Recorder does not edit shell profiles, install global hooks, watch existing
+              Handover does not edit shell profiles, install global hooks, watch existing
               terminals, or keep recording commands after this recording ends.
             </li>
           </ul>
@@ -163,37 +164,28 @@ export function WhatsRecorded({
           <ul>
             <li>Recordings are saved on this computer, in the app's own session folder.</li>
             <li>Recordings stay until you delete them. You can delete any recording from Sessions.</li>
-            <li>AI connection settings and SDK conversation state live outside recording folders. Forget key removes the credential, not recordings or conversation history.</li>
           </ul>
         </section>
 
         <section className="sheet-block">
-          <h3>What's sent for analysis</h3>
+          <h3>What leaves your computer</h3>
           <ul>
-            <li>Nothing leaves your computer while you record.</li>
+            <li>Nothing. Handover sends no data over the network, and it has no sign-in, telemetry or AI service.</li>
             <li>
-              When you choose Analyze, the event timeline (window and document titles, URLs, and
-              clipboard previews and recorded-terminal commands), plus screen images, narration
-              text, and only the bounded terminal-output excerpts needed for analysis, are sent
-              to the AI provider you choose: GitHub Copilot or your configured BYOM endpoint.
-              The selected destination is shown in Sessions before analysis.
-            </li>
-            <li>
-              By default, before anything is sent, this computer hides sensitive details like
-              passwords, keys, emails, and card or ID numbers from that text and from your screen
-              images. You can turn this off below.
+              A recording only leaves this computer if you choose to download it from Sessions and
+              share the file yourself.
             </li>
           </ul>
         </section>
 
+        {ADVANCED_PROTECTION_AVAILABLE && (
         <section className={`sheet-block sheet-advp ${advancedOn ? "on" : ""}`}>
           <div className="sheet-advp-head">
             <div className="sheet-advp-copy">
               <h3>Advanced protection</h3>
               <p className="sheet-note">
-                On by default. Before your recording is analyzed, it checks the text and your screen
-                images on this computer and hides sensitive details. Turn it off to send everything
-                as recorded.
+                Checks the recorded text and your screen images on this computer and hides
+                sensitive details.
               </p>
             </div>
             <button
@@ -215,13 +207,12 @@ export function WhatsRecorded({
             <>
               <ul>
                 <li>
-                  It hides sensitive details like                   passwords, keys, emails, and card or ID numbers, both in the text that is sent
-                  (including narration and terminal output) and in your screen images.
+                  It hides sensitive details like passwords, keys, emails, and card or ID numbers,
+                  both in the recorded text (including narration and terminal output) and in your
+                  screen images.
                 </li>
                 <li>
-                  Turning it off sends your recording as recorded. That can make the analysis more
-                  accurate, but nothing is hidden, so only do it when the recording has nothing
-                  sensitive.
+                  Turning it off keeps your recording as recorded, so nothing is hidden.
                 </li>
                 <li>It all runs on this computer.</li>
               </ul>
@@ -240,6 +231,7 @@ export function WhatsRecorded({
             </>
           )}
         </section>
+        )}
 
         <section className="sheet-block">
           <h3>What it never does</h3>

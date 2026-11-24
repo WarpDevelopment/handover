@@ -21,6 +21,7 @@ export async function decodeAudioFile(audioPath: string, signal?: AbortSignal): 
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      spellcheck: false,
       backgroundThrottling: false,
     },
   });

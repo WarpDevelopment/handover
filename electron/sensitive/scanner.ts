@@ -10,7 +10,6 @@ import { stripVTControlCharacters } from "node:util";
 import path from "node:path";
 
 import { NARRATION_FILE, type NarrationTranscript } from "../../common/narration";
-import { readSessionImport } from "../imports/metadata";
 import {
   maskValue,
   redactedSnippet,
@@ -67,8 +66,7 @@ function readJson<T>(file: string): T | null {
 /** Well-known (event type, payload key) → provenance, so common findings read
  *  nicely in the report. Any *other* string field in the payload is still scanned
  *  (tagged "other"): the detection surface deliberately covers the WHOLE payload,
- *  matching what the describer's get_events tool can emit, so there is no curated
- *  allow-list to silently drift out of sync with the outgoing data. */
+ *  so there is no curated allow-list to silently drift out of sync. */
 const KNOWN_FIELD_SOURCES: Record<string, Record<string, SensitiveSource>> = {
   "app.activate": { title: "window-title", url: "url" },
   "app.title-change": { title: "window-title" },
@@ -80,9 +78,9 @@ const KNOWN_FIELD_SOURCES: Record<string, Record<string, SensitiveSource>> = {
 
 /** Pull every scannable string field from one event's payload, tagged with
  *  provenance + time. Scans the ENTIRE payload — not a hand-picked subset — so any
- *  value get_events could surface (a path in `cwd`, a `host`, a window `path`, or
- *  future PTY output) is covered by the pre-send redaction, not just the primary
- *  fields. Non-string fields (numbers, bounds, format lists) carry no free text. */
+ *  value (a path in `cwd`, a `host`, a window `path`, or future PTY output) is
+ *  covered, not just the primary fields. Non-string fields (numbers, bounds,
+ *  format lists) carry no free text. */
 function fieldsFromEvent(ev: RecEvent, startedAt: number | null): ScanField[] {
   const atMs = startedAt != null ? ev.epoch - startedAt : null;
   const known = KNOWN_FIELD_SOURCES[ev.type];
@@ -98,12 +96,6 @@ function fieldsFromEvent(ev: RecEvent, startedAt: number | null): ScanField[] {
 /** Every scannable text field of a recording, in timeline order. */
 function collectFields(dir: string): ScanField[] {
   const fields: ScanField[] = [];
-  const imported = readSessionImport(dir);
-  if (imported) {
-    fields.push({ text: imported.details, source: "note", atMs: null });
-    fields.push({ text: imported.name, source: "other", atMs: null });
-  }
-
   const meta = readJson<SessionMeta>(path.join(dir, "session.json"));
   const startedAt = typeof meta?.startedAt === "number" ? meta.startedAt : null;
 
@@ -213,11 +205,11 @@ function findingKey(source: SensitiveSource, match: SensitiveMatch): string {
 }
 
 /**
- * Scan one recording for potentially sensitive details in the text that Analyze
- * would send to GitHub Copilot. Scans EVERY string field of every recorded event
- * — the whole payload, not a curated subset — because the describer's get_events
- * tool can surface any payload field (window titles, URLs, clipboard previews,
- * commands, cwd/host/path, markers…); plus transcribed voice narration. Runs the
+ * Scan one recording for potentially sensitive details in the recorded text.
+ * Scans EVERY string field of every recorded event — the whole payload, not a
+ * curated subset — because any payload field can carry free text (window titles,
+ * URLs, clipboard previews, commands, cwd/host/path, markers…); plus transcribed
+ * voice narration. Runs the
  * secret + structured-PII detection layers over each field.
  *
  * Runs entirely on this computer and is best-effort / non-throwing — an unreadable
@@ -227,7 +219,7 @@ function findingKey(source: SensitiveSource, match: SensitiveMatch): string {
  * stays in the main process and is never persisted or sent to the renderer.
  *
  * Note: this inspects text only. Secrets merely *visible* in screen frames are
- * handled separately by the frame OCR + blur seam in the describer's get_frames.
+ * handled separately by the frame OCR + blur seam.
  */
 export async function scanSession(sessionId: string): Promise<ScanResult> {
   const dir = sessionDir(sessionId); // throws on an unsafe id (traversal guard)

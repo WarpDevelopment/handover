@@ -58,8 +58,7 @@ export function RecordingPrivacyWarning({
           information off screen and out of narration.
         </p>
         <p id="recording-warning-detail" className="recording-warning-detail">
-          For complete transparency, review exactly what&apos;s captured and what may later be
-          sent to the AI provider you choose for analysis.
+          For complete transparency, review exactly what&apos;s captured and where it is stored.
         </p>
 
         <div className="recording-warning-actions">

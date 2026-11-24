@@ -19,7 +19,7 @@ const require = createRequire(import.meta.url);
 const { extract } = require("@electron-internal/extract-zip");
 const officialElectronReleases =
   "https://github.com/electron/electron/releases/download/";
-const reviewedMetadataName = ".skill-recorder-reviewed.json";
+const reviewedMetadataName = ".handover-reviewed.json";
 
 function parseArguments(args) {
   const options = {

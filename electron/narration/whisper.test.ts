@@ -23,7 +23,7 @@ async function seedModel(cacheDir: string, modelId: string): Promise<string> {
 }
 
 test("cache detection selects the multilingual model rather than the legacy English model", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-models-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-models-"));
   try {
     assert.equal(NARRATION_MODEL_ID, "Xenova/whisper-small");
     await seedModel(root, LEGACY_NARRATION_MODEL_ID);
@@ -37,7 +37,7 @@ test("cache detection selects the multilingual model rather than the legacy Engl
 });
 
 test("legacy model cleanup retains the multilingual cache", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-models-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-models-"));
   try {
     const legacyDir = await seedModel(root, LEGACY_NARRATION_MODEL_ID);
     await seedModel(root, NARRATION_MODEL_ID);

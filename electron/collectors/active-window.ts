@@ -16,7 +16,11 @@ const POLL_MS_BROWSER = 1600;
 const URL_MIN_INTERVAL_MS = 1500;
 
 /** get-windows options for each capture mode. */
-const FULL = { accessibilityPermission: true, screenRecordingPermission: true } as const;
+// SEC-9: FULL mode must not ask get-windows for accessibility: with it on, the macOS binary also fetches
+// the browser's URL (with its query string) through Apple Events on every poll. Titles need only screen
+// recording; URLs, when wanted, come from our own throttled UrlProvider.
+export const GET_WINDOWS_FULL = { accessibilityPermission: false, screenRecordingPermission: true } as const;
+const FULL = GET_WINDOWS_FULL;
 const DEGRADED = { accessibilityPermission: false, screenRecordingPermission: false } as const;
 const GET_WINDOWS_PACKAGE = "get-windows";
 

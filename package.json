@@ -1,9 +1,9 @@
 {
-  "name": "skill-recorder",
-  "version": "0.9.3",
-  "description": "Records a user's on-screen work session and derives a structured description for building AI-agent skills.",
-  "author": "Skill Recorder contributors",
-  "repository": "github:microsoft/skill-recorder",
+  "name": "handover",
+  "version": "0.1.0",
+  "description": "Records a work session on screen and exports a step-by-step handover package.",
+  "author": "Warp Development",
+  "repository": "github:WarpDevelopment/handover",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -14,41 +14,27 @@
   },
   "scripts": {
     "dev": "node scripts/run-reviewed-electron.mjs dev",
-    "build:vite": "vite build && node scripts/assert-catalogue-bundle-boundary.mjs",
+    "build:vite": "vite build",
     "build": "tsc --noEmit && npm run build:vite",
     "check:lockfile": "node scripts/check-lockfile-portability.mjs",
     "typecheck": "tsc --noEmit",
-    "typecheck:evals": "tsc --noEmit -p evals/tsconfig.json",
-    "posttest": "npm run test:import",
-    "pretest": "npm run test:ai",
-    "test:ai": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs --test common/ai-provider.test.ts electron/ai-provider-store.test.ts electron/ai-provider.test.ts",
-    "test:ai:runtime": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs --test electron/ai-provider-runtime.test.ts",
-    "test:import": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs --test electron/imports/import.test.ts",
-    "test:import:runtime": "node scripts/test-recording-import.mjs",
-    "test": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs --test evals/builder-imports.test.ts common/architecture-registry.test.ts electron/architectures/catalogue-registry.test.ts common/audio.test.ts common/microphone.test.ts common/screen.test.ts common/narration.test.ts common/sensitive.test.ts common/skill.test.ts electron/recording-controls-bounds.test.ts electron/recorder-window-sizing.test.ts electron/recording-privacy.test.ts electron/single-instance.test.ts electron/crash-guards.test.ts electron/copilot-signin-auth.test.ts electron/copilot-signin-flow.test.ts electron/copilot-signin-process.test.ts electron/microsoft-signin-hint.test.ts src/analysis-recovery.test.ts electron/recorder/controller.test.ts electron/recorder/session-store.test.ts electron/frames/extractor.test.ts electron/pipeline.test.ts electron/narration/audio-analysis.test.ts electron/narration/analyze-gate.test.ts electron/narration/transcribe.test.ts electron/narration/whisper.test.ts electron/sensitive/scanner.test.ts electron/sensitive/secrets.test.ts electron/sensitive/tessdata-source.test.ts electron/sensitive/ocr.test.ts electron/sensitive/frame-redact.test.ts electron/sensitive/frame-heuristics.test.ts electron/terminal/terminal.test.ts electron/sessions.test.ts electron/debug-bundle.test.ts electron/skillbuilder/plan-tools.test.ts electron/skillbuilder/placement.test.ts electron/skillbuilder/preview.test.ts src/skill-placement.test.ts src/skill-review-state.test.ts scripts/compliance.test.mjs scripts/install-windows-dependencies.test.mjs",
-    "eval": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/run.ts",
-    "eval:terminal": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/run.ts --only=terminal-output-required,terminal-failure-recovery,terminal-sensitive-output",
-    "eval:builder": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/builder/run.ts",
-    "eval:skill": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/skillbuilder/run.ts",
-    "eval:sensitive": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/sensitive/run.ts",
-    "eval:sensitive:ocr": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/sensitive/ocr-images.ts",
-    "eval:sensitive:realistic": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/sensitive/ocr-realistic.ts",
+    "test": "node --experimental-transform-types --no-warnings --import ./test/harness/register.mjs --test common/handover/canonical.test.ts common/handover/geometry.test.ts common/handover/steps.test.ts common/handover/build-package.test.ts common/handover/package-fixes.test.ts common/handover/validate.test.ts common/handover/helper.test.ts common/handover/annotate-edit.test.ts common/handover/overlay.test.ts electron/frames/ring.test.ts electron/frames/shot-store.test.ts electron/video/thumb-diff.test.ts electron/export.test.ts electron/narration/no-narration.test.ts electron/review.test.ts electron/freeze.test.ts electron/hotkeys.test.ts electron/overlay-window.test.ts electron/reviewed-marker.test.ts electron/review-gate.test.ts electron/session-delete.test.ts electron/web-preferences.test.ts electron/redact-paths.test.ts electron/recorder/own-events.test.ts electron/collectors/active-window.test.ts src/freeze-keys.test.ts src/bar-error.test.ts common/audio.test.ts common/microphone.test.ts common/screen.test.ts common/narration.test.ts common/sensitive.test.ts electron/recording-controls-bounds.test.ts electron/recorder-window-sizing.test.ts electron/recording-privacy.test.ts electron/single-instance.test.ts electron/crash-guards.test.ts electron/recorder/controller.test.ts electron/recorder/explain.test.ts electron/recorder/session-store.test.ts electron/frames/extractor.test.ts electron/pipeline.test.ts electron/narration/audio-analysis.test.ts electron/narration/analyze-gate.test.ts electron/narration/transcribe.test.ts electron/narration/whisper.test.ts electron/sensitive/scanner.test.ts electron/sensitive/secrets.test.ts electron/sensitive/tessdata-source.test.ts electron/sensitive/ocr.test.ts electron/sensitive/frame-redact.test.ts electron/sensitive/frame-heuristics.test.ts electron/terminal/terminal.test.ts electron/sessions.test.ts electron/debug-bundle.test.ts electron/collectors/pointer-helper.test.ts electron/collectors/clipboard.test.ts electron/sensitive/model-manager.test.ts common/config.test.ts common/banner.test.ts electron/diagnostics.test.ts electron/logger.test.ts electron/network-guard.test.ts scripts/fetch-models.test.mjs scripts/compliance.test.mjs scripts/test-list.test.mjs",
+    "build:helper:mac": "mkdir -p native/build && swiftc -O native/macos/HandoverHelper.swift -o native/build/HandoverHelper",
+    "build:helper:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-helper-win.ps1",
+    "models:fetch": "node scripts/fetch-models.mjs",
+    "models:verify": "node scripts/fetch-models.mjs --verify",
     "electron:install-reviewed": "node scripts/install-reviewed-electron.mjs",
     "compliance:licenses": "node scripts/prepare-compliance.mjs --licenses-only",
     "compliance:prepare": "node scripts/prepare-compliance.mjs",
     "compliance:review": "node scripts/review-compliance-sources.mjs",
     "compliance:test": "node --test scripts/compliance.test.mjs",
     "fix:lockfile-registry": "node scripts/check-lockfile-portability.mjs --fix",
-    "dist": "npm run compliance:prepare && node scripts/assert-generic-dist-platform.mjs && npm run build:vite && electron-builder --publish never",
-    "dist:win:x64": "npm run compliance:prepare && node scripts/assert-native-windows-arch.mjs x64 && npm run build:vite && electron-builder --config.npmRebuild=false --publish never --win nsis --x64",
-    "dist:win:arm64": "npm run compliance:prepare && node scripts/assert-native-windows-arch.mjs arm64 && npm run build:vite && electron-builder --config.npmRebuild=false --publish never --win nsis --arm64",
-    "dist:portable:mac": "npm run compliance:prepare && npm run build:vite && electron-builder --publish never --mac zip",
-    "dist:portable:win": "npm run compliance:prepare && node scripts/assert-native-windows-arch.mjs x64 && npm run build:vite && electron-builder --config.npmRebuild=false --publish never --win portable --x64",
+    "dist": "npm run models:fetch && npm run compliance:prepare &&node scripts/assert-generic-dist-platform.mjs && npm run build:helper:mac && npm run build:vite && electron-builder --publish never",
+    "dist:win:x64": "npm run models:fetch && npm run compliance:prepare &&node scripts/assert-native-windows-arch.mjs x64 && npm run build:helper:win && npm run build:vite && electron-builder --config.npmRebuild=false --publish never --win nsis --x64",
+    "dist:mac": "npm run models:fetch && npm run compliance:prepare && npm run build:helper:mac && npm run build:vite && electron-builder --publish never --mac zip",
     "start": "node scripts/run-reviewed-electron.mjs start"
   },
   "dependencies": {
-    "@github/copilot": "1.0.78",
-    "@github/copilot-sdk": "^1.0.6",
     "@huggingface/transformers": "^4.2.0",
     "@secretlint/core": "^13.0.4",
     "@secretlint/secretlint-rule-pattern": "^13.0.4",
@@ -101,19 +87,21 @@
     "tesseract.js": false
   },
   "build": {
-    "appId": "com.skillrecorder.app",
-    "productName": "Skill Recorder",
+    "appId": "com.warpdevelopment.handover",
+    "productName": "Handover",
     "directories": {
       "output": "release"
     },
     "electronDist": ".compliance-cache/electron",
     "afterPack": "scripts/verify-packaged-compliance.mjs",
+    "afterSign": "scripts/after-sign-models.cjs",
     "files": [
       "dist/**",
       "dist-electron/**",
       "package.json",
       "LICENSE",
       "THIRD-PARTY-NOTICES.md",
+      "NOTICE",
       "!node_modules/@img/sharp-wasm32/**",
       "!node_modules/@img/sharp-freebsd-wasm32/**",
       "!node_modules/@img/sharp-webcontainers-wasm32/**",
@@ -132,13 +120,18 @@
       "node_modules/koffi/**",
       "node_modules/node-pty/**",
       "node_modules/@koromix/**",
-      "node_modules/@github/copilot-*/**",
       "node_modules/@huggingface/transformers/**",
       "node_modules/onnxruntime-node/**",
       "node_modules/tesseract.js/**",
       "node_modules/tesseract.js-core/**"
     ],
     "mac": {
+      "extraResources": [
+        {
+          "from": "native/build/HandoverHelper",
+          "to": "helper/HandoverHelper"
+        }
+      ],
       "icon": "build/icon.png",
       "target": [
         "dmg",
@@ -148,10 +141,20 @@
       "hardenedRuntime": false,
       "category": "public.app-category.developer-tools",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Skill Recorder uses your microphone only while you turn on Narrate during a recording, to transcribe your spoken narration on this computer."
+        "NSMicrophoneUsageDescription": "Handover uses your microphone only while you turn on Narrate during a recording, to transcribe your spoken narration on this computer."
       }
     },
     "win": {
+      "extraResources": [
+        {
+          "from": "native/build/HandoverHelper.exe",
+          "to": "helper/HandoverHelper.exe"
+        },
+        {
+          "from": "extraResources/models",
+          "to": "models"
+        }
+      ],
       "icon": "build/icon.png",
       "files": [
         "dist/**",
@@ -159,6 +162,7 @@
         "package.json",
         "LICENSE",
         "THIRD-PARTY-NOTICES.md",
+        "NOTICE",
         "!node_modules/get-windows/**",
         "!node_modules/@img/sharp-wasm32/**",
         "!node_modules/@img/sharp-freebsd-wasm32/**",

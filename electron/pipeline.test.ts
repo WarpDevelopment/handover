@@ -19,7 +19,7 @@ import type { RecEvent, SessionMeta } from "../common/types";
 import { processSession } from "./pipeline";
 
 test("processSession skips legacy video-only frame extraction", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-pipeline-"));
+  const root = await mkdtemp(path.join(tmpdir(), "handover-pipeline-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const startedAt = 1_000;

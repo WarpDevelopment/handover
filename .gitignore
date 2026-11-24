@@ -6,6 +6,7 @@ release
 .compliance
 .compliance-cache
 .compliance-review
+extraResources/models
 coverage
 *.log
 .DS_Store
@@ -14,8 +15,4 @@ coverage
 .warp/
 .venv/
 __pycache__/
-
-# Eval run outputs (timestamped result logs)
-evals/results/
-# Opt-in OCR eval's downloaded traineddata cache
-evals/.cache/
+native/build

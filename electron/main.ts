@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+
 import {
   app,
   BrowserWindow,
@@ -6,10 +9,18 @@ import {
   ipcMain,
   Menu,
   screen,
+  session,
+  shell,
 } from "electron";
 
 import { FULL_CAPTURE } from "../common/config";
-import { IPC, type RecorderStatus, type StartResult } from "../common/ipc";
+import { displaysPayload } from "../common/handover/displays";
+import { helperStatusFrom } from "../common/handover/helper";
+import { helperTracker } from "./collectors/helper-status";
+import { IPC, type ActionResult, type RecorderStatus, type StartResult } from "../common/ipc";
+import type { PointerClickPayload } from "../common/events";
+import { pointInBounds } from "../common/handover/overlay-geometry";
+import type { ReviewEditInput } from "../common/handover/review";
 import type {
   SupportedShellId,
   TerminalActionResult,
@@ -17,20 +28,26 @@ import type {
 } from "../common/terminal";
 import { createCollectors } from "./collectors";
 import { installCrashGuards } from "./crash-guards";
-import { Describer } from "./describer/describer";
 import { processSession } from "./pipeline";
 import { registerIpc } from "./ipc";
-import { ImportManager } from "./imports/manager";
-import { isValidSessionId } from "./recorder/session-store";
-import { createLogger } from "./logger";
+import { isValidSessionId, sessionDir } from "./recorder/session-store";
+import { FreezeCoordinator, type OverlayWindow } from "./freeze";
+import { adaptOverlayWindow, OVERLAY_READY_TIMEOUT_MS } from "./overlay-window";
+import { ExplainHotkey } from "./explain-hotkey";
+import { ReviewService } from "./review";
+import { saveDiagnosticsToDesktop } from "./diagnostics-info";
+import { createLogger, initFileLogging } from "./logger";
+import {
+  installNodeNetGuard,
+  installWebRequestDeny,
+  isDenyNetworkEnabled,
+} from "./network-guard";
 import { NarrationManager } from "./narration/manager";
 import { SensitiveModelManager } from "./sensitive/model-manager";
 import { RecorderController } from "./recorder/controller";
 import { RecordingPrivacySession } from "./recording-privacy";
 import { deleteSession } from "./sessions";
 import { registerSingleInstance } from "./single-instance";
-import { SkillBuilder } from "./skillbuilder/builder";
-import { AutomationBuilder } from "./automationbuilder/builder";
 import { createTray } from "./tray";
 import { dockIcon } from "./icons";
 import { AudioRecorder } from "./audio/recorder";
@@ -41,6 +58,7 @@ import {
   clampRecordingControlsWindow,
   createLibraryWindow,
   createRecorderWindow,
+  createFreezeOverlay,
   createRecordingControlsWindow,
   createTerminalWindow,
   fitRecorderHeight,
@@ -59,7 +77,10 @@ if (!instanceReady) {
   app.exit(0);
 }
 
+initFileLogging(path.join(app.getPath("userData"), "logs"));
 const log = createLogger("Main");
+// Test-only network kill switch (HANDOVER_DENY_NETWORK=1), installed before any I/O.
+if (isDenyNetworkEnabled()) installNodeNetGuard((m) => log.warn(m));
 
 // Contain stray async failures so a lost stream error can't crash the main
 // process (and the recording in progress). Registered before any window/IO work.
@@ -81,7 +102,6 @@ let quitReady = false;
 let quitTask: Promise<void> | null = null;
 let recordingStartPending = false;
 let pendingLibrarySelection: string | null = null;
-const imports = new ImportManager();
 const recordingPrivacy = new RecordingPrivacySession();
 const narration = new NarrationManager((status) =>
   broadcast(IPC.narrationStatusChanged, status),
@@ -115,7 +135,34 @@ async function finishRecordedTerminal(): Promise<void> {
   }
 }
 
+/** The display layout as the `displays` event records it (tester-package.md §3). */
+function currentDisplays() {
+  return displaysPayload({
+    platform: process.platform,
+    displays: screen.getAllDisplays(),
+    primaryId: screen.getPrimaryDisplay().id,
+    dipToScreenPoint:
+      process.platform === "win32" ? (p) => screen.dipToScreenPoint(p) : undefined,
+  });
+}
+
+/** A click on Handover's own recording bar (Explain, Pause, Resume, Done…) is not part of the user's work. */
+function isOwnBarClick(click: PointerClickPayload): boolean {
+  const bar = recordingControlsWindow;
+  if (!bar || bar.isDestroyed() || !bar.isVisible()) return false;
+  // Window bounds are in DIP; Windows click positions are in physical px of the virtual screen.
+  const point =
+    click.space === "windows_virtual_px"
+      ? screen.screenToDipPoint({ x: click.x, y: click.y })
+      : { x: click.x, y: click.y };
+  return pointInBounds(point, bar.getBounds());
+}
+
 const recorder = new RecorderController({
+  isOwnWindowClick: isOwnBarClick,
+  pointerDisplayId: () => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id,
+  getDisplays: currentDisplays,
+  getHelperStatus: () => helperStatusFrom(helperTracker.report()),
   resolveConfig: () => ({ ...FULL_CAPTURE }),
   buildCollectors: createCollectors,
   createVideoRecorder: () => new VideoRecorder(),
@@ -125,6 +172,7 @@ const recorder = new RecorderController({
     terminalSession?.busyDetails() ?? { busy: false, command: null },
   finishTerminal: finishRecordedTerminal,
   deleteSession,
+  onExplainAborted: () => freeze.abort(),
   postProcess: async (dir) => {
     await processSession(dir);
     try {
@@ -134,6 +182,101 @@ const recorder = new RecorderController({
     }
   },
 });
+
+const review = new ReviewService({ toolVersion: app.getVersion() });
+
+const overlayReveal = new Map<number, () => void>();
+const overlayWindows = new Map<number, BrowserWindow>();
+
+/** An overlay `BrowserWindow` as the freeze flow sees it. It is shown once its page has drawn the frame. */
+function overlayWindow(display: Electron.Display): OverlayWindow {
+  const win = createFreezeOverlay(display);
+  const senderId = win.webContents.id;
+  // A load failure, crash, hang, or a page that never became ready cancels the freeze (APP-1).
+  const adapter = adaptOverlayWindow(win, {
+    platform: process.platform,
+    // Hidden until the page says it drew the frame; this is only the kill switch for a dead page (N1).
+    revealTimeoutMs: OVERLAY_READY_TIMEOUT_MS,
+    // Drop just this display (it stays live) unless the user could see it or drew on it (D5, N2).
+    onSecondaryFailure: (_reason, { revealed }) => freeze.secondaryFailed(senderId, revealed),
+    // Focus moving to another freeze overlay is not a loss of the keyboard (N4).
+    isOtherOverlayFocused: () => {
+      const focused = BrowserWindow.getFocusedWindow();
+      return focused !== null && focused !== win && [...overlayWindows.values()].includes(focused);
+    },
+    onFocusFailed: () => {
+      if (!win.isDestroyed()) win.webContents.send(IPC.freezeFocusFailed);
+    },
+    onFailure: () => {
+      void freeze.cancel();
+      // Say why Explain vanished instead of leaving the user guessing.
+      const bar = recordingControlsWindow;
+      if (bar && !bar.isDestroyed()) bar.webContents.send(IPC.actionError, "Explain could not open. Try again.");
+    },
+    log,
+  });
+  overlayReveal.set(senderId, adapter.ready);
+  overlayWindows.set(senderId, win);
+  win.once("closed", () => {
+    overlayReveal.delete(senderId);
+    overlayWindows.delete(senderId);
+  });
+  return adapter.overlay;
+}
+
+const freeze: FreezeCoordinator = new FreezeCoordinator({
+  beginExplain: () => recorder.beginExplain(),
+  endExplain: (result) => recorder.endExplain(result),
+  getDisplays: () => screen.getAllDisplays(),
+  cursorDisplayId: () => screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id,
+  readFrame: async (dir, frame) => {
+    const file = path.resolve(dir, frame.file);
+    if (!file.startsWith(path.resolve(dir) + path.sep)) throw new Error("frame outside the session folder");
+    const bytes = await readFile(file);
+    const mime = file.endsWith(".png") ? "image/png" : "image/jpeg";
+    return `data:${mime};base64,${bytes.toString("base64")}`;
+  },
+  openWindow: overlayWindow,
+  notify: (senderId, notice) => {
+    const target = overlayWindows.get(senderId);
+    if (target && !target.isDestroyed()) target.webContents.send(IPC.freezeNotice, notice);
+  },
+  // Escape works even when the overlay page cannot see the key; held only while frozen.
+  registerEscape: (cb) => {
+    if (!globalShortcut.register("Escape", cb)) log.warn("Escape shortcut could not be registered for the freeze");
+    return () => globalShortcut.unregister("Escape");
+  },
+  activateApp: () => {
+    if (process.platform === "darwin") app.focus({ steal: true });
+  },
+  log,
+});
+
+/** Pause and Explain only make sense from the recording bar (or the hotkey), while recording. */
+async function startExplain(): Promise<ActionResult> {
+  const status = recorder.status();
+  if (status.state !== "recording" || status.transition !== "none") {
+    return { ok: false, error: "Start recording before using Explain." };
+  }
+  return freeze.begin();
+}
+
+/** The Explain hotkey, or null when it could not be registered (the bar's button still works). */
+const EXPLAIN_HOTKEY = "CommandOrControl+Shift+E";
+/** Held system-wide only while recording (APP-8); see ExplainHotkey. */
+const explainHotkey = new ExplainHotkey(
+  globalShortcut,
+  EXPLAIN_HOTKEY,
+  () => {
+    // A hotkey has no button to show a failure on, so the bar does (APP-5).
+    void startExplain().then((result) => {
+      if (result.ok) return;
+      const bar = recordingControlsWindow;
+      if (bar && !bar.isDestroyed()) bar.webContents.send(IPC.actionError, result.error ?? "Explain did not start.");
+    });
+  },
+  log,
+);
 
 async function startRecording(): Promise<StartResult> {
   if (recordingStartPending) {
@@ -162,12 +305,6 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
-const describer = new Describer((progress) => broadcast(IPC.analyzeProgress, progress));
-const builder = new SkillBuilder((progress) => broadcast(IPC.skillProgress, progress));
-const automationBuilder = new AutomationBuilder((progress) =>
-  broadcast(IPC.automationProgress, progress),
-);
-
 /** Open, focus, and re-dock the Sessions library window (creating it lazily). */
 function openLibrary(sessionId?: string): void {
   if (recorder.state === "recording") return;
@@ -184,15 +321,13 @@ function openLibrary(sessionId?: string): void {
   libraryWindow = createLibraryWindow(recorderWindow);
   libraryWindow.on("closed", () => {
     libraryWindow = null;
+    // Drop the reviewed session's pictures from memory (APP-9). The cache holds one session.
+    review.evict();
     // Return the recorder to where it sat before it made room for the library.
     if (recorderWindow && !recorderWindow.isDestroyed() && recorderHome) {
       recorderWindow.setBounds(recorderHome);
     }
     recorderHome = null;
-    // Drop idle agent conversations now that the library is gone.
-    void describer.evictIdle();
-    void builder.evictIdle();
-    void automationBuilder.evictIdle();
   });
 }
 
@@ -299,7 +434,8 @@ function showRecordingControls(): void {
   const win = ensureRecordingControlsWindow();
   clampRecordingControlsWindow(win);
   if (!win.isVisible()) win.showInactive();
-  win.moveTop();
+  // On Windows the bar must not rise above the freeze overlay (APP-10).
+  if (!freeze.active) win.moveTop();
 }
 
 function showRecorderWindow(): BrowserWindow {
@@ -374,7 +510,26 @@ function clampControlsToDisplay(): void {
   }
 }
 
+/** Write the support diagnostics zip to the Desktop and show it. Logs outcomes only. */
+async function saveDiagnostics(): Promise<void> {
+  try {
+    const file = await saveDiagnosticsToDesktop();
+    shell.showItemInFolder(file);
+  } catch (err) {
+    log.error("Saving diagnostics failed:", err);
+    dialog.showErrorBox("Couldn't save diagnostics", err instanceof Error ? err.message : String(err));
+  }
+}
+
 app.whenReady().then(async () => {
+  log.info(`Handover ${app.getVersion()} starting on ${process.platform}-${process.arch}`);
+  if (isDenyNetworkEnabled()) {
+    // Test-only switch: prove the app works with no network. Not a product feature.
+    installWebRequestDeny(session.defaultSession.webRequest, (m) => log.warn(m));
+    log.warn("HANDOVER_DENY_NETWORK=1: all non-local network access is blocked");
+  }
+  // SEC-3: no dictionary downloads from Google, no spell-checking of typed notes.
+  session.defaultSession.setSpellCheckerEnabled(false);
   if (process.platform === "win32") Menu.setApplicationMenu(null);
   if (dock && app.dock) app.dock.setIcon(dock);
 
@@ -397,9 +552,6 @@ app.whenReady().then(async () => {
   }
   registerIpc(
     recorder,
-    describer,
-    builder,
-    automationBuilder,
     narration,
     microphones,
     screens,
@@ -411,7 +563,9 @@ app.whenReady().then(async () => {
         controls && !controls.isDestroyed() && sender === controls.webContents,
       );
     },
-    imports,
+    (sender) => Boolean(libraryWindow && !libraryWindow.isDestroyed() && sender === libraryWindow.webContents),
+    (sessionId) => review.evict(sessionId),
+    (sessionId) => review.currentNarrationSha256(sessionId),
   );
   sensitiveModels.initialize();
   ipcMain.handle(IPC.start, () => requestStartRecording());
@@ -529,19 +683,75 @@ app.whenReady().then(async () => {
     fitRecorderHeight(win, height);
   });
 
+  const fromControls = (sender: Electron.WebContents): boolean => {
+    const controls = recordingControlsWindow;
+    return Boolean(controls && !controls.isDestroyed() && sender === controls.webContents);
+  };
+  const notAllowed: ActionResult = { ok: false, error: "This action is only available from the recording bar." };
+  ipcMain.handle(IPC.pause, (event) => (fromControls(event.sender) ? recorder.pause() : notAllowed));
+  ipcMain.handle(IPC.resume, (event) => (fromControls(event.sender) ? recorder.resume() : notAllowed));
+  ipcMain.handle(IPC.explain, (event) => (fromControls(event.sender) ? startExplain() : notAllowed));
+  ipcMain.handle(IPC.explainHotkey, () => explainHotkey.current());
+  // Freeze overlay windows only; the coordinator ignores any other sender.
+  ipcMain.handle(IPC.freezeInit, (event) => freeze.init(event.sender.id));
+  ipcMain.on(IPC.freezeState, (event, state: unknown) => freeze.setState(event.sender.id, state));
+  ipcMain.on(IPC.freezeReady, (event) => overlayReveal.get(event.sender.id)?.());
+  ipcMain.handle(IPC.freezeDone, (event) => freeze.done(event.sender.id));
+  ipcMain.handle(IPC.freezeCancel, (event) => freeze.cancel(event.sender.id));
+
+  // Review (Library window only): build the steps with their edits, serve images, append edits.
+  const fromLibrary = (sender: Electron.WebContents): boolean =>
+    Boolean(libraryWindow && !libraryWindow.isDestroyed() && sender === libraryWindow.webContents);
+  ipcMain.handle(IPC.reviewLoad, async (event, sessionId: unknown) => {
+    if (!fromLibrary(event.sender) || !isValidSessionId(sessionId)) return { ok: false, error: "Unavailable." };
+    try {
+      return { ok: true, data: await review.load(sessionDir(sessionId), sessionId) };
+    } catch (error) {
+      log.warn("Review load failed:", error);
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle(IPC.reviewImage, (event, sessionId: unknown, imagePath: unknown) =>
+    fromLibrary(event.sender) && isValidSessionId(sessionId) && typeof imagePath === "string"
+      ? review.image(sessionId, imagePath)
+      : null,
+  );
+  ipcMain.handle(IPC.reviewEdit, async (event, sessionId: unknown, edit: unknown) => {
+    if (!fromLibrary(event.sender) || !isValidSessionId(sessionId) || !edit || typeof edit !== "object") {
+      return { ok: false, error: "Unavailable." };
+    }
+    if (recorder.status().sessionId === sessionId) {
+      return { ok: false, error: "This recording is still in progress." };
+    }
+    try {
+      return { ok: true, data: await review.applyEdit(sessionDir(sessionId), sessionId, edit as ReviewEditInput) };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   recorder.onStatusChanged((status) => {
+    // Before the bar is shown, so its Explain hotkey query already sees the registration.
+    explainHotkey.sync(status.state === "recording");
     broadcast(IPC.statusChanged, status);
     syncRecordingWindows(status);
   });
   recorderWindow = createRecorderWindow();
 
-  const handleDisplayChange = () => {
+  const handleDisplayChange = (reason: string, affectsOverlay = true) => {
+    log.info(`Display layout changed (${reason}), ${screen.getAllDisplays().length} display(s)`);
+    // Overlay windows sized for the old layout are wrong: end the freeze, unsaved (APP-7, APP-4).
+    // A work-area-only change (taskbar moved) does not move or resize a full-screen overlay.
+    if (affectsOverlay) freeze.displaysChanged();
     clampControlsToDisplay();
     void screens.refresh();
+    recorder.publishDisplays();
   };
-  screen.on("display-added", handleDisplayChange);
-  screen.on("display-removed", handleDisplayChange);
-  screen.on("display-metrics-changed", handleDisplayChange);
+  screen.on("display-added", () => handleDisplayChange("added"));
+  screen.on("display-removed", () => handleDisplayChange("removed"));
+  screen.on("display-metrics-changed", (_event, _display, changed) =>
+    handleDisplayChange("metrics", changed.includes("bounds") || changed.includes("scaleFactor")),
+  );
 
   try {
     createTray(
@@ -550,6 +760,7 @@ app.whenReady().then(async () => {
       requestStopRecording,
       showRecorderWindow,
       showRecordingControls,
+      () => void saveDiagnostics(),
     );
   } catch (err) {
     log.warn("Tray unavailable:", err);
@@ -563,7 +774,6 @@ app.whenReady().then(async () => {
   if (!globalShortcut.register("CommandOrControl+Shift+R", toggle)) {
     log.warn("Global shortcut registration failed");
   }
-
   instanceReady?.();
 });
 
@@ -585,18 +795,16 @@ app.on("before-quit", (event) => {
         cancelId: 0,
         message: "A terminal command is still running.",
         detail: terminal.command
-          ? `Closing Skill Recorder will interrupt: ${terminal.command}`
-          : "Closing Skill Recorder will interrupt the active terminal session.",
+          ? `Closing Handover will interrupt: ${terminal.command}`
+          : "Closing Handover will interrupt the active terminal session.",
       });
       if (response === 0) return;
     }
     recorder.beginShutdown();
-    imports.dispose();
     // stop() is serialized behind any start/mic/discard operation already in
     // flight, and is a harmless "Not recording" result when the app is idle.
     await recorder.stop(terminal.busy);
     await recorder.whenProcessed();
-    await imports.whenIdle();
     quitReady = true;
     app.quit();
   })()
@@ -612,10 +820,6 @@ app.on("before-quit", (event) => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
-  void describer.dispose();
-  imports.dispose();
-  void builder.dispose();
-  void automationBuilder.dispose();
   microphones.dispose();
   void sensitiveModels.dispose();
 });

@@ -6,9 +6,11 @@ export interface WindowBounds {
 }
 
 export const RECORDING_CONTROLS_SIZE = {
-  width: 560,
-  collapsedHeight: 76,
-  expandedHeight: 250,
+  // Wide enough for the Explain and Pause buttons beside the microphone, terminal and Done.
+  width: 760,
+  // Includes 24px for the TEST BUILD banner above the bar.
+  collapsedHeight: 100,
+  expandedHeight: 274,
   margin: 18,
 } as const;
 

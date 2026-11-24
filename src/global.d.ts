@@ -1,8 +1,8 @@
-import type { SkillRecorderApi } from "../common/ipc";
+import type { HandoverApi } from "../common/ipc";
 
 declare global {
   interface Window {
-    skillRecorder: SkillRecorderApi;
+    handover: HandoverApi;
   }
 }
 

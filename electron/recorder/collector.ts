@@ -11,6 +11,8 @@ export interface CollectorContext {
   /** The current session's directory (for collectors that write side files). */
   sessionDir: string;
   log: Logger;
+  /** Milliseconds since the recording started, on the same clock as an event's `t`. */
+  elapsedMs?(): number;
 }
 
 /**
@@ -22,6 +24,11 @@ export interface Collector {
   readonly name: string;
   start(ctx: CollectorContext): void | Promise<void>;
   stop(): void | Promise<void>;
+  /**
+   * Called by the controller when the user pauses (`true`) or resumes (`false`). Optional: only a collector
+   * that writes its own `gap` events needs it, so that nothing it writes spans paused time.
+   */
+  setPaused?(paused: boolean): void;
 }
 
 /**
@@ -37,11 +44,16 @@ export class CollectorHost {
     this.log = createLogger("Collectors");
   }
 
-  async startAll(collectors: readonly Collector[], sessionDir: string): Promise<void> {
+  async startAll(
+    collectors: readonly Collector[],
+    sessionDir: string,
+    elapsedMs?: () => number,
+  ): Promise<void> {
     this.active = [];
     for (const collector of collectors) {
       const ctx: CollectorContext = {
         sessionDir,
+        ...(elapsedMs ? { elapsedMs } : {}),
         log: createLogger(collector.name),
         publish: (type, payload) => {
           this.bus.publish({ type, source: collector.name, payload } as EventInput);
@@ -52,6 +64,17 @@ export class CollectorHost {
         this.active.push(collector);
       } catch (err) {
         this.log.error(`"${collector.name}" failed to start:`, err);
+      }
+    }
+  }
+
+  /** Tells every running collector that implements `setPaused`; a throwing one never breaks the pause. */
+  setPaused(paused: boolean): void {
+    for (const collector of this.active) {
+      try {
+        collector.setPaused?.(paused);
+      } catch (err) {
+        this.log.error(`"${collector.name}" failed on setPaused:`, err);
       }
     }
   }

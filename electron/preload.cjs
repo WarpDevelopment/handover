@@ -19,55 +19,24 @@ const IPC = {
   status: "recorder:status",
   marker: "recorder:marker",
   doctor: "doctor:check",
-  copilotSignIn: "copilot:sign-in",
-  copilotSignInCancel: "copilot:sign-in-cancel",
-  aiConnectionStatus: "ai:status",
-  aiConnectionChanged: "ai:changed",
-  aiConnectionGitHub: "ai:github",
-  aiConnectionSave: "ai:save",
-  aiConnectionForget: "ai:forget",
-  aiConnectionCancel: "ai:cancel",
   statusChanged: "recorder:status-changed",
   recordingPrivacyReviewed: "recorder:privacy-reviewed",
   recordingPrivacyWarningRequested: "recorder:privacy-warning-requested",
   narrationStatus: "narration:status",
-  narrationDownload: "narration:download",
   narrationTranscribe: "narration:transcribe",
   narrationStatusChanged: "narration:status-changed",
   sensitiveModelStatus: "sensitive:status",
   sensitiveSetAdvanced: "sensitive:set-advanced",
   sensitiveDownloadModels: "sensitive:download-models",
   sensitiveStatusChanged: "sensitive:status-changed",
-  sensitiveGetReport: "sensitive:get-report",
-  analyze: "analyze:start",
-  analyzeFeedback: "analyze:feedback",
-  getAnalysis: "analyze:get",
-  updateAnalysis: "analyze:update",
-  cancelAnalysis: "analyze:cancel",
-  analyzeProgress: "analyze:progress",
   listSessions: "sessions:list",
-  importRecording: "import:select",
-  cancelImport: "import:cancel",
-  saveImportDetails: "import:details",
+  openSessionsFolder: "sessions:open-folder",
   sessionsChanged: "sessions:changed",
   librarySelection: "ui:library-selection",
   takeLibrarySelection: "ui:take-library-selection",
   deleteSession: "sessions:delete",
   exportDebugBundle: "sessions:export-debug",
-  buildSkill: "skill:build",
-  prepareSkill: "skill:prepare",
-  discardSkillPreview: "skill:discard-preview",
-  createSkill: "skill:create",
-  getSkill: "skill:get",
-  cancelSkill: "skill:cancel",
-  revealSkill: "skill:reveal",
-  skillProgress: "skill:progress",
-  buildAutomation: "automation:build",
-  createAutomation: "automation:create",
-  getAutomation: "automation:get",
-  cancelAutomation: "automation:cancel",
-  revealAutomation: "automation:reveal",
-  automationProgress: "automation:progress",
+  exportPackage: "sessions:export-package",
   terminalOpen: "terminal:open",
   terminalReady: "terminal:ready",
   terminalStatus: "terminal:status",
@@ -83,6 +52,22 @@ const IPC = {
   closeLibrary: "ui:close-library",
   recordingControlsExpanded: "ui:recording-controls-expanded",
   fitRecorderHeight: "ui:fit-recorder-height",
+  pause: "recorder:pause",
+  resume: "recorder:resume",
+  explain: "recorder:explain",
+  explainHotkey: "recorder:explain-hotkey",
+  freezeReady: "freeze:ready",
+  freezeInit: "freeze:init",
+  freezeState: "freeze:state",
+  freezeDone: "freeze:done",
+  freezeCancel: "freeze:cancel",
+  reviewLoad: "review:load",
+  reviewImage: "review:image",
+  reviewEdit: "review:edit",
+  markReviewed: "sessions:mark-reviewed",
+  actionError: "recorder:action-error",
+  freezeFocusFailed: "freeze:focus-failed",
+  freezeNotice: "freeze:notice",
 };
 
 let recordingPrivacyWarningPending = false;
@@ -95,7 +80,7 @@ ipcRenderer.on(IPC.recordingPrivacyWarningRequested, () => {
   recordingPrivacyWarningPending = true;
 });
 
-contextBridge.exposeInMainWorld("skillRecorder", {
+const api = {
   start: () => ipcRenderer.invoke(IPC.start),
   confirmStart: () => ipcRenderer.invoke(IPC.startConfirmed),
   markRecordingPrivacyReviewed: () => ipcRenderer.invoke(IPC.recordingPrivacyReviewed),
@@ -131,18 +116,6 @@ contextBridge.exposeInMainWorld("skillRecorder", {
   status: () => ipcRenderer.invoke(IPC.status),
   marker: (note) => ipcRenderer.invoke(IPC.marker, note),
   doctor: () => ipcRenderer.invoke(IPC.doctor),
-  copilotSignIn: (attemptId) => ipcRenderer.invoke(IPC.copilotSignIn, attemptId),
-  cancelCopilotSignIn: (attemptId) => ipcRenderer.invoke(IPC.copilotSignInCancel, attemptId),
-  aiConnectionStatus: () => ipcRenderer.invoke(IPC.aiConnectionStatus),
-  aiConnectionGitHub: (attemptId) => ipcRenderer.invoke(IPC.aiConnectionGitHub, attemptId),
-  aiConnectionSave: (attemptId, profile, apiKey) => ipcRenderer.invoke(IPC.aiConnectionSave, attemptId, profile, apiKey),
-  aiConnectionForget: (attemptId) => ipcRenderer.invoke(IPC.aiConnectionForget, attemptId),
-  aiConnectionCancel: (attemptId) => ipcRenderer.invoke(IPC.aiConnectionCancel, attemptId),
-  onAiConnectionChanged: (cb) => {
-    const listener = (_event, status) => cb(status);
-    ipcRenderer.on(IPC.aiConnectionChanged, listener);
-    return () => ipcRenderer.removeListener(IPC.aiConnectionChanged, listener);
-  },
   onStatusChanged: (cb) => {
     const listener = (_event, status) => cb(status);
     ipcRenderer.on(IPC.statusChanged, listener);
@@ -174,7 +147,6 @@ contextBridge.exposeInMainWorld("skillRecorder", {
     return () => ipcRenderer.removeListener(IPC.terminalOutput, listener);
   },
   narrationStatus: () => ipcRenderer.invoke(IPC.narrationStatus),
-  downloadNarrationModel: () => ipcRenderer.invoke(IPC.narrationDownload),
   transcribeNarration: (sessionId) => ipcRenderer.invoke(IPC.narrationTranscribe, sessionId),
   onNarrationStatusChanged: (cb) => {
     const listener = (_event, status) => cb(status);
@@ -189,21 +161,8 @@ contextBridge.exposeInMainWorld("skillRecorder", {
     ipcRenderer.on(IPC.sensitiveStatusChanged, listener);
     return () => ipcRenderer.removeListener(IPC.sensitiveStatusChanged, listener);
   },
-  getSensitiveReport: (sessionId) => ipcRenderer.invoke(IPC.sensitiveGetReport, sessionId),
-  analyze: (sessionId) => ipcRenderer.invoke(IPC.analyze, sessionId),
-  analyzeFeedback: (input) => ipcRenderer.invoke(IPC.analyzeFeedback, input),
-  getAnalysis: (sessionId) => ipcRenderer.invoke(IPC.getAnalysis, sessionId),
-  updateAnalysis: (input) => ipcRenderer.invoke(IPC.updateAnalysis, input),
-  cancelAnalysis: (sessionId) => ipcRenderer.invoke(IPC.cancelAnalysis, sessionId),
-  onAnalyzeProgress: (cb) => {
-    const listener = (_event, progress) => cb(progress);
-    ipcRenderer.on(IPC.analyzeProgress, listener);
-    return () => ipcRenderer.removeListener(IPC.analyzeProgress, listener);
-  },
   listSessions: () => ipcRenderer.invoke(IPC.listSessions),
-  importRecording: () => ipcRenderer.invoke(IPC.importRecording),
-  cancelImport: () => ipcRenderer.invoke(IPC.cancelImport),
-  saveImportDetails: (sessionId, details) => ipcRenderer.invoke(IPC.saveImportDetails, sessionId, details),
+  openSessionsFolder: () => ipcRenderer.invoke(IPC.openSessionsFolder),
   onSessionsChanged: (cb) => {
     const listener = () => cb();
     ipcRenderer.on(IPC.sessionsChanged, listener);
@@ -217,32 +176,47 @@ contextBridge.exposeInMainWorld("skillRecorder", {
   takeLibrarySelection: () => ipcRenderer.invoke(IPC.takeLibrarySelection),
   deleteSession: (sessionId) => ipcRenderer.invoke(IPC.deleteSession, sessionId),
   exportDebugBundle: (sessionId) => ipcRenderer.invoke(IPC.exportDebugBundle, sessionId),
-  buildSkill: (input) => ipcRenderer.invoke(IPC.buildSkill, input),
-  prepareSkill: (sessionId, plan) => ipcRenderer.invoke(IPC.prepareSkill, sessionId, plan),
-  discardSkillPreview: (sessionId, previewId) => ipcRenderer.invoke(IPC.discardSkillPreview, sessionId, previewId),
-  createSkill: (sessionId, plan, placement, previewId) =>
-    ipcRenderer.invoke(IPC.createSkill, sessionId, plan, placement, previewId),
-  getSkill: (sessionId) => ipcRenderer.invoke(IPC.getSkill, sessionId),
-  cancelSkill: (sessionId) => ipcRenderer.invoke(IPC.cancelSkill, sessionId),
-  revealSkill: (sessionId) => ipcRenderer.invoke(IPC.revealSkill, sessionId),
-  onSkillProgress: (cb) => {
-    const listener = (_event, progress) => cb(progress);
-    ipcRenderer.on(IPC.skillProgress, listener);
-    return () => ipcRenderer.removeListener(IPC.skillProgress, listener);
-  },
-  buildAutomation: (input) => ipcRenderer.invoke(IPC.buildAutomation, input),
-  createAutomation: (sessionId, plan) => ipcRenderer.invoke(IPC.createAutomation, sessionId, plan),
-  getAutomation: (sessionId) => ipcRenderer.invoke(IPC.getAutomation, sessionId),
-  cancelAutomation: (sessionId) => ipcRenderer.invoke(IPC.cancelAutomation, sessionId),
-  revealAutomation: (sessionId) => ipcRenderer.invoke(IPC.revealAutomation, sessionId),
-  onAutomationProgress: (cb) => {
-    const listener = (_event, progress) => cb(progress);
-    ipcRenderer.on(IPC.automationProgress, listener);
-    return () => ipcRenderer.removeListener(IPC.automationProgress, listener);
-  },
+  exportPackage: (sessionId) => ipcRenderer.invoke(IPC.exportPackage, sessionId),
   openLibrary: (sessionId) => ipcRenderer.invoke(IPC.openLibrary, sessionId),
   closeLibrary: () => ipcRenderer.invoke(IPC.closeLibrary),
   setRecordingControlsExpanded: (expanded) =>
     ipcRenderer.invoke(IPC.recordingControlsExpanded, expanded),
   fitRecorderHeight: (height) => ipcRenderer.send(IPC.fitRecorderHeight, height),
-});
+  pause: () => ipcRenderer.invoke(IPC.pause),
+  resume: () => ipcRenderer.invoke(IPC.resume),
+  explain: () => ipcRenderer.invoke(IPC.explain),
+  explainHotkey: () => ipcRenderer.invoke(IPC.explainHotkey),
+  freezeReady: () => ipcRenderer.send(IPC.freezeReady),
+  freezeInit: () => ipcRenderer.invoke(IPC.freezeInit),
+  freezeState: (state) => ipcRenderer.send(IPC.freezeState, state),
+  freezeDone: () => ipcRenderer.invoke(IPC.freezeDone),
+  freezeCancel: () => ipcRenderer.invoke(IPC.freezeCancel),
+  reviewLoad: (sessionId) => ipcRenderer.invoke(IPC.reviewLoad, sessionId),
+  reviewImage: (sessionId, path) => ipcRenderer.invoke(IPC.reviewImage, sessionId, path),
+  reviewEdit: (sessionId, edit) => ipcRenderer.invoke(IPC.reviewEdit, sessionId, edit),
+  markReviewed: (sessionId) => ipcRenderer.invoke(IPC.markReviewed, sessionId),
+  onFreezeNotice: (cb) => {
+    const listener = (_event, notice) => cb(notice);
+    ipcRenderer.on(IPC.freezeNotice, listener);
+    return () => ipcRenderer.removeListener(IPC.freezeNotice, listener);
+  },
+  onFreezeFocusFailed: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on(IPC.freezeFocusFailed, listener);
+    return () => ipcRenderer.removeListener(IPC.freezeFocusFailed, listener);
+  },
+  onActionError: (cb) => {
+    const listener = (_event, message) => cb(message);
+    ipcRenderer.on(IPC.actionError, listener);
+    return () => ipcRenderer.removeListener(IPC.actionError, listener);
+  },
+};
+
+// SEC-10: the freeze overlay shows a screenshot of the user's screen, so its window gets only the
+// freeze channels. The main process marks it with --handover-window=freeze (createFreezeOverlay).
+const FREEZE_ONLY = ["freezeReady", "freezeInit", "freezeState", "freezeDone", "freezeCancel", "onFreezeFocusFailed", "onFreezeNotice"];
+const isFreezeWindow = process.argv.includes("--handover-window=freeze");
+const exposed = isFreezeWindow
+  ? Object.fromEntries(FREEZE_ONLY.map((name) => [name, api[name]]))
+  : api;
+contextBridge.exposeInMainWorld("handover", exposed);

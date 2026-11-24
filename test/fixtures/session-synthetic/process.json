@@ -1,0 +1,7 @@
+{
+  "title": "Save the budget and open mail",
+  "goal": "Keep the budget file saved",
+  "done_when": "The file is saved and mail is open",
+  "trigger": { "kind": "manual", "text": "Every Friday" },
+  "position": "finance analyst"
+}

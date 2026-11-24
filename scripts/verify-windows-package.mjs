@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import { excludedWasmPackages, verifyComplianceDirectory } from "./compliance.mjs";
+import { readManifest, verifyAll } from "./fetch-models.mjs";
 
 const require = createRequire(import.meta.url);
 const { listPackage } = require("@electron/asar");
@@ -22,7 +23,7 @@ const unpacked = readdirSync(outputRoot)
   );
 if (!unpacked) throw new Error(`Could not find the ${arch} unpacked Windows application.`);
 
-const appExe = path.join(unpacked, "Skill Recorder.exe");
+const appExe = path.join(unpacked, "Handover.exe");
 const expectedMachine = arch === "arm64" ? 0xaa64 : 0x8664;
 verifyPeMachine(appExe, expectedMachine);
 verifyPeMachine(path.join(unpacked, "ffmpeg.dll"), expectedMachine);
@@ -50,10 +51,6 @@ const expectedPayloads = [
     packagePath: `/onnxruntime-node/bin/napi-v6/win32/${arch}/`,
     executable: `/onnxruntime-node/bin/napi-v6/win32/${arch}/onnxruntime_binding.node`,
   },
-  {
-    packagePath: `/@github/copilot-win32-${arch}/`,
-    executable: `/@github/copilot-win32-${arch}/copilot.exe`,
-  },
 ];
 for (const payload of expectedPayloads) {
   if (!normalizedFiles.some((file) => file.includes(payload.packagePath))) {
@@ -70,6 +67,17 @@ for (const payload of expectedPayloads) {
   }
   verifyPeMachine(files[executableIndex], expectedMachine);
 }
+
+// The click and control helper (lane L5) is built in CI before packaging and shipped via extraResources.
+const helperExe = path.join(unpacked, "resources", "helper", "HandoverHelper.exe");
+try {
+  statSync(helperExe);
+} catch {
+  throw new Error(`Packaged ${arch} application is missing resources/helper/HandoverHelper.exe.`);
+}
+// The helper is compiled as x64. Under arm64 it runs through emulation, so only x64 checks the header.
+if (arch === "x64") verifyPeMachine(helperExe, expectedMachine);
+console.log(`Verified helper payload: ${helperExe} (${statSync(helperExe).size} bytes)`);
 
 for (const excluded of excludedWasmPackages) {
   const prefix = `/${excluded.toLowerCase()}/`;
@@ -91,12 +99,19 @@ const otherArch = arch === "arm64" ? "x64" : "arm64";
 const wrongArchitecturePayloads = [
   `/@koromix/koffi-win32-${otherArch}/`,
   `/@img/sharp-win32-${otherArch}/`,
-  `/@github/copilot-win32-${otherArch}/copilot.exe`,
 ];
 for (const wrongPayload of wrongArchitecturePayloads) {
   if (normalizedFiles.some((file) => file.includes(wrongPayload))) {
     throw new Error(`Packaged ${arch} application contains ${wrongPayload}.`);
   }
+}
+
+// Handover ships no AI runtime: no GitHub Copilot CLI may be present anywhere.
+const copilotPayload = normalizedFiles.find(
+  (file) => file.includes("/@github/copilot") || /\/copilot(?:\.exe)?$/.test(file),
+);
+if (copilotPayload) {
+  throw new Error(`Packaged application contains a forbidden Copilot payload ${copilotPayload}.`);
 }
 
 const forbiddenStandaloneFfmpeg = normalizedFiles.filter(
@@ -115,7 +130,7 @@ for (const notice of ["LICENSE.electron.txt", "LICENSES.chromium.html"]) {
     throw new Error(`Packaged application is missing Electron license notice ${notice}.`);
   }
 }
-for (const notice of ["third-party-notices.md", "license"]) {
+for (const notice of ["third-party-notices.md", "license", "notice"]) {
   if (!normalizedFiles.some((file) => file.endsWith(`app.asar!${notice}`))) {
     throw new Error(`Packaged application is missing application notice ${notice}.`);
   }
@@ -125,6 +140,15 @@ await verifyComplianceDirectory(path.join(unpacked, "resources", "compliance"), 
   requireSources: true,
   requireElectronNotices: true,
 });
+
+// The narration model must be bundled in the installer, byte-for-byte as pinned.
+const modelProblems = await verifyAll(
+  path.join(unpacked, "resources", "models"),
+  readManifest(),
+);
+if (modelProblems.length > 0) {
+  throw new Error(`Bundled narration model is wrong:\n  ${modelProblems.join("\n  ")}`);
+}
 
 const nestedOutput = asarEntries.find(
   (entry) =>
@@ -136,7 +160,7 @@ const nestedOutput = asarEntries.find(
 if (nestedOutput) {
   throw new Error(`Packaged application recursively contains build output ${nestedOutput}.`);
 }
-const forbiddenSourceRoots = ["common", "docs", "electron", "evals", "scripts", "src"];
+const forbiddenSourceRoots = ["common", "docs", "electron", "evals", "scripts", "src", "test"];
 for (const root of forbiddenSourceRoots) {
   if (asarEntries.some((entry) => entry === root || entry.startsWith(`${root}/`))) {
     throw new Error(`Packaged application contains source-only directory ${root}/.`);

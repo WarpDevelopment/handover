@@ -8,7 +8,6 @@ import type {
 } from "../../common/ipc";
 import { createLogger } from "../logger";
 import { modelsCacheDir, Ocr, tessdataFileName } from "./ocr";
-import { tessdataUrl, verifyTessdata } from "./tessdata-source";
 
 const log = createLogger("Sensitive/models");
 
@@ -45,7 +44,7 @@ function settleWithTimeout(task: Promise<unknown>, ms: number): Promise<void> {
 }
 
 /** Where the persisted opt-in lives — inside the models dir so a single override
- *  (SKILL_RECORDER_MODELS_DIR) relocates both the flag and the model cache. */
+ *  (HANDOVER_MODELS_DIR) relocates both the flag and the model cache. */
 function settingsFile(): string {
   return path.join(modelsCacheDir(), "advanced-protection.json");
 }
@@ -66,11 +65,11 @@ interface AdvancedSettings {
 function readSettings(): AdvancedSettings {
   try {
     const raw = JSON.parse(readFileSync(settingsFile(), "utf8")) as { enabled?: unknown };
-    // Opt-out: on unless the user explicitly turned it off.
-    return { enabled: raw.enabled !== false };
+    // Tester build: opt-in, off unless the user explicitly turned it on.
+    return { enabled: raw.enabled === true };
   } catch {
-    // No preference recorded yet → on by default (fresh install).
-    return { enabled: true };
+    // No preference recorded yet → off by default (fresh install).
+    return { enabled: false };
   }
 }
 
@@ -91,32 +90,10 @@ async function downloadTessdata(
   code: string,
   onProgress?: (percent: number) => void,
 ): Promise<void> {
-  const dir = tessdataDir();
-  await mkdir(dir, { recursive: true });
-  const dest = path.join(dir, tessdataFileName(code));
-  const tmp = `${dest}.tmp.${process.pid}.${Date.now()}`;
-  const res = await fetch(tessdataUrl(code));
-  if (!res.ok || !res.body)
-    throw new Error(`Could not download OCR language data for "${code}" (${res.status}).`);
-  const total = Number(res.headers.get("content-length")) || 0;
-  let loaded = 0;
-  const chunks: Buffer[] = [];
-  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-    const buf = Buffer.from(chunk);
-    chunks.push(buf);
-    loaded += buf.length;
-    if (total) onProgress?.(Math.floor((loaded / total) * 100));
-  }
-  try {
-    const data = Buffer.concat(chunks);
-    // Reject tampered/corrupt data BEFORE it lands in the cache or reaches the WASM
-    // parser: the temp file is discarded and `dest` is never written on mismatch.
-    verifyTessdata(code, data);
-    await writeFile(tmp, data);
-    await rename(tmp, dest);
-  } finally {
-    await rm(tmp, { force: true });
-  }
+  void code;
+  void onProgress;
+  // The tester build makes no network calls: the OCR data is never fetched.
+  throw new Error("Downloads are disabled in this test build.");
 }
 
 /**

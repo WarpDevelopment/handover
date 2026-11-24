@@ -7,9 +7,9 @@ import test from "node:test";
 import { deleteSession, listSessions } from "./sessions";
 
 test("session size includes every artifact and deletion removes the whole directory", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-sessions-"));
-  const previousRoot = process.env.SKILL_RECORDER_SESSIONS_DIR;
-  process.env.SKILL_RECORDER_SESSIONS_DIR = root;
+  const root = await mkdtemp(path.join(tmpdir(), "handover-sessions-"));
+  const previousRoot = process.env.HANDOVER_SESSIONS_DIR;
+  process.env.HANDOVER_SESSIONS_DIR = root;
 
   try {
     const id = "storage-test";
@@ -43,12 +43,29 @@ test("session size includes every artifact and deletion removes the whole direct
     assert.equal(summary?.sizeBytes, expectedBytes);
     assert.equal(summary?.hasAudio, true);
     assert.equal(summary?.narrationLanguage, "en");
+    assert.equal(summary?.reviewed, false, "SEC-2: a recording nobody reviewed cannot be exported");
+    // The summary carries only recording facts: no analysis/skill/automation/import state.
+    assert.deepEqual(Object.keys(summary ?? {}).sort(), [
+      "durationMs",
+      "hasAudio",
+      "hasNarration",
+      "hasVideo",
+      "id",
+      "narrationLanguage",
+      "narrationSegmentCount",
+      "narrationUpdatedAt",
+      "processed",
+      "reviewed",
+      "sizeBytes",
+      "startedAt",
+      "stoppedAt",
+    ]);
 
     await deleteSession(id);
     await assert.rejects(access(dir), { code: "ENOENT" });
   } finally {
-    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
+    if (previousRoot === undefined) delete process.env.HANDOVER_SESSIONS_DIR;
+    else process.env.HANDOVER_SESSIONS_DIR = previousRoot;
     await rm(root, { recursive: true, force: true });
   }
 });

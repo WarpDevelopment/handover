@@ -180,8 +180,8 @@ export class TerminalSession {
           env: {
             ...launch.env,
             TERM: "xterm-256color",
-            TERM_PROGRAM: "skill-recorder",
-            SKILL_RECORDER_TERMINAL: "1",
+            TERM_PROGRAM: "handover",
+            HANDOVER_TERMINAL: "1",
           },
         },
       );

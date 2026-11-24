@@ -150,7 +150,7 @@ export class AudioRecorder {
     this.disposed = true;
     for (const probe of this.probes.values()) {
       clearTimeout(probe.timeout);
-      probe.resolve({ ok: false, error: "Skill Recorder is shutting down." });
+      probe.resolve({ ok: false, error: "Handover is shutting down." });
     }
     this.probes.clear();
     if (this.ipcRegistered) {
@@ -703,6 +703,7 @@ export class AudioRecorder {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: false,
+        spellcheck: false,
         backgroundThrottling: false,
       },
     });
