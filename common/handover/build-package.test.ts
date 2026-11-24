@@ -473,6 +473,78 @@ test("G1 D2: no named step lies inside the written interval of an elevated_windo
   assert.ok(g.t_end_ms >= g.t_start_ms);
 });
 
+/** The tester's quick in-out-in visit: Task Manager, Notepad, Task Manager, Notepad. */
+async function inOutIn(extra: Record<string, unknown>[] = []) {
+  const { session } = await load();
+  const activate = (seq: number, t: number, app: string, file: string) => ({
+    seq, t, epoch: 1795500000000 + t, type: "app.activate", source: "t",
+    payload: { app, title: app, path: file, bounds: { x: 0, y: 0, width: 800, height: 600 } },
+  });
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const TM = "C:\\Windows\\System32\\Taskmgr.exe";
+  const NP = "C:\\Windows\\System32\\notepad.exe";
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    activate(70, 16500, "Task Manager", TM),
+    activate(71, 17500, "Notepad", NP),
+    activate(72, 18500, "Task Manager", TM),
+    activate(73, 19500, "Notepad", NP),
+    gap(80, 16100, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(81, 17100, { reason: "elevated_window", tEndMs: 17100 }),
+    gap(82, 18100, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(83, 19100, { reason: "elevated_window", tEndMs: 19100 }),
+    ...(extra as never[]),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const steps = text(files, "steps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  return { files, steps, gaps, md: text(files, "PROCESS.md") };
+}
+
+test("G1 E1: a quick in-out-in visit gives two gaps, each after its own switch-in and before its own switch-out", async () => {
+  const r = await inOutIn();
+  assert.deepEqual(
+    r.steps.slice(7).map((s) => [s.step_id, s.t_start_ms, s.summary]),
+    [["S08", 16500, "Switch to Task Manager"], ["S09", 17500, "Switch to Notepad"],
+     ["S10", 18500, "Switch to Task Manager"], ["S11", 19500, "Switch to Notepad"]],
+  );
+  assert.deepEqual(
+    r.gaps.map((g) => [g.gap_id, g.after_step, g.before_step, g.t_start_ms, g.t_end_ms]),
+    [["gap_0001", "S08", "S09", 16500, 17100], ["gap_0002", "S10", "S11", 18500, 19100]],
+  );
+  assert.ok(r.gaps.every((g) => g.t_end_ms > g.t_start_ms), "a positive length");
+  assert.equal(r.md.includes("(0.0 s)"), false, "no 'Not observed (0.0 s)'");
+  assert.equal(r.md.split("Not observed (0.6 s)").length - 1, 2);
+  // In the step order: first notice between S08 and S09, second between S10 and S11.
+  const first = r.md.indexOf("Not observed");
+  assert.ok(first > r.md.indexOf("**S08.") && first < r.md.indexOf("**S09."));
+  const second = r.md.indexOf("Not observed", first + 1);
+  assert.ok(second > r.md.indexOf("**S10.") && second < r.md.indexOf("**S11."));
+});
+
+test("G1 E1: an elevated gap whose written length is 0 is dropped: no notice, not listed, not in gaps.jsonl", async () => {
+  const r = await inOutIn([
+    { seq: 90, t: 12500, epoch: 1795500012500, type: "gap", source: "t", payload: { reason: "elevated_window", process: "Taskmgr", tEndMs: 12500 } },
+  ]);
+  assert.equal(r.gaps.length, 2, "only the two real gaps");
+  assert.equal(r.md.includes("0.0 s"), false);
+  assert.deepEqual(r.gaps.map((g) => g.gap_id), ["gap_0001", "gap_0002"], "ids stay consecutive");
+});
+
+test("G1 E3: resolveGaps ignores a tStartMs that is NaN, negative or later than the event", async () => {
+  const { resolveGaps } = await import("./build-package");
+  const ev = (seq: number, t: number, payload: Record<string, unknown>) =>
+    ({ seq, t, epoch: 0, type: "gap", source: "t", payload }) as never;
+  for (const [i, bad] of [Number.NaN, -5, 7001, Infinity].entries()) {
+    const [g] = resolveGaps([ev(1 + i, 7000, { reason: "elevated_window", tStartMs: bad })], 20000);
+    assert.equal(g?.start, 7000, `tStartMs ${bad} is ignored`);
+  }
+  const [ok] = resolveGaps([ev(9, 7000, { reason: "elevated_window", tStartMs: 6500 })], 20000);
+  assert.equal(ok?.start, 6500);
+});
+
 test("G1 D1: an elevated_window open event with tStartMs starts the gap there, not at the event's own time", async () => {
   const { session } = await load();
   const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
