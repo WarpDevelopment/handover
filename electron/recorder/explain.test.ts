@@ -19,6 +19,11 @@ const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 class HandCollector implements Collector {
   readonly name = "hand";
   private ctx: CollectorContext | null = null;
+  /** Every setPaused call the controller made, in order. */
+  readonly pausedCalls: boolean[] = [];
+  setPaused(paused: boolean): void {
+    this.pausedCalls.push(paused);
+  }
   start(ctx: CollectorContext): void {
     this.ctx = ctx;
   }
@@ -107,6 +112,24 @@ async function withSessionsRoot(run: (root: string) => Promise<void>): Promise<v
     await rm(root, { recursive: true, force: true });
   }
 }
+
+test("G1 F2: the controller tells collectors about pause and resume, and a stop while paused does not reopen anything", async () => {
+  await withSessionsRoot(async () => {
+    const { controller, hand } = makeController();
+    assert.equal((await controller.start()).ok, true);
+    assert.deepEqual(hand.pausedCalls, [], "nothing before a pause");
+    await controller.pause();
+    assert.deepEqual(hand.pausedCalls, [true]);
+    await controller.resume();
+    assert.deepEqual(hand.pausedCalls, [true, false]);
+    await controller.pause();
+    assert.deepEqual(hand.pausedCalls, [true, false, true]);
+    // Stopping while paused closes the pause gap; the collectors are being stopped, so they are not told to
+    // resume (a resume would make a helper reopen a gap only to close it again at once).
+    assert.equal((await controller.stop()).ok, true);
+    assert.deepEqual(hand.pausedCalls, [true, false, true]);
+  });
+});
 
 test("pause writes an open gap{user_paused}, drops collector events, and resume closes the gap", async () => {
   await withSessionsRoot(async (root) => {

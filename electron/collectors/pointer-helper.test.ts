@@ -489,6 +489,71 @@ test("G1: stopping the recording closes an open elevated_window gap", async () =
   ]);
 });
 
+// A pause is off the record: no elevated_window gap and no process name while paused, and elevated time never
+// includes paused time. The collector learns of it through Collector.setPaused.
+const elevatedGaps = (events: Published[]) => gaps(events).filter((g) => g.reason === "elevated_window");
+const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("G1 F2 (a): a blind start during a pause opens nothing and names nothing; resume opens it", async () => {
+  const { ctx, events } = fakeContext(() => 100);
+  const tracker = new HelperTracker(launch("blind-hold"));
+  const collector = new PointerHelperCollector({ platform: "win32", resolve: launch("blind-hold"), tracker });
+  collector.start(ctx);
+  collector.setPaused(true); // before the helper's start line can arrive
+  try {
+    await settle(500); // the helper's start arrives in here
+    assert.deepEqual(elevatedGaps(events), [], "nothing opened while paused");
+    assert.equal(JSON.stringify(events).includes("Taskmgr"), false, "no process name while paused");
+    collector.setPaused(false);
+    assert.deepEqual(elevatedGaps(events), [{ reason: "elevated_window", process: "Taskmgr" }], "opened at resume");
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("G1 F2 (b): a pause that begins while the gap is open closes it at the pause time; resume reopens it", async () => {
+  let now = 1000;
+  const { ctx, events } = fakeContext(() => now);
+  const tracker = new HelperTracker(launch("blind-hold"));
+  const collector = new PointerHelperCollector({ platform: "win32", resolve: launch("blind-hold"), tracker });
+  collector.start(ctx);
+  try {
+    await waitFor(() => elevatedGaps(events).length >= 1, "gap open");
+    now = 2000;
+    collector.setPaused(true);
+    assert.deepEqual(elevatedGaps(events)[1], { reason: "elevated_window", tEndMs: 2000 }, "closed at the pause time");
+    now = 5000;
+    collector.setPaused(false);
+    assert.deepEqual(
+      elevatedGaps(events).map((g) => (g.tEndMs === undefined ? "open" : `close@${g.tEndMs}`)),
+      ["open", "close@2000", "open"],
+    );
+    assert.equal(elevatedGaps(events)[2]?.process, "Taskmgr");
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("G1 F2 (c): the helper says the admin window left during the pause; resume opens nothing", async () => {
+  const { ctx, events } = fakeContext(() => 300);
+  const tracker = new HelperTracker(launch("blind-repeat"));
+  const collector = new PointerHelperCollector({ platform: "win32", resolve: launch("blind-repeat"), tracker });
+  collector.start(ctx);
+  try {
+    await waitFor(() => elevatedGaps(events).length >= 1, "gap open");
+    collector.setPaused(true); // closes it; the helper's end line (at +160 ms) arrives during the pause
+    await settle(400);
+    collector.setPaused(false);
+    await settle(100);
+    assert.deepEqual(
+      elevatedGaps(events).map((g) => (g.tEndMs === undefined ? "open" : "close")),
+      ["open", "close"],
+    );
+  } finally {
+    await collector.stop();
+  }
+});
+
 test("G1: a helper restart closes the elevated_window gap, and the new helper's start opens a fresh one", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "blind-"));
   const state = path.join(dir, "state");

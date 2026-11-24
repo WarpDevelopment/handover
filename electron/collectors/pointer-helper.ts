@@ -53,6 +53,9 @@ export class PointerHelperCollector implements Collector {
   private spawnedAt = 0;
   private openGap: GapReason | null = null;
   private elevatedOpen = false;
+  private elevatedNow = false;
+  private elevatedProcess: string | undefined;
+  private paused = false;
   private restartTimer: NodeJS.Timeout | null = null;
   private helloTimer: NodeJS.Timeout | null = null;
 
@@ -78,6 +81,9 @@ export class PointerHelperCollector implements Collector {
     this.startedAt = this.now();
     this.openGap = null;
     this.elevatedOpen = false;
+    this.elevatedNow = false;
+    this.elevatedProcess = undefined;
+    this.paused = false;
     this.tracker.reset();
 
     const launch = this.resolve();
@@ -96,6 +102,7 @@ export class PointerHelperCollector implements Collector {
     if (this.helloTimer) clearTimeout(this.helloTimer);
     this.restartTimer = null;
     this.helloTimer = null;
+    this.elevatedNow = false;
     this.endElevated(); // before ctx is dropped; an unclosed gap would otherwise run to session end
     const child = this.child;
     this.child = null;
@@ -209,8 +216,15 @@ export class PointerHelperCollector implements Collector {
       }
       case "blind":
         // Not a helper fault and not a pause: other collectors keep running, only clicks are unseen.
-        if (message.state === "start") this.beginElevated(message.process);
-        else this.endElevated();
+        if (message.state === "start") {
+          this.elevatedNow = true;
+          this.elevatedProcess = message.process;
+          this.beginElevated();
+        } else {
+          this.elevatedNow = false;
+          this.elevatedProcess = undefined;
+          this.endElevated();
+        }
         break;
       case "selftest":
         break;
@@ -218,15 +232,29 @@ export class PointerHelperCollector implements Collector {
   }
 
   /**
-   * An administrator window is in front, so Windows withholds clicks from this normal-integrity helper.
-   * Tracked apart from `openGap` (one reason at a time there) because it can overlap a helper_restart.
-   * It also overlaps a user pause: gap events are not dropped by a pause, both gaps are written, and
-   * the package keeps them as two separate reasons.
+   * The controller pauses or resumes the recording. A pause is off the record: no elevated_window gap and no
+   * process name is written while paused, so a gap that is open when the pause begins is closed at that
+   * moment, and on resume one opens again only if the helper still says an administrator window is in front.
    */
-  private beginElevated(processName?: string): void {
-    if (!this.ctx || this.elevatedOpen) return;
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    if (paused) this.endElevated();
+    else this.beginElevated();
+  }
+
+  /**
+   * An administrator window is in front, so Windows withholds clicks from this normal-integrity helper.
+   * `elevatedNow` is what the helper last said; `elevatedOpen` is whether a gap is open for it. They differ
+   * while paused. Tracked apart from `openGap` (one reason at a time there) because it can overlap a
+   * helper_restart.
+   */
+  private beginElevated(): void {
+    if (!this.ctx || this.paused || !this.elevatedNow || this.elevatedOpen) return;
     this.elevatedOpen = true;
-    this.ctx.publish("gap", { reason: "elevated_window", ...(processName ? { process: processName } : {}) });
+    this.ctx.publish("gap", {
+      reason: "elevated_window",
+      ...(this.elevatedProcess ? { process: this.elevatedProcess } : {}),
+    });
   }
 
   private endElevated(): void {
@@ -252,6 +280,7 @@ export class PointerHelperCollector implements Collector {
     const ctx = this.ctx;
     ctx.log.error(`Click helper stopped: ${reason}`);
     this.tracker.setState("crashed", reason);
+    this.elevatedNow = false;
     this.endElevated(); // the new helper announces it again if it is still true
     this.beginGap("helper_restart");
 
