@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ExplainAnnotationInput, ExplainShape } from "../common/handover/explain";
 import { cssToDpx, thinPoints } from "../common/handover/overlay-geometry";
 import type { FreezeInit } from "../common/ipc";
-import { enterShouldSave } from "./freeze-keys";
+import { enterShouldSave, showFocusBanner } from "./freeze-keys";
 
 type Point = [number, number];
 interface Shape {
@@ -198,17 +198,22 @@ export function FreezeOverlay() {
     return () => window.removeEventListener("keydown", onKey);
   }, [cancel, done]);
 
-  // Windows can refuse the overlay the keyboard (foreground lock). Say so, and let a click fix it.
+  // Windows can refuse the overlay the keyboard (foreground lock). The main process retries and, only if
+  // that also failed, tells this window (N5). The banner is for the primary overlay only.
+  const [focusFailed, setFocusFailed] = useState(false);
   const [focused, setFocused] = useState(() => document.hasFocus());
   useEffect(() => {
     const sync = () => setFocused(document.hasFocus());
     window.addEventListener("focus", sync);
     window.addEventListener("blur", sync);
-    const poll = window.setInterval(sync, 500);
+    const off = window.handover.onFreezeFocusFailed(() => {
+      setFocusFailed(true);
+      sync();
+    });
     return () => {
       window.removeEventListener("focus", sync);
       window.removeEventListener("blur", sync);
-      window.clearInterval(poll);
+      off();
     };
   }, []);
 
@@ -320,7 +325,7 @@ export function FreezeOverlay() {
       </div>
 
       <section className="freeze-card" aria-label="Add a note">
-        {!focused && (
+        {showFocusBanner({ primary: init.primary, focusFailed, documentHasFocus: focused }) && (
           <button
             type="button"
             role="alert"

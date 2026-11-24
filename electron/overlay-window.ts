@@ -38,8 +38,19 @@ export interface OverlayAdapterOptions {
   onFailure(reason: string): void;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
-  log?: { warn(...a: unknown[]): void };
+  log?: { warn(...a: unknown[]): void; info?(...a: unknown[]): void };
+  /** Clock for the measured time-to-ready. */
+  now?: () => number;
+  /** The focus retry did not give this window the keyboard (Windows foreground lock). */
+  onFocusFailed?(): void;
 }
+
+/**
+ * How long a hidden overlay may take to draw its frozen frame before the freeze is cancelled. It is only a
+ * kill switch for a page that is dead: the window stays hidden until `freezeReady`, so a slow machine
+ * (two 4K displays, a cold start) just waits. The measured time-to-ready is logged to tune this.
+ */
+export const OVERLAY_READY_TIMEOUT_MS = 8000;
 
 export interface OverlayAdapter {
   overlay: OverlayWindow;
@@ -54,6 +65,8 @@ export function adaptOverlayWindow(win: OverlayBrowserWindowLike, opts: OverlayA
   const setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
   const clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h as NodeJS.Timeout));
   const focusCheckMs = opts.focusCheckMs ?? 100;
+  const now = opts.now ?? (() => Date.now());
+  const createdAt = now();
   let wantFocus = false;
   let revealed = false;
   let failed = false;
@@ -76,12 +89,18 @@ export function adaptOverlayWindow(win: OverlayBrowserWindowLike, opts: OverlayA
       win.setAlwaysOnTop(false);
       win.setAlwaysOnTop(true, "screen-saver");
       win.focus();
+      // One more look after the retry: only a window that still has no keyboard needs the banner (N5).
+      focusTimer = setTimer(() => {
+        focusTimer = null;
+        if (!win.isDestroyed() && !win.isFocused()) opts.onFocusFailed?.();
+      }, focusCheckMs);
     }, focusCheckMs);
   };
 
   const reveal = () => {
     if (revealed || failed || win.isDestroyed()) return;
     revealed = true;
+    opts.log?.info?.(`freeze overlay ready in ${now() - createdAt} ms`);
     // Only the display under the pointer takes the keyboard; the others appear without stealing it,
     // whichever of them finishes loading last.
     if (wantFocus) {
