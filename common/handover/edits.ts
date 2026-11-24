@@ -44,6 +44,21 @@ function isString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
 }
 
+/** Every kind of line break: CR, LF, NEL, and the Unicode line and paragraph separators. */
+export const LINE_BREAKS = new RegExp(`[\\r\\n${String.fromCharCode(0x85, 0x2028, 0x2029)}]+`, "g");
+
+/**
+ * The text of an edited summary or comment: one line, trimmed, never empty. A newline in a summary
+ * would put a heading or a fake step into PROCESS.md, and an empty summary fails the schema after
+ * the package was written. Every kind of line break (including the Unicode line and paragraph
+ * separators) is folded to a space.
+ */
+export function foldEditText(raw: string, what: "summary" | "comment"): string {
+  const folded = raw.replace(LINE_BREAKS, " ").replace(/ {2,}/g, " ").trim();
+  if (folded === "") throw new Error(`A ${what} cannot be empty.`);
+  return folded;
+}
+
 /** Narrow an unknown value to an {@link Edit}; an unknown `op` fails closed. */
 export function assertEdit(raw: unknown): Edit {
   const e = raw as Record<string, unknown> | null;
@@ -61,12 +76,12 @@ export function assertEdit(raw: unknown): Edit {
       if (!isString(e.step_id) || typeof e.text !== "string") {
         throw new Error("edit_summary needs step_id and text");
       }
-      break;
+      return { ...e, text: foldEditText(e.text, "summary") } as unknown as Edit;
     case "edit_comment":
       if (!isString(e.annotation_id) || typeof e.text !== "string") {
         throw new Error("edit_comment needs annotation_id and text");
       }
-      break;
+      return { ...e, text: foldEditText(e.text, "comment") } as unknown as Edit;
     case "blur_rect": {
       const r = e.rect_fpx;
       if (
@@ -77,6 +92,9 @@ export function assertEdit(raw: unknown): Edit {
         !((r[2] as number) > 0 && (r[3] as number) > 0)
       ) {
         throw new Error("blur_rect needs step_id and rect_fpx [x,y,w,h] with a positive size");
+      }
+      if (e.frame !== undefined && e.frame !== "before" && e.frame !== "after") {
+        throw new Error('blur_rect frame must be "before" or "after"');
       }
       break;
     }

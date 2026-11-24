@@ -84,7 +84,13 @@ export type Edit =
   | (EditBase & { op: "delete_step"; step_id: string })
   | (EditBase & { op: "edit_summary"; step_id: string; text: string })
   | (EditBase & { op: "edit_comment"; annotation_id: string; text: string })
-  | (EditBase & { op: "blur_rect"; step_id: string; rect_fpx: [number, number, number, number] });
+  | (EditBase & {
+      op: "blur_rect";
+      step_id: string;
+      rect_fpx: [number, number, number, number];
+      /** Which of the step's images the rectangle is on, in that image's pixels. Default `before`. */
+      frame?: "before" | "after";
+    });
 
 export const EDIT_OPS = ["delete_step", "edit_summary", "edit_comment", "blur_rect"] as const;
 
@@ -150,7 +156,8 @@ export type AnnotationRecord =
       t_ms: number;
       mark: string;
       shape: "rect" | "arrow" | "highlighter" | "freehand";
-      frame_id: string;
+      /** Absent only when the step has no picture to draw on (its frozen frame was not saved). */
+      frame_id?: string;
       geometry_fpx: [number, number][];
       snapped_to?: { role: string; name: string; bounds_fpx: [number, number, number, number] };
     }

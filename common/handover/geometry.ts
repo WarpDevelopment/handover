@@ -175,6 +175,34 @@ export function planCrop(args: {
   return { rectDpx: [cx, cy, cw, ch], rectFrame: [fx, fy, fw, fh], out, originFpx, cropScale };
 }
 
+/**
+ * The crop of a click step. It is centred on the target's bounds, except when those bounds are
+ * larger than the crop (a pane or document: its centre can be far from the click) or when the
+ * resulting crop would not contain the click point. Then it is centred on the click point, so the
+ * thing the user clicked is always in the picture (tester-package.md §4.3).
+ */
+export function planClickCrop(args: {
+  display: DisplayInfo;
+  frameWidth: number;
+  frameHeight: number;
+  fullScale: number;
+  pointDpx: [number, number];
+  elementDpx?: Rect;
+}): CropPlan {
+  const { pointDpx, elementDpx, ...rest } = args;
+  const onPoint = () => planCrop({ ...rest, centreDpx: pointDpx });
+  if (!elementDpx) return onPoint();
+  const plan = planCrop({
+    ...rest,
+    centreDpx: [elementDpx[0] + elementDpx[2] / 2, elementDpx[1] + elementDpx[3] / 2],
+  });
+  const [cx, cy, cw, ch] = plan.rectDpx;
+  const tooBig = elementDpx[2] > cw || elementDpx[3] > ch;
+  const holdsClick =
+    pointDpx[0] >= cx && pointDpx[0] < cx + cw && pointDpx[1] >= cy && pointDpx[1] < cy + ch;
+  return tooBig || !holdsClick ? onPoint() : plan;
+}
+
 /** Point in the full image → point in its crop. */
 export function fpxToCrop(
   origin: [number, number],

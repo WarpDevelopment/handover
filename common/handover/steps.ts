@@ -148,29 +148,94 @@ export function clickLookupMs(click: Pick<PointerClickPayload, "lookupMs">): num
   return typeof ms === "number" && Number.isFinite(ms) ? Math.min(1000, Math.max(0, ms)) : 0;
 }
 
-/** An app switch right after a click in the same app is the click's own effect, not a step. */
-const SWITCH_AFTER_CLICK_MS = 1000;
+/**
+ * The active-window poll runs every 1,000 ms, or 1,600 ms while a browser is frontmost, so an
+ * `app.activate` is reported up to this long after the click that caused it (plus a little slack).
+ * A click that lands this far before the report, or just after it, is the click that switched apps.
+ */
+const ACTIVATE_LAG_MS = 1600 + 200;
+const ACTIVATE_LEAD_MS = 300;
+
+/** The same test as {@link isOwnAppClick}, for an app name and a process or path name. */
+export function isOwnAppName(name?: string, processOrPath?: string): boolean {
+  const n = (name ?? "").trim().toLowerCase();
+  const base = (processOrPath ?? "").split(/[\\/]/).pop() ?? "";
+  const p = base.trim().toLowerCase().replace(/\.exe$/, "").replace(/\.app$/, "");
+  return n === "handover" || p === "handover";
+}
+
+/** When the user acted: a click is reported after its control lookup, so back-date it by `lookupMs`. */
+function actedMs(ev: RecEvent): number {
+  return ev.type === "pointer.click"
+    ? ev.t - clickLookupMs(ev.payload as unknown as PointerClickPayload)
+    : ev.t;
+}
+
+function insideBounds(b: WindowBounds | undefined, x: number, y: number): boolean {
+  return !!b && x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height;
+}
+
+/** The app, window and URL the walk believed in after an event. */
+export interface StepState {
+  t: number;
+  app: AppRef;
+  windowTitle?: string;
+  url?: string;
+  windowBounds?: WindowBounds;
+}
 
 /**
  * Walk the event stream and produce step drafts in time order. `pointer.click` becomes an action
  * step; `app.activate` for a different app becomes a context step. Everything else only updates the
  * known app, title and URL.
  *
- * `toDpx` is injected so the drafts carry no display maths: it turns a click into display pixels
- * for the summary of a `visual_only` click.
+ * Clicks are ordered and timed by when the user acted (`t − lookupMs`), not when the helper
+ * reported them. `toDpx` is injected so the drafts carry no display maths: it turns a click into
+ * display pixels for the summary of a `visual_only` click.
  */
 export function buildSteps(
   events: readonly RecEvent[],
   toDpx: (click: PointerClickPayload, tMs: number) => [number, number],
 ): StepDraft[] {
-  const ordered = [...events].sort((a, b) => a.t - b.t || a.seq - b.seq);
+  return buildStepsWithState(events, toDpx).steps;
+}
+
+/** {@link buildSteps}, plus what the walk knew about the frontmost app at any moment. */
+export function buildStepsWithState(
+  events: readonly RecEvent[],
+  toDpx: (click: PointerClickPayload, tMs: number) => [number, number],
+): { steps: StepDraft[]; stateAt: (tMs: number) => StepState | undefined } {
+  const ordered = [...events].sort((a, b) => actedMs(a) - actedMs(b) || a.seq - b.seq);
   const steps: StepDraft[] = [];
+  const states: StepState[] = [];
   let app: AppRef = { name: "", kind: "unknown" };
   let title: string | undefined;
   let url: string | undefined;
   let bounds: WindowBounds | undefined;
-  let lastClick: { tMs: number; appName: string } | undefined;
   let seenActivate = false;
+
+  const clicks = ordered
+    .filter((e) => e.type === "pointer.click")
+    .map((e) => {
+      const c = e.payload as unknown as PointerClickPayload;
+      return { acted: actedMs(e), app: c.target?.app?.name?.trim().toLowerCase(), x: c.x, y: c.y };
+    });
+  /** A click on this app (or, with no control found, inside its window) just before or after the report. */
+  const switchedByClick = (tReport: number, name: string, activateBounds?: WindowBounds): boolean =>
+    clicks.some(
+      (c) =>
+        c.acted >= tReport - ACTIVATE_LAG_MS &&
+        c.acted <= tReport + ACTIVATE_LEAD_MS &&
+        (c.app ? c.app === name.trim().toLowerCase() : insideBounds(activateBounds, c.x, c.y)),
+    );
+  const remember = (t: number) =>
+    states.push({
+      t,
+      app,
+      ...(title !== undefined ? { windowTitle: title } : {}),
+      ...(url ? { url } : {}),
+      ...(bounds ? { windowBounds: bounds } : {}),
+    });
 
   for (const ev of ordered) {
     switch (ev.type) {
@@ -178,10 +243,7 @@ export function buildSteps(
         const p = ev.payload as unknown as AppActivatePayload;
         const name = typeof p.app === "string" ? p.app : "";
         const sameApp = name === app.name;
-        const closeToClick =
-          lastClick !== undefined &&
-          lastClick.appName === name &&
-          ev.t - lastClick.tMs <= SWITCH_AFTER_CLICK_MS;
+        const closeToClick = switchedByClick(ev.t, name, p.bounds);
         app = {
           name,
           ...(p.path ? { process: p.path.split(/[\\/]/).pop() } : {}),
@@ -207,84 +269,105 @@ export function buildSteps(
           });
         }
         seenActivate = true;
+        remember(actedMs(ev));
         break;
       }
       case "app.title-change": {
         const p = ev.payload as { title?: unknown };
         if (typeof p.title === "string") title = p.title;
+        remember(ev.t);
         break;
       }
       case "browser.url": {
         const p = ev.payload as { url?: unknown };
         if (typeof p.url === "string") url = reduceUrl(p.url);
+        remember(ev.t);
         break;
       }
       case "pointer.click": {
         const click = ev.payload as unknown as PointerClickPayload;
         const t = click.target;
+        const acted = actedMs(ev);
+        // The app the click landed in. A click with no control found says nothing about its app:
+        // it keeps the last known one only when it lies inside that app's last known window.
+        let clickApp: AppRef;
+        let known = true;
         if (t?.app?.name) {
-          app = {
+          clickApp = {
             name: t.app.name,
             ...(t.app.process ? { process: t.app.process } : {}),
             ...(t.app.bundleId ? { bundle_id: t.app.bundleId } : {}),
             kind: appKind(t.app.name, t.app.process, t.app.bundleId, click.unavailableReason),
           };
-        } else if (click.unavailableReason === "remote_session") {
-          app = { ...app, kind: "remote_session" };
+          if (clickApp.name !== app.name) bounds = undefined; // the old window's bounds no longer apply
+          app = clickApp;
+        } else if (insideBounds(bounds, click.x, click.y)) {
+          clickApp =
+            click.unavailableReason === "remote_session" ? { ...app, kind: "remote_session" } : app;
+          if (click.unavailableReason === "remote_session") app = clickApp;
+        } else {
+          clickApp = { name: "", kind: click.unavailableReason === "remote_session" ? "remote_session" : "unknown" };
+          known = false;
         }
         if (t?.windowTitle) title = t.windowTitle;
+        const clickTitle = known ? title : undefined;
         const actionType: StepDraft["actionType"] =
           click.button === "right" ? "right_click" : click.clickCount === 2 ? "double_click" : "click";
-        const dpx = toDpx(click, ev.t);
-        // A double-click arrives as two clicks, the second with clickCount 2: one step.
+        const dpx = toDpx(click, acted);
+        remember(acted);
+        // A double-click arrives as two clicks, the second with clickCount 2: one step. A context
+        // step the activate rule suppressed was never added, so it cannot sit between them.
         const prev = steps[steps.length - 1];
         if (
           click.clickCount === 2 &&
           prev?.kind === "action" &&
           prev.click?.clickCount === 1 &&
           prev.click.button === click.button &&
-          ev.t - prev.tMs <= DOUBLE_CLICK_MERGE_MS
+          acted - prev.tMs <= DOUBLE_CLICK_MERGE_MS
         ) {
           const merged: PointerClickPayload = { ...click, target: click.target ?? prev.click.target };
           prev.actionType = click.button === "right" ? "right_click" : "double_click";
           prev.click = merged;
-          prev.app = app;
-          prev.windowTitle = title;
+          prev.app = clickApp;
+          prev.windowTitle = clickTitle;
           prev.summary = summaryFor({
             actionType: prev.actionType,
-            appName: app.name,
+            appName: clickApp.name,
             target: merged.target ? { role: merged.target.role, name: merged.target.name } : undefined,
             pointDpx: toDpx(merged, prev.tMs),
           });
-          lastClick = { tMs: ev.t, appName: app.name };
           break;
         }
         steps.push({
           kind: "action",
           observedVia: "pointer",
           actionType,
-          tMs: ev.t,
-          frameTMs: ev.t - clickLookupMs(click),
-          app,
-          windowTitle: title,
-          url: app.kind === "browser" ? url : undefined,
+          tMs: acted,
+          frameTMs: acted,
+          app: clickApp,
+          windowTitle: clickTitle,
+          url: clickApp.kind === "browser" ? url : undefined,
           click,
           summary: summaryFor({
             actionType,
-            appName: app.name,
+            appName: clickApp.name,
             target: t ? { role: t.role, name: t.name } : undefined,
             pointDpx: dpx,
           }),
           seq: ev.seq,
         });
-        lastClick = { tMs: ev.t, appName: app.name };
         break;
       }
       default:
         break;
     }
   }
-  return steps;
+  const stateAt = (tMs: number): StepState | undefined => {
+    let best: StepState | undefined;
+    for (const s of states) if (s.t <= tMs) best = s;
+    return best;
+  };
+  return { steps, stateAt };
 }
 
 /** The latest `displays` layout at or before `tMs`; the first one when none precedes it. */

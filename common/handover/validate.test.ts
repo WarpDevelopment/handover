@@ -100,7 +100,7 @@ test("validatePackage fails on a folder with no manifest", async () => {
 
 test("the schema rejects a keyboard capability, a non-test build and bad ids", () => {
   const good = {
-    step_id: "S01", seq: 1, kind: "context", t_start_ms: 0, t_end_ms: 1, summary: "Switch to X",
+    step_id: "S01", seq: 1, kind: "manual", t_start_ms: 0, t_end_ms: 1, summary: "Switch to X",
     summary_provenance: "observed", annotation_ids: [], flags: [], boundary: "not_assessed",
     boundary_source: "none", scope_verified: true,
   };

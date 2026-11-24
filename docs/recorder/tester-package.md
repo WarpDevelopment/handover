@@ -60,7 +60,7 @@ One step is one click, one app/window switch, or one manual step the user added.
 | `step_id` | yes | `S01…`, renumbered at export in `seq` order |
 | `seq` | yes | 1-based |
 | `kind` | yes | `action` (click), `context` (app/window switch, or an Explain freeze, see §4.4), `manual` (added in review) |
-| `t_start_ms`, `t_end_ms` | yes | ms from recording start, half-open interval |
+| `t_start_ms`, `t_end_ms` | yes | ms from recording start, half-open interval. A click is timed when the user acted (the helper's report time minus its control-lookup time), not when the helper reported it. |
 | `summary` | yes | one imperative sentence from a template, e.g. `Click button "Save" in Excel`; or the user's edited text |
 | `summary_provenance` | yes | `observed` (template) or `user` (edited) |
 | `observed_via` | action/context | `pointer`, `window_change` or `explain` |
@@ -103,12 +103,13 @@ In PROCESS.md a context step shows evidence as `context` instead of a tier, and 
 - **Before:** the newest captured frame at least 50 ms before the click. The app keeps a small in-memory ring of recent frames for this.
 - **After:** a frame about 500 ms after the last step's action.
 - **Full** images are resized so the long edge is at most 1,568 px and `ceil(w/28)×ceil(h/28) ≤ 1,568`. `est_tokens = ceil(w/28)×ceil(h/28)`. The transform is `fpx = (dpx − source_rect_dpx[0:2]) × scale`.
-- **Crop:** 800×500 logical px (×`scale_factor` in dpx) centred on the target bounds, or else on the click point. It is shifted to stay inside the frame, cut from the redacted frame, and output at most 800×500.
+- **Crop:** 800×500 logical px (×`scale_factor` in dpx) centred on the target bounds, or else on the click point. It is centred on the click point instead when the bounds are larger than the crop (a pane or a document) or when a crop centred on them would not contain the click, so the click is always inside the crop. It is shifted to stay inside the frame, cut from the redacted frame, and output at most 800×500.
+- **No frame:** a step can have no `before` only where the session had no frame yet (the first second of capture) or the frozen frame of an Explain step was not saved. Such a step carries the flag `low_confidence_target`, and its `frame_point` locator and `point_fpx` are computed at the scale a frame of that display would have (never `0,0`). `validatePackage` rejects an action or context step with neither a `before` nor that flag.
 
 ### 4.4 `annotations.jsonl`
 | Kind | Required fields |
 |---|---|
-| `highlight` | `annotation_id` (`ann_0001`), `kind`, `step_ids`, `t_ms`, `mark` (`H1`…), `shape` ∈ `rect`, `arrow`, `highlighter`, `freehand`, `frame_id`, `geometry_fpx` (rect/arrow exactly 2 points; others ≥2), optional `snapped_to: {role, name, bounds_fpx}` |
+| `highlight` | `annotation_id` (`ann_0001`), `kind`, `step_ids`, `t_ms`, `mark` (`H1`…), `shape` ∈ `rect`, `arrow`, `highlighter`, `freehand`, `frame_id`, `geometry_fpx` (rect/arrow exactly 2 points; others ≥2), optional `snapped_to: {role, name, bounds_fpx}`. `frame_id` is absent only when the step has no picture to draw on (see §4.3, No frame); the geometry is then at the expected scale of that display. |
 | `comment` | `annotation_id`, `kind`, `step_ids`, `t_ms`, `text: {text, redacted, classes}`, `source` ∈ `typed`, `review` |
 | `narration` | `annotation_id`, `kind`, `step_ids`, `t_ms`, `t_end_ms`, `text: {text, redacted, classes}`, `anchor_confidence` (0–1) |
 
@@ -132,7 +133,7 @@ A narration segment attaches to the step whose `[t_start_ms − 3 s, t_end_ms + 
 `{gap_id: "gap_0001", t_start_ms, t_end_ms, reason, after_step?, before_step?}` with reason ∈ `user_paused`, `helper_restart`, `capture_lost`, `permission_lost`. Freeze time is not a gap; it is `explain_ms`.
 
 ### 4.6 Redaction in the tester build
-The only redaction is the user's **blur** in review: a rectangle on a step's before frame. It is burned into the full, annotated and crop images of that step and listed in `redacted_regions_fpx`. The step then gets the flag `contains_redaction`. A comment or summary can be edited by hand. There are no automatic detectors in the tester build.
+The only redaction is the user's **blur** in review: a rectangle on a step's before frame, or, on the last step, on its after frame (`blur_rect` carries `frame: "before" | "after"`, default `before`; the rectangle is in that image's pixels). A before-frame rectangle also covers the after frame of the same step, since it is the same screen a moment later. A rectangle is burned into the full, annotated and crop images of that step and listed in `redacted_regions_fpx` of the frame it is on. The step then gets the flag `contains_redaction`. A password field on a step is blurred automatically in its before frame and, on the last step, in its after frame; the blurred rectangle is clamped to the frame first, and what is listed in `redacted_regions_fpx` is what was blurred. When the user edits a step's summary, the control's name is replaced by `[REDACTED]` in `target.element.name` (`redacted: true`, class `user_marked`), in `target.ancestry` and in the `role_name_path` locator, because the same words would otherwise survive there. A comment or summary can be edited by hand. There are no automatic detectors in the tester build.
 
 ## 5. `PROCESS.md`
 Rendered by deterministic code from the package data (no model), following `package-spec.md` §11.1, reduced to:

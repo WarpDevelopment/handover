@@ -60,7 +60,17 @@
     },
     "target": {
       "type": "object",
-      "required": ["app"],
+      "required": ["app", "grounding", "locators"],
+      "allOf": [
+        {
+          "if": { "required": ["grounding"], "properties": { "grounding": { "enum": ["accessibility_weak", "visual_only"] } } },
+          "then": { "required": ["unavailable"] }
+        },
+        {
+          "if": { "required": ["grounding"], "properties": { "grounding": { "enum": ["accessibility", "accessibility_weak"] } } },
+          "then": { "required": ["grounding_source", "element"] }
+        }
+      ],
       "properties": {
         "grounding": { "enum": ["accessibility", "accessibility_weak", "visual_only", "none"] },
         "grounding_source": { "enum": ["ax", "uia"] },
@@ -126,6 +136,16 @@
     "step": {
       "type": "object",
       "required": ["step_id", "seq", "kind", "t_start_ms", "t_end_ms", "summary", "summary_provenance", "annotation_ids", "flags", "boundary", "boundary_source", "scope_verified"],
+      "allOf": [
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "action" } } },
+          "then": { "required": ["observed_via", "action", "target"] }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "context" } } },
+          "then": { "required": ["observed_via", "target"] }
+        }
+      ],
       "properties": {
         "step_id": { "$ref": "#/$defs/id_step" },
         "seq": { "type": "integer", "minimum": 1 },
@@ -173,6 +193,28 @@
     "annotation": {
       "type": "object",
       "required": ["annotation_id", "kind", "step_ids", "t_ms"],
+      "allOf": [
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "highlight" } } },
+          "then": {
+            "required": ["mark", "shape", "geometry_fpx"],
+            "allOf": [
+              {
+                "if": { "required": ["shape"], "properties": { "shape": { "enum": ["rect", "arrow"] } } },
+                "then": { "properties": { "geometry_fpx": { "minItems": 2, "maxItems": 2 } } }
+              }
+            ]
+          }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "comment" } } },
+          "then": { "required": ["text", "source"] }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "narration" } } },
+          "then": { "required": ["t_end_ms", "text", "anchor_confidence"] }
+        }
+      ],
       "properties": {
         "annotation_id": { "$ref": "#/$defs/id_annotation" },
         "kind": { "enum": ["highlight", "comment", "narration"] },
