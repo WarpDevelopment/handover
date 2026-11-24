@@ -77,6 +77,9 @@ export function validateAgainst(node: Schema, value: Json, at: string, errors: s
     if (typeof node.minLength === "number" && value.length < node.minLength) {
       errors.push(`${at}: shorter than ${node.minLength}`);
     }
+    if (typeof node.maxLength === "number" && value.length > node.maxLength) {
+      errors.push(`${at}: longer than ${node.maxLength}`);
+    }
   }
   if (typeof value === "number") {
     if (typeof node.minimum === "number" && value < node.minimum) errors.push(`${at}: below ${node.minimum}`);

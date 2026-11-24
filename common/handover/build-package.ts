@@ -141,6 +141,20 @@ function clip(i: Interval, duration: number): Interval | null {
   return end > start ? { start, end } : null;
 }
 
+const BLIND_EDGE_TOLERANCE_MS = 1500;
+
+/** `C:\Windows\System32\Taskmgr.exe`, `Taskmgr.exe` and `taskmgr` are the same process. */
+function processKey(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? "";
+  return base.trim().toLowerCase().replace(/\.(exe|app)$/, "");
+}
+
+function isSwitchTo(step: StepRecord, wantedKey: string): boolean {
+  const action = step.action as { type?: string } | undefined;
+  const app = (step.target as { app?: { process?: string } } | undefined)?.app;
+  return action?.type === "app_switch" && !!app?.process && processKey(app.process) === wantedKey;
+}
+
 type ResolvedGap = { reason: GapPayload["reason"]; start: number; end: number; process?: string };
 
 /**
@@ -1123,9 +1137,18 @@ export async function buildPackageDetailed(
     const end = Math.round(g.end);
     let after: string | undefined;
     let beforeStep: string | undefined;
+    // The helper reports an elevated window on its own 1 s tick and the active-window poll reports the app
+    // switch on another, so the two disagree by up to about a second. For elevated_window only: a switch to
+    // the same process just after the gap opened is the step the gap follows, and a step just before the gap
+    // closed is already after it (no step lies inside a gap).
+    const blind = g.reason === "elevated_window";
+    const wanted = blind && g.process ? processKey(g.process) : "";
     for (const s of stepRecords) {
-      if (s.t_start_ms <= start) after = s.step_id;
-      else if (beforeStep === undefined && s.t_start_ms >= end) beforeStep = s.step_id;
+      const t = s.t_start_ms;
+      const switchIn =
+        wanted !== "" && t > start && t <= start + BLIND_EDGE_TOLERANCE_MS && isSwitchTo(s, wanted);
+      if (t <= start || switchIn) after = s.step_id;
+      else if (beforeStep === undefined && t >= (blind ? end - BLIND_EDGE_TOLERANCE_MS : end)) beforeStep = s.step_id;
     }
     gaps.push({
       gap_id: `gap_${pad(gaps.length + 1, 4)}`,

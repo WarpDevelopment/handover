@@ -25,7 +25,7 @@ const GAP_REASON: Record<string, string> = {
   helper_restart: "the recorder's helper restarted",
   capture_lost: "screen capture was lost",
   permission_lost: "a permission was revoked",
-  elevated_window: "an administrator window was in front",
+  elevated_window: "an administrator window the recorder cannot see into", // package-spec.md §11 fixed copy
 };
 
 /** The in-order notice for a stretch where Windows hid clicks from the recorder. */

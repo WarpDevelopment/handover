@@ -267,6 +267,8 @@ namespace Handover
             bool lostStreak = false;   // hook_lost already reported and no callback counted since
             bool quietNext = false;    // the next successful reinstall is a repeat inside a streak
             bool blindOpen = false;    // a blind start was emitted and no end yet
+            int blindNoFg = 0;         // consecutive ticks with no foreground window while a stretch is open
+            const int BlindNoForegroundTicks = 3;
             while (!stopped)
             {
                 Thread.Sleep(1000);
@@ -285,18 +287,34 @@ namespace Handover
 
                 // Blind spot: an administrator window in front means no click reaches us. Polled here, so it does
                 // not depend on the mouse moving. One start per stretch, one end when it stops being true.
-                string blindName;
-                bool blindNow = Native.ForegroundHigherIntegrity(out blindName);
-                if (blindNow && !blindOpen)
+                // No foreground window at all (UAC secure desktop, lock screen, a moment between windows) is
+                // not "the admin window left": while a stretch is open it counts as no change for up to
+                // BlindNoForegroundTicks ticks, and only then ends the stretch.
+                uint fgPid = Native.ForegroundPid();
+                if (fgPid == 0)
                 {
-                    blindOpen = true;
-                    Program.Emit("{\"type\":\"blind\",\"reason\":\"elevated_window\",\"state\":\"start\""
-                        + (blindName.Length > 0 ? ",\"process\":" + Json.Str(blindName) : "") + "}");
+                    if (blindOpen && ++blindNoFg > BlindNoForegroundTicks)
+                    {
+                        blindOpen = false;
+                        Program.Emit("{\"type\":\"blind\",\"reason\":\"elevated_window\",\"state\":\"end\"}");
+                    }
                 }
-                else if (!blindNow && blindOpen)
+                else
                 {
-                    blindOpen = false;
-                    Program.Emit("{\"type\":\"blind\",\"reason\":\"elevated_window\",\"state\":\"end\"}");
+                    blindNoFg = 0;
+                    bool blindNow = Native.IsHigherIntegrity(fgPid);
+                    if (blindNow && !blindOpen)
+                    {
+                        blindOpen = true;
+                        string blindName = Native.ProcessName(fgPid); // once per stretch, not every tick
+                        Program.Emit("{\"type\":\"blind\",\"reason\":\"elevated_window\",\"state\":\"start\""
+                            + (!string.IsNullOrEmpty(blindName) ? ",\"process\":" + Json.Str(blindName) : "") + "}");
+                    }
+                    else if (!blindNow && blindOpen)
+                    {
+                        blindOpen = false;
+                        Program.Emit("{\"type\":\"blind\",\"reason\":\"elevated_window\",\"state\":\"end\"}");
+                    }
                 }
 
                 Native.POINT cur;
@@ -812,7 +830,8 @@ namespace Handover
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr GetModuleHandle(string name);
         [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
         [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
-        [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+        private const int ERROR_ACCESS_DENIED = 5;
+        [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
         [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -886,7 +905,11 @@ namespace Handover
         private static int IntegrityRid(IntPtr process)
         {
             IntPtr token;
-            if (!OpenProcessToken(process, TOKEN_QUERY, out token)) return int.MaxValue;
+            if (!OpenProcessToken(process, TOKEN_QUERY, out token))
+            {
+                // Only "access denied" means a higher-integrity process; any other failure says nothing.
+                return Marshal.GetLastWin32Error() == ERROR_ACCESS_DENIED ? int.MaxValue : -1;
+            }
             try
             {
                 int need;
@@ -922,22 +945,16 @@ namespace Handover
             catch { return false; }
         }
 
-        /// <summary>
-        /// True when the foreground window belongs to a higher-integrity process (UIPI then withholds
-        /// WH_MOUSE_LL callbacks from us). name is the executable name without path or extension, or "" if unknown.
-        /// </summary>
-        public static bool ForegroundHigherIntegrity(out string name)
+        /// <summary>The process id that owns the foreground window; 0 when there is none (secure desktop, a gap between windows).</summary>
+        public static uint ForegroundPid()
         {
-            name = "";
             try
             {
                 uint fg;
                 GetWindowThreadProcessId(GetForegroundWindow(), out fg);
-                if (fg == 0 || !IsHigherIntegrity(fg)) return false;
-                try { name = Process.GetProcessById((int)fg).ProcessName; } catch { name = ""; }
-                return true;
+                return fg;
             }
-            catch { return false; }
+            catch { return 0; }
         }
 
         private static int ownRid = -2;
@@ -954,7 +971,11 @@ namespace Handover
                 if (ownRid == -2) ownRid = IntegrityRid(GetCurrentProcess());
                 if (ownRid < 0 || ownRid == int.MaxValue) return false;
                 IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-                if (h == IntPtr.Zero) return true;
+                if (h == IntPtr.Zero)
+                {
+                    // Only "access denied" means higher. An exited process or a bad pid says nothing about integrity.
+                    return Marshal.GetLastWin32Error() == ERROR_ACCESS_DENIED;
+                }
                 try
                 {
                     int rid = IntegrityRid(h);
