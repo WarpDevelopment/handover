@@ -369,6 +369,58 @@ test("gap convention: open without tEndMs, closed by a later gap with the same r
   assert.equal(JSON.parse(text(open, "manifest.json")).recording.paused_ms, 7000);
 });
 
+test("G1: an elevated_window gap reaches gaps.jsonl, validates, and PROCESS.md says it was not observed between the right steps", async () => {
+  const { session } = await load();
+  const base = session.events.filter((e) => e.type !== "gap");
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...base,
+    gap(60, 3100, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(61, 5100, { reason: "elevated_window", tEndMs: 5100 }),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(gaps.length, 1);
+  assert.equal(gaps[0].reason, "elevated_window");
+  assert.equal(gaps[0].process, "Taskmgr");
+  assert.deepEqual([gaps[0].t_start_ms, gaps[0].t_end_ms, gaps[0].after_step, gaps[0].before_step], [3100, 5100, "S02", "S03"]);
+
+  const md = text(files, "PROCESS.md");
+  const line =
+    "Not observed (2.0 s): an administrator window (Taskmgr) was in front. " +
+    "Windows does not let Handover see clicks there. Ask the author what was done.";
+  const at = md.indexOf(line);
+  assert.ok(at > md.indexOf("**S02."), "after step S02");
+  assert.ok(at < md.indexOf("**S03."), "before step S03");
+  assert.equal(md.split(line).length - 1, 1, "stated once in the step order");
+  assert.ok(md.slice(md.indexOf("## What the recorder could not see")).includes("gap_0001 (S02 → S03): an administrator window was in front"));
+
+  // It is not a pause: no paused time, and the timing sum still holds.
+  const m = JSON.parse(text(files, "manifest.json"));
+  assert.equal(m.recording.paused_ms, 0);
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "g1-"));
+  try {
+    await writeTo(dir, files);
+    assert.deepEqual((await validatePackage(dir)).errors, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G1: an elevated_window gap with no process name still reads plainly", async () => {
+  const { session } = await load();
+  const base = session.events.filter((e) => e.type !== "gap");
+  const events = [
+    ...base,
+    { seq: 60, t: 3100, epoch: 1795500003100, type: "gap", source: "t", payload: { reason: "elevated_window", tEndMs: 5100 } },
+  ];
+  const md = text(await buildPackage({ ...session, events }, [], CTX), "PROCESS.md");
+  assert.match(md, /Not observed \(2\.0 s\): an administrator window was in front\. Windows does not let Handover see clicks there\. Ask the author what was done\./);
+});
+
 test("deleting the last step leaves no after frame: a frame taken after the deleted action is not 'about 500 ms after' the new last step", async () => {
   const { session } = await load();
   const files = await buildPackage(session, [{ edit_id: "e1", at: "t", op: "delete_step", step_id: "S07" }], CTX);

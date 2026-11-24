@@ -52,6 +52,7 @@ export class PointerHelperCollector implements Collector {
   private startedAt = 0;
   private spawnedAt = 0;
   private openGap: GapReason | null = null;
+  private elevatedOpen = false;
   private restartTimer: NodeJS.Timeout | null = null;
   private helloTimer: NodeJS.Timeout | null = null;
 
@@ -76,6 +77,7 @@ export class PointerHelperCollector implements Collector {
     this.restarts = 0;
     this.startedAt = this.now();
     this.openGap = null;
+    this.elevatedOpen = false;
     this.tracker.reset();
 
     const launch = this.resolve();
@@ -94,6 +96,7 @@ export class PointerHelperCollector implements Collector {
     if (this.helloTimer) clearTimeout(this.helloTimer);
     this.restartTimer = null;
     this.helloTimer = null;
+    this.endElevated(); // before ctx is dropped; an unclosed gap would otherwise run to session end
     const child = this.child;
     this.child = null;
     if (child && child.exitCode === null) {
@@ -204,9 +207,33 @@ export class PointerHelperCollector implements Collector {
         this.tracker.recordClick(click.target?.grounding ?? "none", click.lookupMs);
         break;
       }
+      case "blind":
+        // Not a helper fault and not a pause: other collectors keep running, only clicks are unseen.
+        if (message.state === "start") this.beginElevated(message.process);
+        else this.endElevated();
+        break;
       case "selftest":
         break;
     }
+  }
+
+  /**
+   * An administrator window is in front, so Windows withholds clicks from this normal-integrity helper.
+   * Tracked apart from `openGap` (one reason at a time there) because it can overlap a helper_restart.
+   * It also overlaps a user pause: gap events are not dropped by a pause, both gaps are written, and
+   * the package keeps them as two separate reasons.
+   */
+  private beginElevated(processName?: string): void {
+    if (!this.ctx || this.elevatedOpen) return;
+    this.elevatedOpen = true;
+    this.ctx.publish("gap", { reason: "elevated_window", ...(processName ? { process: processName } : {}) });
+  }
+
+  private endElevated(): void {
+    if (!this.ctx || !this.elevatedOpen) return;
+    this.elevatedOpen = false;
+    const tEndMs = this.ctx.elapsedMs ? this.ctx.elapsedMs() : this.now() - this.startedAt;
+    this.ctx.publish("gap", { reason: "elevated_window", tEndMs: Math.max(0, Math.round(tEndMs)) });
   }
 
   /** An `error` line must not make an unhealthy helper look healthy: keep a non-ok state (NAT-4). */
@@ -225,6 +252,7 @@ export class PointerHelperCollector implements Collector {
     const ctx = this.ctx;
     ctx.log.error(`Click helper stopped: ${reason}`);
     this.tracker.setState("crashed", reason);
+    this.endElevated(); // the new helper announces it again if it is still true
     this.beginGap("helper_restart");
 
     // A helper that ran stably for a while earns its restart allowance back (NAT-8).

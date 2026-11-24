@@ -141,6 +141,8 @@ function clip(i: Interval, duration: number): Interval | null {
   return end > start ? { start, end } : null;
 }
 
+type ResolvedGap = { reason: GapPayload["reason"]; start: number; end: number; process?: string };
+
 /**
  * Gap convention: a `gap` event without `tEndMs` opens a gap at its `t`; a later `gap` with the
  * same reason and a `tEndMs` closes it (ending at `tEndMs`); an unclosed gap runs to session end.
@@ -149,22 +151,23 @@ function clip(i: Interval, duration: number): Interval | null {
 export function resolveGaps(
   events: readonly RecEvent[],
   durationMs: number,
-): { reason: GapPayload["reason"]; start: number; end: number }[] {
-  const out: { reason: GapPayload["reason"]; start: number; end: number }[] = [];
-  const open = new Map<string, { reason: GapPayload["reason"]; start: number; end: number }>();
+): ResolvedGap[] {
+  const out: ResolvedGap[] = [];
+  const open = new Map<string, ResolvedGap>();
   for (const ev of eventsOfType(events, "gap")) {
     const p = ev.payload as unknown as GapPayload;
     const current = open.get(p.reason);
+    const process = typeof p.process === "string" && p.process ? { process: p.process.slice(0, 60) } : {};
     if (p.tEndMs === undefined) {
       if (current) continue; // already open for this reason
-      const g = { reason: p.reason, start: ev.t, end: durationMs };
+      const g: ResolvedGap = { reason: p.reason, start: ev.t, end: durationMs, ...process };
       open.set(p.reason, g);
       out.push(g);
     } else if (current) {
       current.end = Math.max(current.start, p.tEndMs);
       open.delete(p.reason);
     } else {
-      out.push({ reason: p.reason, start: ev.t, end: Math.max(ev.t, p.tEndMs) });
+      out.push({ reason: p.reason, start: ev.t, end: Math.max(ev.t, p.tEndMs), ...process });
     }
   }
   return out;
@@ -1129,6 +1132,7 @@ export async function buildPackageDetailed(
       t_start_ms: start,
       t_end_ms: Math.max(start, end),
       reason: p.reason,
+      ...(g.process && p.reason === "elevated_window" ? { process: g.process } : {}),
       ...(after ? { after_step: after } : {}),
       ...(beforeStep ? { before_step: beforeStep } : {}),
     });

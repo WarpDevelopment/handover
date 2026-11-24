@@ -15,6 +15,12 @@
 //   {"type":"capabilities","hook":true,"uia":true,"interactive":true,"elevated":false,"space":"windows_virtual_px"}
 //   {"type":"click","button":"left","clickCount":1,"x":10,"y":20,"lookupMs":12,"target":{...},"unavailableReason":"..."}
 //   {"type":"hook_lost"}                (the watchdog saw the hook disappear; capabilities hook:true follows the reinstall)
+//   {"type":"blind","reason":"elevated_window","state":"start","process":"Taskmgr"}
+//                                       (the foreground window belongs to a higher-integrity process, so Windows (UIPI)
+//                                        does not deliver clicks to us; process is the exe name, omitted if unknown)
+//   {"type":"blind","reason":"elevated_window","state":"end"}   (that stopped being true)
+//                                       One start per stretch, polled once a second by the watchdog, no repeats.
+//                                       We do not capture elevated clicks; this only makes the blind spot visible.
 //   {"type":"error","message":"..."}
 //   {"type":"selftest", ...}            (--selftest only)
 // The process exits when stdin closes.
@@ -260,6 +266,7 @@ namespace Handover
             int suspect = 0;           // consecutive checks that looked lost
             bool lostStreak = false;   // hook_lost already reported and no callback counted since
             bool quietNext = false;    // the next successful reinstall is a repeat inside a streak
+            bool blindOpen = false;    // a blind start was emitted and no end yet
             while (!stopped)
             {
                 Thread.Sleep(1000);
@@ -274,6 +281,22 @@ namespace Handover
                     bool ok = hookInstalled;
                     if (!(quietNext && ok)) Program.EmitCapabilities(ok);
                     quietNext = false;
+                }
+
+                // Blind spot: an administrator window in front means no click reaches us. Polled here, so it does
+                // not depend on the mouse moving. One start per stretch, one end when it stops being true.
+                string blindName;
+                bool blindNow = Native.ForegroundHigherIntegrity(out blindName);
+                if (blindNow && !blindOpen)
+                {
+                    blindOpen = true;
+                    Program.Emit("{\"type\":\"blind\",\"reason\":\"elevated_window\",\"state\":\"start\""
+                        + (blindName.Length > 0 ? ",\"process\":" + Json.Str(blindName) : "") + "}");
+                }
+                else if (!blindNow && blindOpen)
+                {
+                    blindOpen = false;
+                    Program.Emit("{\"type\":\"blind\",\"reason\":\"elevated_window\",\"state\":\"end\"}");
                 }
 
                 Native.POINT cur;
@@ -895,6 +918,24 @@ namespace Handover
                 uint fg;
                 GetWindowThreadProcessId(GetForegroundWindow(), out fg);
                 return IsHigherIntegrity(fg);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// True when the foreground window belongs to a higher-integrity process (UIPI then withholds
+        /// WH_MOUSE_LL callbacks from us). name is the executable name without path or extension, or "" if unknown.
+        /// </summary>
+        public static bool ForegroundHigherIntegrity(out string name)
+        {
+            name = "";
+            try
+            {
+                uint fg;
+                GetWindowThreadProcessId(GetForegroundWindow(), out fg);
+                if (fg == 0 || !IsHigherIntegrity(fg)) return false;
+                try { name = Process.GetProcessById((int)fg).ProcessName; } catch { name = ""; }
+                return true;
             }
             catch { return false; }
         }

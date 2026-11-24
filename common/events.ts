@@ -165,7 +165,9 @@ export type AnnotationPayload = {
 };
 
 export type GapPayload = {
-  reason: "user_paused" | "helper_restart" | "capture_lost" | "permission_lost";
+  reason: "user_paused" | "helper_restart" | "capture_lost" | "permission_lost" | "elevated_window";
+  /** `elevated_window` only: the executable name (no path) of the administrator window in front. */
+  process?: string;
   /** End of the gap in ms from recording start; absent while still open. */
   tEndMs?: number;
 };
