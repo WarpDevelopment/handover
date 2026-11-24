@@ -22,6 +22,13 @@ export interface ReviewStep {
   image: { path: string; width: number; height: number } | null;
   /** Blurred regions already burned into the image, in its pixels. */
   blurredFpx: Rect4[];
+  /**
+   * The picture taken just after the step, on the last step only. It is exported, so it is reviewed
+   * as its own item and can be blurred separately (`blur_rect` with `frame: "after"`).
+   */
+  afterImage: { path: string; width: number; height: number } | null;
+  /** Blurred regions already burned into the after image, in its pixels. */
+  blurredAfterFpx: Rect4[];
 }
 
 export interface ReviewData {
@@ -44,6 +51,10 @@ interface StepJson {
   before?: {
     full: { path: string; width: number; height: number };
     full_annotated?: { path: string; width: number; height: number };
+    redacted_regions_fpx: Rect4[];
+  };
+  after?: {
+    full: { path: string; width: number; height: number };
     redacted_regions_fpx: Rect4[];
   };
 }
@@ -92,6 +103,10 @@ export function reviewDataFrom(args: {
         flags: s.flags,
         image: img ? { path: img.path, width: img.width, height: img.height } : null,
         blurredFpx: s.before?.redacted_regions_fpx ?? [],
+        afterImage: s.after
+          ? { path: s.after.full.path, width: s.after.full.width, height: s.after.full.height }
+          : null,
+        blurredAfterFpx: s.after?.redacted_regions_fpx ?? [],
       };
     }),
   };
@@ -102,4 +117,4 @@ export type ReviewEditInput =
   | { op: "delete_step"; preEditId: string }
   | { op: "edit_summary"; preEditId: string; text: string }
   | { op: "edit_comment"; annotationId: string; text: string }
-  | { op: "blur_rect"; preEditId: string; rectFpx: Rect4 };
+  | { op: "blur_rect"; preEditId: string; rectFpx: Rect4; frame?: "before" | "after" };

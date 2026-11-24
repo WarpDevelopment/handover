@@ -67,6 +67,67 @@ test("images are served only from the last build and only from media/", async ()
   });
 });
 
+test("APP-9: only the latest session's pictures are kept, and they can be evicted", async () => {
+  await withCopy(async (dir) => {
+    await withCopy(async (other) => {
+      const svc = service();
+      await svc.load(dir, "s1");
+      assert.ok(svc.image("s1", "media/S02_before_full.png"));
+      await svc.load(other, "s2");
+      assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "the earlier session was dropped");
+      assert.ok(svc.image("s2", "media/S02_before_full.png"));
+      svc.evict("s1"); // not the current one: nothing happens
+      assert.ok(svc.image("s2", "media/S02_before_full.png"));
+      svc.evict("s2");
+      assert.equal(svc.image("s2", "media/S02_before_full.png"), null, "evicted when it is deleted or the library closes");
+      await svc.load(dir, "s1");
+      svc.evict();
+      assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "evict() with no id clears everything");
+    });
+  });
+});
+
+test("APP-9: the filmstrip asks for small previews, and only the opened step loads the full picture", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    const data = await svc.load(dir, "s1");
+    const path = data.steps[1].image!.path;
+    const full = svc.image("s1", path)!;
+    const thumb = svc.image("s1", `thumb/${path}`)!;
+    assert.ok(thumb.startsWith("data:image/png;base64,"));
+    assert.ok(thumb.length < full.length / 2, `preview ${thumb.length} is much smaller than full ${full.length}`);
+    assert.equal(svc.image("s1", "thumb/../session.json"), null);
+    assert.equal(svc.image("s1", "thumb/steps.jsonl"), null);
+    assert.equal(svc.image("s1", "thumb/media/S99_before_full.png"), null);
+  });
+});
+
+test("SEC-1: the last step's after image is its own review item, and a blur on it is stored with its frame", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    const data = await svc.load(dir, "s1");
+    assert.equal(data.steps[5].afterImage, null, "only the last step has one");
+    const last = data.steps[6];
+    assert.equal(last.afterImage?.path, "media/S07_after_full.png");
+    assert.ok(svc.image("s1", last.afterImage!.path), "and it can be shown");
+    const next = await svc.applyEdit(dir, "s1", { op: "blur_rect", preEditId: "S07", rectFpx: [50, 50, 120, 60], frame: "after" });
+    assert.deepEqual(next.steps[6].blurredAfterFpx, [[50, 50, 120, 60]]);
+    assert.deepEqual(next.steps[6].blurredFpx, [], "the before picture is unchanged");
+    assert.deepEqual((await edits(dir)).at(-1)?.frame, "after");
+  });
+});
+
+test("PKG-8: an empty note is refused, and a multi-line note is stored on one line", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    await svc.load(dir, "s1");
+    await assert.rejects(() => svc.applyEdit(dir, "s1", { op: "edit_comment", annotationId: "ann_0002", text: "  " }), /cannot be empty/);
+    assert.equal((await edits(dir)).length, 0);
+    const next = await svc.applyEdit(dir, "s1", { op: "edit_comment", annotationId: "ann_0002", text: "Save\n## first" });
+    assert.equal(next.steps[3].comment?.text, "Save ## first");
+  });
+});
+
 test("edits are appended to edits.jsonl, ids stay pre-edit, and the export applies them", async () => {
   await withCopy(async (dir) => {
     const svc = service();

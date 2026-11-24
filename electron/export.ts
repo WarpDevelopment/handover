@@ -4,7 +4,7 @@
 
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -28,6 +28,8 @@ export interface ExportOptions {
   now?: () => Date;
   random?: () => Uint8Array;
   timezone?: string;
+  /** Injected for tests; defaults to {@link validatePackage}. */
+  validate?: typeof validatePackage;
 }
 
 export interface ExportResult {
@@ -99,24 +101,44 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
     const folder = path.join(parent, folderName);
     const zip = path.join(parent, folderName.replace(/\.handover$/, ".zip"));
     await mkdir(parent, { recursive: true });
-    await rm(folder, { recursive: true, force: true });
-    for (const [p, bytes] of files) {
-      await mkdir(path.dirname(path.join(folder, p)), { recursive: true });
-      await writeFile(path.join(folder, p), bytes);
-    }
-    await writeZip(zip, folderName, files, now);
 
-    const validation = await validatePackage(folder);
+    // Build and validate in a scratch folder next to the destination, and move the result into
+    // place only when it validates: a package that does not validate must leave nothing behind (PKG-8).
+    const scratch = path.join(parent, `.handover-export-${randomBytes(6).toString("hex")}`);
+    const scratchFolder = path.join(scratch, folderName);
+    const scratchZip = path.join(scratch, path.basename(zip));
+    try {
+      for (const [p, bytes] of files) {
+        await mkdir(path.dirname(path.join(scratchFolder, p)), { recursive: true });
+        await writeFile(path.join(scratchFolder, p), bytes);
+      }
+      const validation = await (opts.validate ?? validatePackage)(scratchFolder);
+      if (!validation.ok) {
+        return {
+          ok: false,
+          packageId: ctx.package_id,
+          error: "The package did not validate, so nothing was exported.",
+          validationErrors: validation.errors,
+        };
+      }
+      await writeZip(scratchZip, folderName, files, now);
+      await rm(folder, { recursive: true, force: true });
+      await rm(zip, { force: true });
+      await rename(scratchFolder, folder);
+      await rename(scratchZip, zip);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+
     const manifest = JSON.parse(new TextDecoder().decode(files.get("manifest.json"))) as {
       recording: { step_count: number };
     };
     return {
-      ok: validation.ok,
+      ok: true,
       packageId: ctx.package_id,
       folder,
       zip,
       stepCount: manifest.recording.step_count,
-      ...(validation.ok ? {} : { error: "The package did not validate.", validationErrors: validation.errors }),
     };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
