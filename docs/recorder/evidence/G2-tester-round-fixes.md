@@ -30,7 +30,7 @@ Branch `lane/G2-tester-round-fixes`, BASE_SHA `7bf0ff4`. Node 24.19.0 (the repo 
 - **Changed:** new `packageZipName(folderName)` returns `handover-<folder without .handover>.zip`; the folder keeps its `.handover` suffix and the zip's inner folder name is unchanged. Docs updated: package-spec.md (file table) and tester-package.md (export paragraph); the test script now says the zip starts with `handover-`.
 - **Test:** electron/export.test.ts asserts the exported zip matches `^handover-save-the-budget-and-open-mail__pkg_[0-9A-Z]{26}\.zip$` and `packageZipName("a__pkg_X.handover")`. It fails on 7bf0ff4 (name has no prefix, and the function did not exist).
 - **UNVERIFIED on Windows:** the name on a real Desktop. Retest Check C.
-- Left alone: `suggestedZipName` for the Save dialog still suggests `<slug>.zip`; the exporter only uses the chosen folder, not the typed file name (unchanged behaviour, outside this item).
+- The Save dialog's suggested name was left as `<slug>.zip` in the first commit; fixed in the review round below (R4).
 
 ## Item 5: documents
 - windows-test-script.md: size now "about 627 MB"; references `2-Results-form.md` and `3-Release-notes.md`; zip described as starting with `handover-`.
@@ -39,6 +39,22 @@ Branch `lane/G2-tester-round-fixes`, BASE_SHA `7bf0ff4`. Node 24.19.0 (the repo 
 - tester-package.md had no installer size line to fix (grep for "500 MB" and "MB" found only the crop size and the diagnostics log size).
 - The test script's own file name in the pack is not known from the form (the form quotes `windows-test-script.md`); the pack is assembled outside this repo, so the source files keep their names and only the references inside the documents were changed. The retest script's "Not observed" wording depends on lane G1 (the click helper change).
 - UNVERIFIED: no one has read the new retest script on a Windows machine.
+
+## Review round (t137 R1 to R5)
+- **R1** (retest Check B): times stated as UTC against the tester's UTC+2 clock and Explorer's Date modified; the question now asks whether he opened `reviewed.json` before pressing Done the second time and asks for the export's `manifest.json` (`privacy.reviewed_at`); steps 5 and 6 now describe what he will see (Export package greyed out, tooltip "Review the steps and choose Done reviewing before exporting." quoted from src/Library.tsx:375, available again after Done reviewing); the setup is a fresh recording with at least four Notepad clicks, not the Check A recording.
+- **R2:** the retest script ends with its own results table (Checks A to E) and says to send that file back instead of 2-Results-form.md.
+- **R3:** the call site is now covered. The decision moved into `transcribeIfCachedWith` (electron/narration/no-narration.ts) with injected `modelCached`, `isValidSessionId`, `transcribe` and `warn`; `NarrationManager.transcribeIfCached` only supplies the real ones. New tests drive it for no-audio (no warn), model-missing and success (no warn), a real failure (one warn), and the not-cached and invalid-id early returns. Proof it fails on the old condition: temporarily putting `!result.ok && result.outcome !== "model-missing"` back in that function gave (restored afterwards):
+  ```
+  ✖ the call site: a session with no audio.json logs no warning, a real failure logs one
+  ℹ tests 5  ℹ pass 4  ℹ fail 1
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  + [ [ 'cached narration transcription failed:', 'This recording has no saved narration.' ] ]
+  - []
+  ```
+- **R4:** the save dialog makes the package id first (`newPackageId`), suggests `suggestedZipName(title, packageId)` = `handover-<slug>__pkg_<id>.zip`, and passes the same id to `exportPackage` (new `packageId` option), so the suggested name equals the written name. Test in electron/export.test.ts exports with an injected id under a different typed name and asserts the written zip equals the suggestion. The typed name is still ignored (only its folder is used), as before. The slug in the dialog comes from `readTitle` (untrimmed) and in the export from the session's trimmed title; they differ only when the title has leading or trailing spaces, which slugify drops anyway.
+- **R5:** release-notes line 32 left as is; retest Check D now quotes only "Not observed" and "administrator window".
+- **UNVERIFIED on Windows:** the save dialog's pre-filled name; the tooltip and greyed-out state were read from the code, not seen.
 
 ## Gates
 `npm run typecheck`: exit 0.
@@ -51,9 +67,9 @@ Branch `lane/G2-tester-round-fixes`, BASE_SHA `7bf0ff4`. Node 24.19.0 (the repo 
 `npm test`: exit 0.
 
 ```
-ℹ tests 444
+ℹ tests 446
 ℹ suites 0
-ℹ pass 444
+ℹ pass 446
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0

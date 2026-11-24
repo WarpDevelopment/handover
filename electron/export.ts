@@ -11,7 +11,7 @@ import path from "node:path";
 import { ZipArchive } from "archiver";
 
 import { buildPackage, packageFolderName } from "../common/handover/build-package";
-import { isoWithOffset, slugify, ulid } from "../common/handover/canonical";
+import { isoWithOffset, ulid } from "../common/handover/canonical";
 import { readSessionInput } from "../common/handover/read-session";
 import type { BuildContext, HelperStatus, SessionEnvironment } from "../common/handover/types";
 import { validatePackage } from "../common/handover/validate";
@@ -32,6 +32,8 @@ export interface ExportOptions {
   now?: () => Date;
   random?: () => Uint8Array;
   timezone?: string;
+  /** Use this package id instead of making one (the save dialog already showed the name built from it). */
+  packageId?: string;
   /** Injected for tests; defaults to {@link validatePackage}. */
   validate?: typeof validatePackage;
   /** Injected for tests. */
@@ -66,9 +68,14 @@ export function packageZipName(folderName: string): string {
   return `handover-${folderName.replace(/\.handover$/, "")}.zip`;
 }
 
-/** Suggested file name for the save dialog; the package id is chosen at export. */
-export function suggestedZipName(title: string): string {
-  return `${slugify(title)}.zip`;
+/** A fresh package id (`pkg_` + a ULID). The save dialog makes it first so its suggested name is the real one. */
+export function newPackageId(now: Date = new Date(), random: Uint8Array = randomBytes(10)): string {
+  return `pkg_${ulid(now.getTime(), random)}`;
+}
+
+/** Suggested file name for the save dialog: exactly the zip name {@link exportPackage} will write for this id. */
+export function suggestedZipName(title: string, packageId: string): string {
+  return packageZipName(packageFolderName(title, packageId));
 }
 
 async function writeZip(
@@ -166,7 +173,7 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
     }
     const timezone = opts.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     const ctx: BuildContext = {
-      package_id: `pkg_${ulid(now.getTime(), random())}`,
+      package_id: opts.packageId ?? newPackageId(now, random()),
       exported_at: isoWithOffset(now.getTime(), timezone),
       timezone,
       tool_version: opts.toolVersion,

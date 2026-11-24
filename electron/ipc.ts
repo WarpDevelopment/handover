@@ -28,7 +28,7 @@ import type { AudioRecorder } from "./audio/recorder";
 import type { NarrationManager } from "./narration/manager";
 import type { RecorderController } from "./recorder/controller";
 import type { ScreenSourceService } from "./video/sources";
-import { exportPackage, suggestedZipName } from "./export";
+import { exportPackage, newPackageId, suggestedZipName } from "./export";
 import { isReviewed, markReviewed, narrationHash } from "./reviewed-marker";
 import { deleteSessionFlow } from "./session-delete";
 import { exportBlockedReason, markReviewedGuarded } from "./review-gate";
@@ -218,9 +218,10 @@ export function registerIpc(
       });
       if (blocked) return { ok: false, error: blocked };
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const packageId = newPackageId();
       const opts: SaveDialogOptions = {
         title: "Export Handover package",
-        defaultPath: path.join(os.homedir(), "Downloads", suggestedZipName(readTitle(sessionId))),
+        defaultPath: path.join(os.homedir(), "Downloads", suggestedZipName(readTitle(sessionId), packageId)),
         filters: [{ name: "Zip archive", extensions: ["zip"] }],
       };
       const picked = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
@@ -228,6 +229,7 @@ export function registerIpc(
       const result = await exportPackage({
         sessionDir: sessionDir(sessionId),
         destZip: picked.filePath,
+        packageId,
         toolVersion: app.getVersion(),
       });
       if (result.zip) shell.showItemInFolder(result.zip);

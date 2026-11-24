@@ -22,7 +22,7 @@ import type { SessionMeta } from "../../common/types";
 import { createLogger } from "../logger";
 import { isValidSessionId, sessionDir } from "../recorder/session-store";
 import { shouldTranscribeBeforeAnalyze } from "./analyze-gate";
-import { NO_NARRATION_ERROR, shouldWarnCachedTranscriptionFailure } from "./no-narration";
+import { NO_NARRATION_ERROR, transcribeIfCachedWith } from "./no-narration";
 import { transcribeNarration } from "./transcribe";
 import { getAsrPipeline, isNarrationModelCached } from "./whisper";
 
@@ -145,13 +145,15 @@ export class NarrationManager {
   }
 
   async transcribeIfCached(dir: string): Promise<void> {
-    if (!isNarrationModelCached()) return;
-    const id = path.basename(dir);
-    if (!isValidSessionId(id)) return;
-    const result = await this.transcribeSessionWithDownload(id);
-    if (shouldWarnCachedTranscriptionFailure(result)) {
-      log.warn("cached narration transcription failed:", result.error);
-    }
+    await transcribeIfCachedWith(
+      {
+        modelCached: isNarrationModelCached,
+        isValidSessionId,
+        transcribe: (id) => this.transcribeSessionWithDownload(id),
+        warn: (...args) => log.warn(...args),
+      },
+      dir,
+    );
   }
 
   private transcribeSessionWithDownload(
