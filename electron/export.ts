@@ -36,8 +36,6 @@ export interface ExportOptions {
   validate?: typeof validatePackage;
   /** Injected for tests. */
   fsOps?: Partial<MoveOps>;
-  /** Injected for tests: removes the scratch folder. */
-  removeScratch?: (p: string) => Promise<void>;
 }
 
 export interface ExportResult {
@@ -207,10 +205,12 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
             aside.push({ from: to, to: dest });
           }
         }
-        await moveWithRetry(scratchFolder, folder, opts.fsOps);
+        // Recorded BEFORE the move: a copy fallback that fails midway leaves a half-written
+        // destination, and that is ours to remove (the aside loop already cleared the old one).
         placed.push(folder);
-        await moveWithRetry(scratchZip, zip, opts.fsOps);
+        await moveWithRetry(scratchFolder, folder, opts.fsOps);
         placed.push(zip);
+        await moveWithRetry(scratchZip, zip, opts.fsOps);
       } catch (err) {
         for (const p of placed) await rm(p, { recursive: true, force: true }).catch(() => undefined);
         for (const a of aside) {
@@ -229,9 +229,7 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
     } finally {
       // Cleanup never changes the result: on Windows an indexer can hold a file for a moment.
       if (!keepScratch) {
-        await (opts.removeScratch ?? ((p) => rm(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })))(
-          scratch,
-        ).catch((e: unknown) =>
+        await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch((e: unknown) =>
           log.warn("could not remove the export scratch folder:", e instanceof Error ? e.message : String(e)),
         );
       }

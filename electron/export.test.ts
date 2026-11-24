@@ -184,18 +184,50 @@ async function narrationSha(dir: string): Promise<string> {
   return `sha256:${createHash("sha256").update(await readFile(path.join(dir, "narration.json"))).digest("hex")}`;
 }
 
-test("D1: a scratch folder that cannot be removed does not turn a finished export into a failure", async () => {
+test("D1: a scratch folder that really cannot be removed does not turn a finished export into a failure", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
   const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
   try {
+    const { rename: realRename, chmod } = await import("node:fs/promises");
+    // After the last move the destination folder becomes read-only, so removing the (empty) scratch
+    // folder inside it fails with EACCES. The old code let that error escape from `finally`.
     const result = await exportPackage({
       ...EXPORT_OPTS,
       sessionDir: FIXTURE,
       destZip: path.join(out, "x.zip"),
-      removeScratch: async () => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); },
+      fsOps: {
+        rename: async (from, to) => {
+          await realRename(from, to);
+          if (to.endsWith(".zip")) await chmod(out, 0o555);
+        },
+      },
     });
+    await chmod(out, 0o755);
     assert.equal(result.ok, true, result.error);
     assert.ok(result.folder && result.zip);
     assert.deepEqual((await validatePackage(result.folder!)).errors, []);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("N1: a copy fallback that fails midway leaves nothing at the destination", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
+  try {
+    const r = await exportPackage({
+      ...EXPORT_OPTS,
+      sessionDir: FIXTURE,
+      destZip: path.join(out, "x.zip"),
+      fsOps: {
+        rename: async () => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); },
+        cp: async (from, to) => {
+          await cp(from, to, { recursive: true }); // the copy lands ...
+          throw new Error("disk full midway"); // ... then fails
+        },
+        delaysMs: [],
+      },
+    });
+    assert.equal(r.ok, false);
+    assert.deepEqual(await readdir(out), [], "leftovers: " + (await readdir(out)).join(", "));
   } finally {
     await rm(out, { recursive: true, force: true });
   }

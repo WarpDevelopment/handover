@@ -53,3 +53,8 @@ Regenerated with `UPDATE_GOLDEN=1`. Only `steps.jsonl` and the manifest hash of 
 - Fixture field renamed to `narration_sha256`.
 
 - **Done reviewing errors:** the handler logic is `finishReview` (`common/handover/review.ts`): the review closes only on `ok`; otherwise `error` (for example "still being transcribed") is shown above the steps and the review stays open. Test: `review.test.ts` "Done reviewing…". The component wiring itself is not rendered in a test.
+
+## Last delta (after merging `b3bd188`)
+- **N1** (`export.ts`): each destination is pushed to `placed` before its move, so a copy fallback that fails midway is removed. Test "N1…" is the reviewer's probe-d3.
+- **D1 test** now fails on the old code: after the last move the destination folder is made read-only, so removing the scratch folder really fails with EACCES (skipped on Windows and as root). The `removeScratch` hook was removed.
+- **N3 (FP half)** (`review.ts`): `ReviewService.currentNarrationSha256(sessionId): string | null` returns the `narrationSha256` that `readSessionInput` produced for the loaded review (same `sha256:<hex>` / `absent` format as the marker), null for any other session, kept across edits, cleared by `evict`. Test "N3…". Wiring in `ipc.ts` is the orchestrator's.
