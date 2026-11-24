@@ -1,9 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface } from "node:readline";
 
 import type { GlobalSpace } from "../../common/events";
 import type { Collector, CollectorContext } from "../recorder/collector";
-import { parseHelperLine } from "./helper-protocol";
+import { createLineSplitter, parseHelperLine } from "./helper-protocol";
 import { defaultHelperLaunch, helperTracker, type HelperLaunch, type HelperTracker } from "./helper-status";
 
 export interface PointerHelperOptions {
@@ -16,8 +15,12 @@ export interface PointerHelperOptions {
   restartDelayMs?: number;
   /** How long to wait for `hello` before treating the helper as hung. */
   helloTimeoutMs?: number;
+  /** A helper that ran this long before exiting gets its restart allowance back (NAT-8). */
+  stableMs?: number;
   now?: () => number;
 }
+
+type GapReason = "helper_restart" | "permission_lost";
 
 /**
  * Spawns the native click helper and turns its JSON lines into `pointer.click` events.
@@ -39,6 +42,7 @@ export class PointerHelperCollector implements Collector {
   private readonly maxRestarts: number;
   private readonly restartDelayMs: number;
   private readonly helloTimeoutMs: number;
+  private readonly stableMs: number;
   private readonly now: () => number;
 
   private ctx: CollectorContext | null = null;
@@ -46,7 +50,8 @@ export class PointerHelperCollector implements Collector {
   private stopping = true;
   private restarts = 0;
   private startedAt = 0;
-  private openGap: "helper_restart" | "permission_lost" | null = null;
+  private spawnedAt = 0;
+  private openGap: GapReason | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
   private helloTimer: NodeJS.Timeout | null = null;
 
@@ -57,6 +62,7 @@ export class PointerHelperCollector implements Collector {
     this.maxRestarts = options.maxRestarts ?? 3;
     this.restartDelayMs = options.restartDelayMs ?? 500;
     this.helloTimeoutMs = options.helloTimeoutMs ?? 5000;
+    this.stableMs = options.stableMs ?? 60_000;
     this.now = options.now ?? Date.now;
   }
 
@@ -116,21 +122,30 @@ export class PointerHelperCollector implements Collector {
     try {
       child = spawn(launch.file, launch.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     } catch (err) {
-      this.onExit(`spawn failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.onExit(`spawn failed (${errorCode(err)})`);
       return;
     }
     this.child = child;
+    this.spawnedAt = this.now();
 
     this.helloTimer = setTimeout(() => {
       ctx.log.error("Click helper did not say hello in time; stopping it.");
       child.kill();
     }, this.helloTimeoutMs);
 
-    createInterface({ input: child.stdout }).on("line", (line) => this.onLine(line));
-    createInterface({ input: child.stderr }).on("line", (line) => ctx.log.info("helper:", line));
+    // Split on LF only: readline also breaks on U+2028/U+2029/U+0085, which can sit inside a control name.
+    const out = createLineSplitter((line) => this.onLine(line));
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => out.push(chunk));
+    child.stdout.on("end", () => out.end());
+    const err = createLineSplitter((line) => ctx.log.info("helper:", line));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => err.push(chunk));
+    child.stderr.on("end", () => err.end());
     // An EPIPE on stdin after the helper dies must not become an uncaught exception.
     child.stdin.on("error", () => undefined);
-    child.on("error", (err) => this.onExit(`spawn error: ${err.message}`, child));
+    // Never store err.message: it carries the executable path, which includes the OS username (SEC-7).
+    child.on("error", (e) => this.onExit(`spawn error (${errorCode(e)})`, child));
     child.on("exit", (code, signal) =>
       this.onExit(`helper exited (${signal ?? `code ${code ?? "?"}`})`, child),
     );
@@ -151,21 +166,33 @@ export class PointerHelperCollector implements Collector {
         this.helloTimer = null;
         this.tracker.setVersion(message.version);
         this.tracker.setState("ok");
-        this.endGap("helper_restart");
+        // The gap stays open until `capabilities` confirms the hook is installed.
         break;
       case "capabilities":
-        if (!message.hook && message.accessibility === false) {
-          // macOS: the tap cannot be created until Accessibility is granted. No clicks at all.
-          this.tracker.setState("no-permission", "Accessibility permission not granted");
-          this.beginGap("permission_lost");
+        // Branch on the hook first (NAT-4): without it no click arrives, whatever the permission says.
+        if (message.hook === false) {
+          if (message.accessibility === false) {
+            // macOS: the tap cannot be created (or was torn down) without Accessibility. No clicks at all.
+            this.tracker.setState("no-permission", "Accessibility permission not granted");
+            this.beginGap("permission_lost");
+          } else {
+            this.tracker.setState("crashed", "Mouse hook is not installed");
+            this.beginGap("helper_restart");
+          }
         } else if (message.accessibility === false) {
           // Clicks still arrive, as visual-only steps with permission_missing.
           this.tracker.setState("no-permission", "Accessibility permission not granted");
-          this.endGap("permission_lost");
+          this.endGap();
         } else {
           this.tracker.setState("ok");
-          this.endGap("permission_lost");
+          this.endGap();
         }
+        break;
+      case "hook_lost":
+        // Windows watchdog: the hook was silently removed. The helper reinstalls it and then re-sends
+        // `capabilities` with hook:true, which closes this gap.
+        this.tracker.setState("crashed", "Mouse hook was removed by Windows; reinstalling");
+        this.beginGap("helper_restart");
         break;
       case "error":
         this.tracker.setState(this.trackerStateAfterError(), message.message);
@@ -182,8 +209,10 @@ export class PointerHelperCollector implements Collector {
     }
   }
 
-  private trackerStateAfterError(): "ok" | "no-permission" {
-    return this.tracker.report().helper === "no-permission" ? "no-permission" : "ok";
+  /** An `error` line must not make an unhealthy helper look healthy: keep a non-ok state (NAT-4). */
+  private trackerStateAfterError(): "ok" | "no-permission" | "crashed" {
+    const state = this.tracker.report().helper;
+    return state === "no-permission" || state === "crashed" ? state : "ok";
   }
 
   private onExit(reason: string, which?: ChildProcessWithoutNullStreams): void {
@@ -198,6 +227,8 @@ export class PointerHelperCollector implements Collector {
     this.tracker.setState("crashed", reason);
     this.beginGap("helper_restart");
 
+    // A helper that ran stably for a while earns its restart allowance back (NAT-8).
+    if (this.spawnedAt > 0 && this.now() - this.spawnedAt >= this.stableMs) this.restarts = 0;
     if (this.restarts >= this.maxRestarts) {
       ctx.log.error("Click helper restart limit reached; recording continues without it.");
       return;
@@ -215,15 +246,25 @@ export class PointerHelperCollector implements Collector {
     }, this.restartDelayMs * this.restarts);
   }
 
-  private beginGap(reason: "helper_restart" | "permission_lost"): void {
+  private beginGap(reason: GapReason): void {
     if (!this.ctx || this.openGap === reason) return;
+    if (this.openGap) this.endGap(); // one gap open at a time: close the other reason first
     this.openGap = reason;
     this.ctx.publish("gap", { reason });
   }
 
-  private endGap(reason: "helper_restart" | "permission_lost"): void {
-    if (!this.ctx || this.openGap !== reason) return;
+  /** Closes whichever gap is open. Its end is on the session clock, the same as an event's `t` (NAT-7). */
+  private endGap(): void {
+    const reason = this.openGap;
+    if (!this.ctx || !reason) return;
     this.openGap = null;
-    this.ctx.publish("gap", { reason, tEndMs: Math.max(0, this.now() - this.startedAt) });
+    const tEndMs = this.ctx.elapsedMs ? this.ctx.elapsedMs() : this.now() - this.startedAt;
+    this.ctx.publish("gap", { reason, tEndMs: Math.max(0, Math.round(tEndMs)) });
   }
+}
+
+/** A short, path-free description of a spawn failure: the Node error code, never the message. */
+function errorCode(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code) ? code : "unknown";
 }

@@ -12,7 +12,45 @@ export type HelperMessage =
   | { kind: "capabilities"; hook: boolean; accessibility: boolean | null }
   | { kind: "click"; click: Omit<PointerClickPayload, "space"> }
   | { kind: "error"; message: string }
+  | { kind: "hook_lost" }
   | { kind: "selftest" };
+
+/**
+ * Splits a byte stream into lines on LF only, stripping a trailing CR. Unlike readline it does NOT
+ * break on U+2028, U+2029 or U+0085, which can appear raw in a control name (NAT-3). A line longer
+ * than `maxLine` is dropped whole, so a runaway helper cannot grow the buffer without bound.
+ */
+export function createLineSplitter(onLine: (line: string) => void, maxLine = MAX_LINE * 2): {
+  push(chunk: string): void;
+  end(): void;
+} {
+  let buffer = "";
+  let discarding = false;
+  const emit = (line: string) => {
+    onLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+  };
+  return {
+    push(chunk: string) {
+      buffer += chunk;
+      let i = buffer.indexOf("\n");
+      while (i >= 0) {
+        const line = buffer.slice(0, i);
+        buffer = buffer.slice(i + 1);
+        if (discarding) discarding = false;
+        else emit(line);
+        i = buffer.indexOf("\n");
+      }
+      if (buffer.length > maxLine) {
+        buffer = "";
+        discarding = true;
+      }
+    },
+    end() {
+      if (buffer.length > 0 && !discarding) emit(buffer);
+      buffer = "";
+    },
+  };
+}
 
 const ROLES: readonly ControlRole[] = [
   "button", "textbox", "combobox", "option", "menuitem", "link", "tab",
@@ -25,10 +63,13 @@ const REASONS: readonly UnavailableReason[] = [
 ];
 const MAX_TEXT = 200;
 const MAX_LINE = 64 * 1024;
+// Control characters plus the Unicode line separators U+2028 and U+2029. Built from a string because
+// a regex literal may not contain a raw line terminator.
+const CONTROL_OR_SEPARATOR = new RegExp("[\\p{Cc}\\u{2028}\\u{2029}]", "gu");
 
 function text(value: unknown, max = MAX_TEXT): string | undefined {
   if (typeof value !== "string") return undefined;
-  return value.replace(/\p{Cc}/gu, " ").slice(0, max);
+  return value.replace(CONTROL_OR_SEPARATOR, " ").slice(0, max);
 }
 
 function num(value: unknown): number | undefined {
@@ -124,6 +165,8 @@ export function parseHelperLine(line: string): HelperMessage | null {
       };
     case "error":
       return { kind: "error", message: text(m.message) ?? "unknown error" };
+    case "hook_lost":
+      return { kind: "hook_lost" };
     case "selftest":
       return { kind: "selftest" };
     case "click": {

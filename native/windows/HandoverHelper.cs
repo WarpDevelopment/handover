@@ -1,7 +1,8 @@
 // Handover click and control helper for Windows.
 //
-// One C# file, compiled in CI with the in-box csc.exe (.NET Framework 4.x) by
+// One C# file, compiled in CI with the in-box csc.exe (.NET Framework 4.x, C# 5 language level) by
 // scripts/build-helper-win.ps1, with app.manifest (Per-Monitor-V2 DPI aware).
+// Keep it C# 5: no $"" interpolation, no ?., no nameof, no expression-bodied members, no tuples, no out var.
 //
 // Privacy floors (docs/recorder/tester-package.md section 1):
 //   * MOUSE hook only (WH_MOUSE_LL). There is no keyboard hook anywhere in this file.
@@ -13,6 +14,7 @@
 //   {"type":"hello","helper":"HandoverHelper","version":"1.0.0","platform":"windows","protocol":1}
 //   {"type":"capabilities","hook":true,"uia":true,"interactive":true,"elevated":false,"space":"windows_virtual_px"}
 //   {"type":"click","button":"left","clickCount":1,"x":10,"y":20,"lookupMs":12,"target":{...},"unavailableReason":"..."}
+//   {"type":"hook_lost"}                (the watchdog saw the hook disappear; capabilities hook:true follows the reinstall)
 //   {"type":"error","message":"..."}
 //   {"type":"selftest", ...}            (--selftest only)
 // The process exits when stdin closes.
@@ -34,6 +36,8 @@ namespace Handover
     {
         internal const string Version = "1.0.0";
         internal const int LookupTimeoutMs = 300;
+        /// <summary>The ancestry walk may use this much of a lookup; whatever it collected by then is kept (NAT-5).</summary>
+        internal const int AncestryBudgetMs = 200;
 
         private static readonly object OutLock = new object();
         private static StreamWriter stdout;
@@ -52,26 +56,34 @@ namespace Handover
             try { Console.Error.WriteLine("[HandoverHelper] " + message); } catch { }
         }
 
+        internal static bool Elevated;
+
+        /// <summary>The capabilities line; re-sent after the watchdog reinstalls the hook (hook:true closes the gap).</summary>
+        internal static void EmitCapabilities(bool hookOk)
+        {
+            Emit("{\"type\":\"capabilities\",\"hook\":" + Json.Bool(hookOk)
+                + ",\"uia\":true,\"interactive\":" + Json.Bool(Environment.UserInteractive)
+                + ",\"elevated\":" + Json.Bool(Elevated)
+                + ",\"space\":\"windows_virtual_px\"}");
+        }
+
         private static int Main(string[] args)
         {
             stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             stdout.AutoFlush = false;
 
             bool selftest = Array.IndexOf(args, "--selftest") >= 0;
-            bool elevated = Native.IsCurrentProcessElevated();
+            Elevated = Native.IsCurrentProcessElevated();
 
             Emit("{\"type\":\"hello\",\"helper\":\"HandoverHelper\",\"version\":\"" + Version
                 + "\",\"platform\":\"windows\",\"protocol\":1}");
 
-            if (selftest) return SelfTest(elevated);
+            if (selftest) return SelfTest();
 
             Lookup.Warmup();
             ClickHook hook = new ClickHook();
             bool hookOk = hook.Start();
-            Emit("{\"type\":\"capabilities\",\"hook\":" + Json.Bool(hookOk)
-                + ",\"uia\":true,\"interactive\":" + Json.Bool(Environment.UserInteractive)
-                + ",\"elevated\":" + Json.Bool(elevated)
-                + ",\"space\":\"windows_virtual_px\"}");
+            EmitCapabilities(hookOk);
             if (!hookOk)
             {
                 Emit("{\"type\":\"error\",\"message\":\"SetWindowsHookEx(WH_MOUSE_LL) failed\"}");
@@ -91,7 +103,7 @@ namespace Handover
             return 0;
         }
 
-        private static int SelfTest(bool elevated)
+        private static int SelfTest()
         {
             // 1. Can a low-level mouse hook be installed here? Install and remove at once.
             bool hookOk = false;
@@ -103,10 +115,7 @@ namespace Handover
             }
             catch (Exception e) { Log("selftest hook: " + e.Message); }
 
-            Emit("{\"type\":\"capabilities\",\"hook\":" + Json.Bool(hookOk)
-                + ",\"uia\":true,\"interactive\":" + Json.Bool(Environment.UserInteractive)
-                + ",\"elevated\":" + Json.Bool(elevated)
-                + ",\"space\":\"windows_virtual_px\"}");
+            EmitCapabilities(hookOk);
 
             // 2. FromPoint(10,10) through the same path a click takes.
             StringBuilder sb = new StringBuilder();
@@ -152,7 +161,7 @@ namespace Handover
     /// <summary>
     /// The low-level mouse hook. The callback only copies the point into a queue and calls the next hook:
     /// Windows silently removes a hook whose callback takes longer than LowLevelHooksTimeout (1 s).
-    /// A worker thread does the UIA lookup with a 300 ms timeout.
+    /// A worker thread does the UIA lookup with a 300 ms timeout. A watchdog notices a removed hook.
     /// </summary>
     internal sealed class ClickHook
     {
@@ -165,23 +174,40 @@ namespace Handover
         private uint lastTime;
         private int lastX, lastY;
 
+        // Watchdog state. The hook callback only stores a tick (any mouse message, so a moving cursor is a heartbeat).
+        private volatile int lastCallbackTick = Environment.TickCount;
+        private volatile bool hookInstalled;
+        private volatile bool stopped;
+        private volatile bool lostStreak;      // hook_lost already reported and no callback seen since
+        private volatile bool reinstallQuiet;  // a repeat reinstall inside a streak: do not re-announce
+
         public ClickHook() { proc = Callback; }
 
         public bool Start()
         {
             loopThreadId = Native.GetCurrentThreadId();
+            // The hook thread must not be starved: Windows drops a hook whose callback is late (NAT-2).
+            try { Thread.CurrentThread.Priority = ThreadPriority.Highest; } catch { }
             hookId = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
             if (hookId == IntPtr.Zero) return false;
+            hookInstalled = true;
+            lastCallbackTick = Environment.TickCount;
 
             Thread worker = new Thread(Work);
             worker.IsBackground = true;
             worker.Name = "click-lookup";
             worker.Start();
+
+            Thread dog = new Thread(Watchdog);
+            dog.IsBackground = true;
+            dog.Name = "hook-watchdog";
+            dog.Start();
             return true;
         }
 
         public void Stop()
         {
+            stopped = true;
             queue.CompleteAdding();
             if (loopThreadId != 0) Native.PostThreadMessage(loopThreadId, Native.WM_QUIT, UIntPtr.Zero, IntPtr.Zero);
         }
@@ -189,9 +215,85 @@ namespace Handover
         public void RunMessageLoop()
         {
             Native.MSG msg;
-            while (Native.GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) { /* hooks are serviced by GetMessage */ }
+            while (Native.GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
+            {
+                // Hooks are serviced by GetMessage. The watchdog asks for a reinstall on THIS thread, because a
+                // low-level hook only works while its installing thread pumps messages.
+                if (msg.message == Native.WM_REINSTALL_HOOK) Reinstall();
+            }
             if (hookId != IntPtr.Zero) Native.UnhookWindowsHookEx(hookId);
             hookId = IntPtr.Zero;
+        }
+
+        private void Reinstall()
+        {
+            if (stopped) return;
+            if (hookId != IntPtr.Zero) { Native.UnhookWindowsHookEx(hookId); hookId = IntPtr.Zero; }
+            hookId = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
+            hookInstalled = hookId != IntPtr.Zero;
+            // lastCallbackTick is NOT touched here: only a real callback proves the hook works, and it ends the streak.
+            bool quiet = reinstallQuiet;
+            reinstallQuiet = false;
+            // hook:true closes the helper_restart gap in the app; hook:false keeps it open and the watchdog retries.
+            // A repeat reinstall inside a streak that succeeded stays quiet, so a dead hook cannot spam gaps.
+            if (!quiet || !hookInstalled) Program.EmitCapabilities(hookInstalled);
+        }
+
+        /// <summary>
+        /// About once a second: if the cursor moved and real input happened, but the hook has seen no mouse
+        /// message since the last check, Windows has silently removed it. Say so, then ask the hook thread to
+        /// reinstall. While the hook is not installed, keep retrying.
+        /// </summary>
+        private void Watchdog()
+        {
+            Native.POINT prev;
+            bool havePrev = Native.GetCursorPos(out prev);
+            int prevTick = lastCallbackTick;
+            uint prevInput = LastInputTick();
+            while (!stopped)
+            {
+                Thread.Sleep(1000);
+                if (stopped) break;
+                if (!hookInstalled)
+                {
+                    Native.PostThreadMessage(loopThreadId, Native.WM_REINSTALL_HOOK, UIntPtr.Zero, IntPtr.Zero);
+                    continue;
+                }
+                Native.POINT cur;
+                bool haveCur = Native.GetCursorPos(out cur); // fails on the secure desktop (lock screen, UAC): skip then
+                uint input = LastInputTick();
+                int tick = lastCallbackTick;
+                bool moved = haveCur && havePrev && (cur.x != prev.x || cur.y != prev.y);
+                bool inputSince = input != prevInput;
+                if (tick != prevTick) lostStreak = false; // a callback arrived: the hook is alive
+                // UIPI may withhold hook callbacks while the cursor or the foreground window belongs to a
+                // higher-integrity process. Silence there is not a lost hook, so do not judge it (unproven on device).
+                bool overHigher = haveCur && Native.CursorOrForegroundHigherIntegrity(cur.x, cur.y);
+                if (moved && inputSince && tick == prevTick && !overHigher)
+                {
+                    if (!lostStreak)
+                    {
+                        // Say so once per streak; later checks in the same streak reinstall quietly.
+                        lostStreak = true;
+                        hookInstalled = false;
+                        Program.Log("watchdog: no hook callback while the mouse moved; reinstalling");
+                        Program.Emit("{\"type\":\"hook_lost\"}");
+                    }
+                    else
+                    {
+                        reinstallQuiet = true;
+                    }
+                    Native.PostThreadMessage(loopThreadId, Native.WM_REINSTALL_HOOK, UIntPtr.Zero, IntPtr.Zero);
+                }
+                prev = cur; havePrev = haveCur; prevTick = lastCallbackTick; prevInput = input;
+            }
+        }
+
+        private static uint LastInputTick()
+        {
+            Native.LASTINPUTINFO li = new Native.LASTINPUTINFO();
+            li.cbSize = (uint)Marshal.SizeOf(typeof(Native.LASTINPUTINFO));
+            return Native.GetLastInputInfo(ref li) ? li.dwTime : 0;
         }
 
         // Runs on the hook thread. Keep it tiny: no UIA, no I/O, no locks that can block.
@@ -199,6 +301,7 @@ namespace Handover
         {
             if (nCode >= 0)
             {
+                lastCallbackTick = Environment.TickCount; // heartbeat for the watchdog: a tick and nothing else
                 int msg = wParam.ToInt32();
                 int button = -1;
                 if (msg == Native.WM_LBUTTONDOWN) button = 0;
@@ -269,16 +372,43 @@ namespace Handover
         public string Reason;       // an UnavailableReason, or null
     }
 
+    /// <summary>What the lookup has collected so far. Written by the lookup thread, read (as a snapshot) by Run.</summary>
+    internal sealed class ElementData
+    {
+        public string Role = "other";
+        public string NativeRole = "";
+        public string Name = "";
+        public string AutoId = "";
+        public bool IsPassword;
+        public System.Windows.Rect Rect = System.Windows.Rect.Empty;
+        public readonly List<string[]> Parents = new List<string[]>(); // nearest parent first
+        public System.Windows.Rect WinRect = System.Windows.Rect.Empty;
+        public string WindowTitle = "";
+        public string Process;
+    }
+
     internal static class Lookup
     {
         private static readonly string[] RemoteProcesses = new string[] {
             "mstsc", "msrdc", "msrdcw", "windows365", "windowsapp", "wfica32", "wfcrun32",
-            "cdviewer", "selfservice", "receiver", "citrixworkspace"
+            "cdviewer", "selfservice", "receiver", "citrixworkspace",
+            "vmware-view", "vmware-remotemks"
         };
 
-        private static int stuck; // lookup threads still blocked inside UIA
+        // Lookup threads still blocked inside UIA, in total and per root-window process (NAT-11): one hung app
+        // stops lookups against that app only, not against every other window.
+        private const int MaxStuckTotal = 8;
+        private const int MaxStuckPerProcess = 2;
+        private static readonly object StuckLock = new object();
+        private static readonly Dictionary<uint, int> StuckByPid = new Dictionary<uint, int>();
+        private static int stuckTotal;
 
-        private sealed class Holder { public LookupResult Result; }
+        private sealed class Holder
+        {
+            public readonly object Gate = new object();
+            public LookupResult Result;   // a final answer that needs no snapshot (remote, elevated, no element, error)
+            public ElementData Data;      // the element, once resolved; the ancestry is added to it as it is walked
+        }
 
         /// <summary>Resolve the control at (x, y) with a hard 300 ms budget.</summary>
         public static LookupResult Run(int x, int y, bool allowLookup)
@@ -297,46 +427,104 @@ namespace Handover
             t.Start();
         }
 
+        private static bool TryEnter(uint pid)
+        {
+            lock (StuckLock)
+            {
+                int n;
+                StuckByPid.TryGetValue(pid, out n);
+                if (stuckTotal >= MaxStuckTotal || n >= MaxStuckPerProcess) return false;
+                StuckByPid[pid] = n + 1;
+                stuckTotal++;
+                return true;
+            }
+        }
+
+        private static void Leave(uint pid)
+        {
+            lock (StuckLock)
+            {
+                int n;
+                if (StuckByPid.TryGetValue(pid, out n))
+                {
+                    if (n <= 1) StuckByPid.Remove(pid); else StuckByPid[pid] = n - 1;
+                }
+                if (stuckTotal > 0) stuckTotal--;
+            }
+        }
+
         public static LookupResult Run(int x, int y, bool allowLookup, int timeoutMs)
         {
             if (!allowLookup) return new LookupResult { Reason = "timeout" };
-            if (Thread.VolatileRead(ref stuck) >= 4) return new LookupResult { Reason = "timeout" };
 
+            uint pid;
+            string title;
+            Native.RootWindowAt(x, y, out pid, out title);
+            if (!TryEnter(pid)) return new LookupResult { Reason = "timeout" };
+
+            // The ancestry deadline: about 200 ms of the 300 ms click budget; a longer (selftest) budget is used whole.
+            int ancestryBudgetMs = timeoutMs > Program.LookupTimeoutMs ? timeoutMs : Program.AncestryBudgetMs;
             Holder holder = new Holder();
+            Stopwatch clock = Stopwatch.StartNew();
             Thread t = new Thread(delegate ()
             {
-                try { holder.Result = Resolve(x, y); }
+                try { Resolve(holder, x, y, pid, title, clock, ancestryBudgetMs); }
                 catch (Exception e)
                 {
                     Program.Log("lookup: " + e.GetType().Name + " " + e.Message);
-                    holder.Result = new LookupResult { Reason = Native.LooksElevated(x, y) ? "elevated_window" : "opaque_toolkit" };
+                    lock (holder.Gate)
+                    {
+                        if (holder.Data == null)
+                            holder.Result = new LookupResult { Reason = Native.IsHigherIntegrity(pid) ? "elevated_window" : "opaque_toolkit" };
+                    }
                 }
-                finally { Interlocked.Decrement(ref stuck); }
+                finally { Leave(pid); }
             });
             t.IsBackground = true;
             t.SetApartmentState(ApartmentState.MTA);
-            Interlocked.Increment(ref stuck);
             t.Start();
-            if (!t.Join(timeoutMs)) return new LookupResult { Reason = "timeout" };
-            return holder.Result ?? new LookupResult { Reason = "opaque_toolkit" };
+            bool finished = t.Join(timeoutMs);
+
+            // Return the element as soon as it is resolved, even if the ancestry walk is still running or was cut
+            // short: a control without all of its parents is far better than a lost click (NAT-5).
+            lock (holder.Gate)
+            {
+                if (holder.Result != null) return holder.Result;
+                if (holder.Data != null) return Build(holder.Data);
+            }
+            return new LookupResult { Reason = finished ? "opaque_toolkit" : "timeout" };
         }
 
-        private static LookupResult Resolve(int x, int y)
+        /// <summary>A top-level window as a weak target: its title and process, no UIA.</summary>
+        private static string WindowTarget(string process, string title)
         {
-            // Remote-desktop clients are classified without touching UIA: the UIA tree stops at the client window.
-            uint pid;
-            string title;
-            IntPtr root = Native.RootWindowAt(x, y, out pid, out title);
+            StringBuilder sb = new StringBuilder();
+            sb.Append("{\"grounding\":\"accessibility_weak\",\"source\":\"uia\",\"role\":\"window\",\"nativeRole\":\"Window\"");
+            sb.Append(",\"name\":").Append(Json.Str(Json.Clean(title)));
+            sb.Append(",\"isPassword\":false");
+            if (process != null)
+                sb.Append(",\"app\":{\"name\":").Append(Json.Str(process)).Append(",\"process\":").Append(Json.Str(process)).Append("}");
+            sb.Append(",\"windowTitle\":").Append(Json.Str(Json.Clean(title))).Append("}");
+            return sb.ToString();
+        }
+
+        private static void Resolve(Holder holder, int x, int y, uint pid, string title, Stopwatch clock, int ancestryBudgetMs)
+        {
             string process = Native.ProcessName(pid);
+
+            // Remote-desktop clients are classified without touching UIA: the UIA tree stops at the client window.
             if (process != null && Array.IndexOf(RemoteProcesses, process.ToLowerInvariant()) >= 0)
             {
-                StringBuilder sb = new StringBuilder();
-                sb.Append("{\"grounding\":\"accessibility_weak\",\"source\":\"uia\",\"role\":\"window\",\"nativeRole\":\"Window\"");
-                sb.Append(",\"name\":").Append(Json.Str(Json.Clean(title)));
-                sb.Append(",\"isPassword\":false");
-                sb.Append(",\"app\":{\"name\":").Append(Json.Str(process)).Append(",\"process\":").Append(Json.Str(process)).Append("}");
-                sb.Append(",\"windowTitle\":").Append(Json.Str(Json.Clean(title))).Append("}");
-                return new LookupResult { TargetJson = sb.ToString(), Reason = "remote_session" };
+                lock (holder.Gate) { holder.Result = new LookupResult { TargetJson = WindowTarget(process, title), Reason = "remote_session" }; }
+                return;
+            }
+
+            // A window of a higher integrity level than ours cannot be read through UIA (UIPI): say so, keep the
+            // window title, and do not spend the budget on a call that will fail (NAT-6).
+            if (pid != 0 && Native.IsHigherIntegrity(pid))
+            {
+                lock (holder.Gate) { holder.Result = new LookupResult { TargetJson = WindowTarget(process, title), Reason = "elevated_window" }; }
+                return;
             }
 
             AutomationElement el = null;
@@ -362,62 +550,81 @@ namespace Handover
 
             if (el == null)
             {
-                return new LookupResult { Reason = Native.LooksElevated(x, y) ? "elevated_window" : "opaque_toolkit" };
+                lock (holder.Gate) { holder.Result = new LookupResult { Reason = "opaque_toolkit" }; }
+                return;
             }
 
             // Read cached properties only. Never GetCurrentPropertyValue(Value) or a ValuePattern.
-            string name = Json.Clean(el.Cached.Name);
+            ElementData d = new ElementData();
+            d.Name = Json.Clean(el.Cached.Name);
             ControlType ct = el.Cached.ControlType;
-            string role = Role(ct);
-            string native = ct == null ? "" : (ct.ProgrammaticName ?? "").Replace("ControlType.", "");
-            bool isPassword = false;
-            try { isPassword = el.Cached.IsPassword; } catch { }
-            string autoId = Json.Clean(el.Cached.AutomationId);
-            System.Windows.Rect rect = System.Windows.Rect.Empty;
-            try { rect = el.Cached.BoundingRectangle; } catch { }
+            d.Role = Role(ct);
+            d.NativeRole = ct == null ? "" : (ct.ProgrammaticName ?? "").Replace("ControlType.", "");
+            try { d.IsPassword = el.Cached.IsPassword; } catch { }
+            d.AutoId = Json.Clean(el.Cached.AutomationId);
+            try { d.Rect = el.Cached.BoundingRectangle; } catch { }
+            d.WindowTitle = title ?? "";
+            d.Process = process;
+            if (d.Process == null) { try { d.Process = Native.ProcessName((uint)el.Cached.ProcessId); } catch { } }
 
-            // Ancestry, nearest parent first, up to the top-level window.
-            List<string[]> parents = new List<string[]>();
-            System.Windows.Rect winRect = System.Windows.Rect.Empty;
-            string windowTitle = title;
+            // The element is resolved: publish it now. Everything after this only adds detail.
+            lock (holder.Gate) { holder.Data = d; }
+
+            // Ancestry, nearest parent first, up to and including the top-level window, against a deadline.
             try
             {
+                AutomationElement desktop = null;
+                try { desktop = AutomationElement.RootElement; } catch { } // fetched once, not per parent
                 TreeWalker walker = TreeWalker.ControlViewWalker;
                 AutomationElement cur = el;
                 for (int i = 0; i < 24; i++)
                 {
+                    if (clock.ElapsedMilliseconds >= ancestryBudgetMs) break;
                     AutomationElement p = walker.GetParent(cur, cr);
-                    if (p == null || p == AutomationElement.RootElement) break;
+                    if (p == null || (desktop != null && Automation.Compare(p, desktop))) break;
                     string pRole = Role(p.Cached.ControlType);
                     string pName = Json.Clean(p.Cached.Name);
-                    parents.Add(new string[] { pRole, pName });
-                    if (pRole == "window") { windowTitle = pName; try { winRect = p.Cached.BoundingRectangle; } catch { } }
+                    System.Windows.Rect pRect = System.Windows.Rect.Empty;
+                    if (pRole == "window") { try { pRect = p.Cached.BoundingRectangle; } catch { } }
+                    lock (holder.Gate)
+                    {
+                        d.Parents.Add(new string[] { pRole, pName });
+                        if (pRole == "window") { d.WindowTitle = pName; d.WinRect = pRect; }
+                    }
+                    if (pRole == "window") break; // the first window-role parent ends the walk
                     cur = p;
                 }
             }
             catch (Exception e) { Program.Log("ancestry: " + e.GetType().Name); }
+        }
 
-            bool weak = name.Length == 0 || role == "other";
-            if (!weak && role != "window" && !winRect.IsEmpty && !rect.IsEmpty)
+        /// <summary>Builds the click target from a snapshot. The caller holds the holder's lock.</summary>
+        private static LookupResult Build(ElementData d)
+        {
+            bool weak = d.Name.Length == 0 || d.Role == "other";
+            if (!weak && d.Role != "window" && !d.WinRect.IsEmpty && !d.Rect.IsEmpty)
             {
-                double winArea = winRect.Width * winRect.Height;
-                if (winArea > 0 && (rect.Width * rect.Height) / winArea > 0.6) weak = true;
+                double winArea = d.WinRect.Width * d.WinRect.Height;
+                if (winArea > 0 && (d.Rect.Width * d.Rect.Height) / winArea > 0.6) weak = true;
             }
 
             StringBuilder sb2 = new StringBuilder();
             sb2.Append("{\"grounding\":\"").Append(weak ? "accessibility_weak" : "accessibility").Append("\",\"source\":\"uia\"");
-            sb2.Append(",\"role\":\"").Append(role).Append("\",\"nativeRole\":").Append(Json.Str(native));
-            sb2.Append(",\"name\":").Append(Json.Str(name));
-            if (autoId.Length > 0) sb2.Append(",\"automationId\":").Append(Json.Str(autoId));
-            sb2.Append(",\"isPassword\":").Append(Json.Bool(isPassword));
-            if (!rect.IsEmpty && !double.IsInfinity(rect.X) && !double.IsInfinity(rect.Width))
+            sb2.Append(",\"role\":\"").Append(d.Role).Append("\",\"nativeRole\":").Append(Json.Str(d.NativeRole));
+            sb2.Append(",\"name\":").Append(Json.Str(d.Name));
+            if (d.AutoId.Length > 0) sb2.Append(",\"automationId\":").Append(Json.Str(d.AutoId));
+            sb2.Append(",\"isPassword\":").Append(Json.Bool(d.IsPassword));
+            System.Windows.Rect rect = d.Rect;
+            if (!rect.IsEmpty && !double.IsInfinity(rect.X) && !double.IsInfinity(rect.Y)
+                && !double.IsInfinity(rect.Width) && !double.IsInfinity(rect.Height))
             {
                 sb2.Append(",\"bounds\":{\"x\":").Append(Json.Num(rect.X)).Append(",\"y\":").Append(Json.Num(rect.Y))
                    .Append(",\"width\":").Append(Json.Num(rect.Width)).Append(",\"height\":").Append(Json.Num(rect.Height)).Append("}");
             }
-            if (parents.Count > 0)
+            if (d.Parents.Count > 0)
             {
                 // Window first, nearest parent last, at most 6 entries.
+                List<string[]> parents = new List<string[]>(d.Parents);
                 parents.Reverse();
                 List<string[]> kept = new List<string[]>();
                 if (parents.Count <= 6) kept.AddRange(parents);
@@ -430,11 +637,9 @@ namespace Handover
                 }
                 sb2.Append("]");
             }
-            string proc = process;
-            if (proc == null) { try { proc = Native.ProcessName((uint)el.Cached.ProcessId); } catch { } }
-            if (proc != null)
-                sb2.Append(",\"app\":{\"name\":").Append(Json.Str(proc)).Append(",\"process\":").Append(Json.Str(proc)).Append("}");
-            if (windowTitle != null && windowTitle.Length > 0) sb2.Append(",\"windowTitle\":").Append(Json.Str(Json.Clean(windowTitle)));
+            if (d.Process != null)
+                sb2.Append(",\"app\":{\"name\":").Append(Json.Str(d.Process)).Append(",\"process\":").Append(Json.Str(d.Process)).Append("}");
+            if (d.WindowTitle != null && d.WindowTitle.Length > 0) sb2.Append(",\"windowTitle\":").Append(Json.Str(Json.Clean(d.WindowTitle)));
             sb2.Append("}");
 
             return new LookupResult { TargetJson = sb2.ToString(), Reason = weak ? "opaque_toolkit" : null };
@@ -472,14 +677,20 @@ namespace Handover
             return Math.Round(d).ToString("0", CultureInfo.InvariantCulture);
         }
 
-        /// <summary>Control names are capped and stripped of control characters.</summary>
+        /// <summary>Line separators that some JSON readers (and readline) treat as a line break: U+0085, U+2028, U+2029.</summary>
+        private static bool IsLineSeparator(char c)
+        {
+            return c == (char)0x85 || c == (char)0x2028 || c == (char)0x2029;
+        }
+
+        /// <summary>Control names are capped and stripped of control characters and Unicode line separators.</summary>
         public static string Clean(string s)
         {
             if (s == null) return "";
             StringBuilder sb = new StringBuilder();
             foreach (char c in s)
             {
-                if (c < 0x20 || c == 0x7f) sb.Append(' '); else sb.Append(c);
+                if (c < 0x20 || c == 0x7f || IsLineSeparator(c)) sb.Append(' '); else sb.Append(c);
                 if (sb.Length >= 200) break;
             }
             return sb.ToString();
@@ -498,7 +709,8 @@ namespace Handover
                     case '\r': sb.Append("\\r"); break;
                     case '\t': sb.Append("\\t"); break;
                     default:
-                        if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                        // Escaped, never raw: a raw U+2028/U+2029/U+0085 splits the line in a naive line reader (NAT-3).
+                        if (c < 0x20 || IsLineSeparator(c)) sb.Append("\\u").Append(((int)c).ToString("x4"));
                         else sb.Append(c);
                         break;
                 }
@@ -514,12 +726,14 @@ namespace Handover
         public const int WM_RBUTTONDOWN = 0x0204;
         public const int WM_MBUTTONDOWN = 0x0207;
         public const uint WM_QUIT = 0x0012;
+        public const uint WM_REINSTALL_HOOK = 0x8001; // WM_APP + 1, posted by the watchdog to the hook thread
         public const int SM_CXDOUBLECLK = 36;
         public const int SM_CYDOUBLECLK = 37;
         private const uint GA_ROOT = 2;
         private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
         private const uint TOKEN_QUERY = 0x0008;
         private const int TokenElevation = 20;
+        private const int TokenIntegrityLevel = 25;
 
         public delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -528,6 +742,8 @@ namespace Handover
         public struct MSLLHOOKSTRUCT { public POINT pt; public uint mouseData; public uint flags; public uint time; public UIntPtr dwExtraInfo; }
         [StructLayout(LayoutKind.Sequential)]
         public struct MSG { public IntPtr hwnd; public uint message; public UIntPtr wParam; public IntPtr lParam; public uint time; public POINT pt; }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
 
         [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
         [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool UnhookWindowsHookEx(IntPtr hhk);
@@ -536,18 +752,27 @@ namespace Handover
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool PostThreadMessage(uint idThread, uint msg, UIntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] public static extern int GetDoubleClickTime();
         [DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex);
+        [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool GetCursorPos(out POINT p);
+        [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
         [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
-        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr GetModuleHandle(string name);
         [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+        [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
         [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
         [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref int size);
         [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
         [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int cls, out uint info, int len, out int returned);
+        [DllImport("advapi32.dll", SetLastError = true, EntryPoint = "GetTokenInformation")]
+        static extern bool GetTokenInformationBuffer(IntPtr token, int cls, IntPtr buffer, int len, out int returned);
+        [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+        [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);
 
         /// <summary>Top-level window under the point: its process id and title (GetWindowText, not UIA).</summary>
         public static IntPtr RootWindowAt(int x, int y, out uint pid, out string title)
@@ -565,10 +790,25 @@ namespace Handover
             return root;
         }
 
+        /// <summary>
+        /// The executable name without folder or extension. OpenProcess plus QueryFullProcessImageName is far
+        /// cheaper than Process.GetProcessById, which enumerates processes. The folder is never returned.
+        /// </summary>
         public static string ProcessName(uint pid)
         {
             if (pid == 0) return null;
-            try { return Process.GetProcessById((int)pid).ProcessName; } catch { return null; }
+            IntPtr h = IntPtr.Zero;
+            try
+            {
+                h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+                if (h == IntPtr.Zero) return null;
+                StringBuilder sb = new StringBuilder(1024);
+                int size = sb.Capacity;
+                if (!QueryFullProcessImageName(h, 0, sb, ref size)) return null;
+                return Path.GetFileNameWithoutExtension(sb.ToString());
+            }
+            catch { return null; }
+            finally { if (h != IntPtr.Zero) CloseHandle(h); }
         }
 
         private static bool IsElevated(IntPtr process)
@@ -590,21 +830,71 @@ namespace Handover
         }
 
         /// <summary>
-        /// True when the foreground window, or the window under the point, belongs to a process at a higher
-        /// integrity level than ours (UIPI). Used only after UIA has already failed.
+        /// The mandatory integrity level (SECURITY_MANDATORY_*_RID) of a process: 0x2000 medium, 0x3000 high.
+        /// -1 when it cannot be read; int.MaxValue when the token cannot be opened (a higher-integrity process).
         /// </summary>
-        public static bool LooksElevated(int x, int y)
+        private static int IntegrityRid(IntPtr process)
+        {
+            IntPtr token;
+            if (!OpenProcessToken(process, TOKEN_QUERY, out token)) return int.MaxValue;
+            try
+            {
+                int need;
+                GetTokenInformationBuffer(token, TokenIntegrityLevel, IntPtr.Zero, 0, out need);
+                if (need <= 0) return -1;
+                IntPtr buffer = Marshal.AllocHGlobal(need);
+                try
+                {
+                    int ret;
+                    if (!GetTokenInformationBuffer(token, TokenIntegrityLevel, buffer, need, out ret)) return -1;
+                    IntPtr sid = Marshal.ReadIntPtr(buffer); // TOKEN_MANDATORY_LABEL starts with the label SID
+                    int count = Marshal.ReadByte(GetSidSubAuthorityCount(sid));
+                    if (count <= 0) return -1;
+                    return Marshal.ReadInt32(GetSidSubAuthority(sid, (uint)(count - 1)));
+                }
+                finally { Marshal.FreeHGlobal(buffer); }
+            }
+            finally { CloseHandle(token); }
+        }
+
+        /// <summary>True when the window under the point, or the foreground window, belongs to a higher-integrity process.</summary>
+        public static bool CursorOrForegroundHigherIntegrity(int x, int y)
         {
             try
             {
-                if (IsCurrentProcessElevated()) return false;
                 uint pid; string t;
                 RootWindowAt(x, y, out pid, out t);
-                if (pid == 0) { GetWindowThreadProcessId(GetForegroundWindow(), out pid); }
-                if (pid == 0) return false;
+                if (IsHigherIntegrity(pid)) return true;
+                uint fg;
+                GetWindowThreadProcessId(GetForegroundWindow(), out fg);
+                return IsHigherIntegrity(fg);
+            }
+            catch { return false; }
+        }
+
+        private static int ownRid = -2;
+
+        /// <summary>
+        /// True when the process belongs to a higher integrity level than ours (UIPI blocks UIA and input
+        /// there). Access denied to a same-session process is read as higher.
+        /// </summary>
+        public static bool IsHigherIntegrity(uint pid)
+        {
+            try
+            {
+                if (pid == 0 || pid == GetCurrentProcessId()) return false;
+                if (ownRid == -2) ownRid = IntegrityRid(GetCurrentProcess());
+                if (ownRid < 0 || ownRid == int.MaxValue) return false;
                 IntPtr h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-                if (h == IntPtr.Zero) return true; // access denied to a same-session process implies higher integrity
-                try { return IsElevated(h); } finally { CloseHandle(h); }
+                if (h == IntPtr.Zero) return true;
+                try
+                {
+                    int rid = IntegrityRid(h);
+                    if (rid == int.MaxValue) return true;
+                    if (rid < 0) return false;
+                    return rid > ownRid;
+                }
+                finally { CloseHandle(h); }
             }
             catch { return false; }
         }

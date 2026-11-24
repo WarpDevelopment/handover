@@ -582,7 +582,7 @@ export class RecorderController {
     try {
       const config = this.deps.resolveConfig();
       this.activeCollectors = this.deps.buildCollectors(config);
-      await this.host.startAll(this.activeCollectors, store.dir);
+      await this.host.startAll(this.activeCollectors, store.dir, () => store.elapsedMs());
 
       // Video remains a best-effort sidecar; it never blocks the event recording.
       if (config.video && this.deps.createVideoRecorder) {

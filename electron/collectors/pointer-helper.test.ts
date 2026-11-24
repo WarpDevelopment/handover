@@ -23,12 +23,13 @@ interface Published {
   payload: unknown;
 }
 
-function fakeContext(): { ctx: CollectorContext; events: Published[]; logs: string[] } {
+function fakeContext(elapsedMs?: () => number): { ctx: CollectorContext; events: Published[]; logs: string[] } {
   const events: Published[] = [];
   const logs: string[] = [];
   const log = (...a: unknown[]) => logs.push(a.join(" "));
   const ctx: CollectorContext = {
     sessionDir: "",
+    ...(elapsedMs ? { elapsedMs } : {}),
     log: { info: log, warn: log, error: log },
     publish: <K extends EventType>(type: K, payload: EventPayloads[K]) => {
       events.push({ type, payload });
@@ -49,6 +50,22 @@ const clicks = (events: Published[]) =>
   events.filter((e) => e.type === "pointer.click").map((e) => e.payload as EventPayloads["pointer.click"]);
 const gaps = (events: Published[]) =>
   events.filter((e) => e.type === "gap").map((e) => e.payload as EventPayloads["gap"]);
+
+// --- CollectorContext.elapsedMs (NAT-7) ---
+
+test("CollectorHost hands each collector the session clock as ctx.elapsedMs", async () => {
+  const { CollectorHost } = await import("../recorder/collector");
+  const { EventBus } = await import("../recorder/event-bus");
+  let seen: (() => number) | undefined;
+  const host = new CollectorHost(new EventBus());
+  await host.startAll(
+    [{ name: "Probe", start: (ctx) => { seen = ctx.elapsedMs?.bind(ctx); }, stop: () => undefined }],
+    "",
+    () => 1234,
+  );
+  assert.equal(seen?.(), 1234);
+  await host.stopAll();
+});
 
 // --- Protocol parsing ---
 
@@ -256,4 +273,153 @@ test("the tracker reports percentiles and falls back to the file check before an
   assert.equal(t.report().lookupP50Ms, 30);
   assert.equal(t.report().lookupP95Ms, 100);
   assert.equal(new HelperTracker(() => null).report().helper, "missing");
+});
+
+// --- Review fixes: NAT-1..4, 7, 8, SEC-7, SEC-11 ---
+
+test("NAT-1: trust revoked mid-run opens a permission_lost gap and the doctor says no-permission", async () => {
+  const { ctx, events } = fakeContext();
+  const tracker = new HelperTracker(launch("trust-revoked"));
+  const collector = new PointerHelperCollector({ platform: "darwin", resolve: launch("trust-revoked"), tracker });
+  collector.start(ctx);
+  try {
+    await waitFor(() => gaps(events).length >= 1, "a gap after the revoke");
+    assert.equal(clicks(events).length, 1, "the click before the revoke was kept");
+    assert.deepEqual(gaps(events)[0], { reason: "permission_lost" });
+    assert.equal(tracker.report().helper, "no-permission");
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("NAT-2: hook_lost opens a helper_restart gap and the reinstall closes it", async () => {
+  const { ctx, events } = fakeContext();
+  const tracker = new HelperTracker(launch("hook-lost"));
+  const collector = new PointerHelperCollector({ platform: "win32", resolve: launch("hook-lost"), tracker });
+  collector.start(ctx);
+  try {
+    await waitFor(() => gaps(events).length >= 2, "gap open and close");
+    const g = gaps(events);
+    assert.deepEqual(g[0], { reason: "helper_restart" });
+    assert.equal(g[1]?.reason, "helper_restart");
+    assert.equal(typeof g[1]?.tEndMs, "number");
+    assert.equal(tracker.report().helper, "ok");
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("NAT-3: U+2028, U+2029 and U+0085 inside a name do not split the line; the click survives", async () => {
+  const { ctx, events } = fakeContext();
+  const tracker = new HelperTracker(launch("unicode-name"));
+  const collector = new PointerHelperCollector({ platform: "win32", resolve: launch("unicode-name"), tracker });
+  collector.start(ctx);
+  try {
+    await waitFor(() => clicks(events).length >= 2, "both clicks");
+    const first = clicks(events)[0];
+    assert.deepEqual([first?.x, first?.y], [7, 8]);
+    assert.equal(first?.target?.name, "Line One Two Three");
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("NAT-3: the line splitter breaks on LF only and strips CR", async () => {
+  const { createLineSplitter } = await import("./helper-protocol");
+  const lines: string[] = [];
+  const s = createLineSplitter((l) => lines.push(l));
+  s.push('a b\r\nc');
+  s.push("d\n\ne");
+  s.end();
+  assert.deepEqual(lines, ["a b", "cd", "", "e"]);
+  const big: string[] = [];
+  const small = createLineSplitter((l) => big.push(l), 10);
+  small.push("x".repeat(30));
+  small.push("tail\nok\n");
+  assert.deepEqual(big, ["ok"], "an oversize line is dropped whole");
+});
+
+test("NAT-4: hook false while Accessibility is granted is a gap and not healthy", async () => {
+  const { ctx, events } = fakeContext();
+  const tracker = new HelperTracker(launch("hook-false-trusted"));
+  const collector = new PointerHelperCollector({ platform: "darwin", resolve: launch("hook-false-trusted"), tracker });
+  collector.start(ctx);
+  try {
+    await waitFor(() => gaps(events).length >= 1, "a gap");
+    assert.deepEqual(gaps(events)[0], { reason: "helper_restart" });
+    // The real macOS helper follows this line with an `error` line; it must not flip the state back to ok.
+    await waitFor(() => /event tap/.test(tracker.report().lastError ?? ""), "the error line");
+    assert.notEqual(tracker.report().helper, "ok");
+    assert.equal(tracker.report().helper, "crashed");
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("NAT-7: a closed gap ends on the session clock, not on wall-clock since start", async () => {
+  const { ctx, events } = fakeContext(() => 777);
+  const tracker = new HelperTracker(launch("hook-lost"));
+  const collector = new PointerHelperCollector({ platform: "win32", resolve: launch("hook-lost"), tracker });
+  collector.start(ctx);
+  try {
+    await waitFor(() => gaps(events).length >= 2, "gap open and close");
+    assert.equal(gaps(events)[1]?.tEndMs, 777);
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("NAT-8: the restart allowance recovers after a stable run, and does not when the helper dies at once", async () => {
+  async function relaunches(stableMs: number): Promise<number> {
+    const { ctx } = fakeContext();
+    let spawns = 0;
+    const resolve = (): HelperLaunch => {
+      spawns += 1;
+      return { file: process.execPath, args: [FAKE, "crash-after-hello"] };
+    };
+    const collector = new PointerHelperCollector({
+      platform: "win32", resolve, tracker: new HelperTracker(() => null),
+      maxRestarts: 1, restartDelayMs: 5, stableMs,
+    });
+    collector.start(ctx);
+    await new Promise((r) => setTimeout(r, 1200));
+    await collector.stop();
+    return spawns;
+  }
+  assert.equal(await relaunches(60_000), 2, "one launch plus one restart, then given up");
+  assert.ok((await relaunches(0)) > 3, "each run counted as stable, so restarts keep coming");
+});
+
+test("SEC-7: a spawn failure stores a code, never the path or the OS username", async () => {
+  const { ctx } = fakeContext();
+  const tracker = new HelperTracker(() => null);
+  const secretPath = path.join(tmpdir(), "jane.doe-the-username", "HandoverHelper.exe");
+  const collector = new PointerHelperCollector({
+    platform: "win32", resolve: () => ({ file: secretPath, args: [] }),
+    tracker, maxRestarts: 0,
+  });
+  collector.start(ctx);
+  try {
+    await waitFor(() => tracker.report().helper === "crashed", "crash");
+    const err = tracker.report().lastError ?? "";
+    assert.match(err, /ENOENT/);
+    assert.equal(err.includes("jane.doe"), false);
+    assert.equal(err.includes(tmpdir()), false);
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("SEC-11: a packaged app never launches a helper from <cwd>/native/build", async () => {
+  const { defaultHelperLaunch } = await import("./helper-status");
+  const cwd = await mkdtemp(path.join(tmpdir(), "handover-cwd-"));
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  try {
+    await mkdir(path.join(cwd, "native", "build"), { recursive: true });
+    await writeFile(path.join(cwd, "native", "build", "HandoverHelper.exe"), "x");
+    assert.equal(defaultHelperLaunch("win32", undefined, cwd, true), null);
+    assert.equal(defaultHelperLaunch("win32", undefined, cwd, false)?.file, path.join(cwd, "native", "build", "HandoverHelper.exe"));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
