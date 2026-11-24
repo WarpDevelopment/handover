@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ReviewData, ReviewEditInput, ReviewStep } from "../common/handover/review";
+import { finishReview, type ReviewData, type ReviewEditInput, type ReviewStep } from "../common/handover/review";
 
 type Rect = [number, number, number, number];
 
@@ -74,15 +74,10 @@ export function StepReview({ sessionId, onClose }: { sessionId: string; onClose:
     if (!mark) return;
     setFinishing(true);
     setError(null);
-    try {
-      const res = await mark(sessionId);
-      if (res.ok) onClose();
-      else setError(res.error ?? "Could not record that the review is done.");
-    } catch {
-      setError("Could not record that the review is done.");
-    } finally {
-      setFinishing(false);
-    }
+    const res = await finishReview(mark, sessionId);
+    setFinishing(false);
+    if (res.done) onClose();
+    else setError(res.error ?? null); // shown above the steps; the review stays open
   }, [sessionId, onClose]);
 
   useEffect(() => {

@@ -112,6 +112,23 @@ export function reviewDataFrom(args: {
   };
 }
 
+/**
+ * "Done reviewing": call the app's `markReviewed`. The review closes only when it says ok; otherwise
+ * the reason (for example "narration is still being transcribed") is shown and the review stays open.
+ */
+export async function finishReview(
+  mark: (sessionId: string) => Promise<{ ok: boolean; error?: string }>,
+  sessionId: string,
+): Promise<{ done: boolean; error?: string }> {
+  const fallback = "Could not record that the review is done.";
+  try {
+    const res = await mark(sessionId);
+    return res.ok ? { done: true } : { done: false, error: res.error || fallback };
+  } catch {
+    return { done: false, error: fallback };
+  }
+}
+
 /** What the review screen can ask for. Ids are the pre-edit ids shown in {@link ReviewStep.preEditId}. */
 export type ReviewEditInput =
   | { op: "delete_step"; preEditId: string }
