@@ -216,6 +216,7 @@ If the zip is very large, tell the owner and they will give you another way to s
 1. Start → **Settings** → **Apps** → **Installed apps**.
 2. Find **Handover**, click the three dots, then **Uninstall**, and confirm.
 3. Note whether it uninstalled cleanly. You may keep or delete your Desktop files.
+4. Uninstalling does not delete recordings. To remove them, open File Explorer, paste `%LOCALAPPDATA%\Handover` into the address bar, press Enter, and delete the `sessions` folder. Note whether that folder was there.
 
 What happened: ____
 
