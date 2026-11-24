@@ -2,18 +2,18 @@
 
 Thank you for helping. You are testing an early version of **Handover**, a Warp Development tool that watches you do a task on screen and writes it up so someone else (or an assistant) can repeat it. It has never run on a Windows laptop before, so **this script is our only test plan**. Nothing you see can be "your fault". If something looks odd, that is exactly what we want to hear about.
 
-For every step, write what you saw in the line **"What happened: ____"**, or in the results form (`tester-results-form.md`). Short and honest is best, for example "worked", "nothing happened", "the window went black". Take a screenshot (Windows key + Shift + S) whenever something looks wrong.
+For every step, write what you saw in the line **"What happened: ____"**, or in the results form (`2-Results-form.md`). Short and honest is best, for example "worked", "nothing happened", "the window went black". Take a screenshot (Windows key + Shift + S) whenever something looks wrong.
 
 ## Before you start
 
 - **Test data only.** Use made-up text, as this script says. Do not open client files, client websites or real passwords while Handover is recording. The app shows a banner, "TEST BUILD — use test data only, not real client data", as a reminder.
 - **Time:** about 30 to 40 minutes.
 - **You need:** a Windows 11 x64 laptop where you can install apps for your own user (the installer is per-user and should not need admin rights), an internet connection for the download and for one web page, and (for the narration check) a working microphone. A second monitor is optional.
-- **Privacy, in plain words:** Handover does not record what you type, does not read what is inside text boxes, does not read your clipboard, does not record audio or video into the package (only a written transcript of what you say), and does not send anything over the internet. If you want to check, `release-notes-0.1.0-tester.md` explains each point.
+- **Privacy, in plain words:** Handover does not record what you type, does not read what is inside text boxes, does not read your clipboard, does not record audio or video into the package (only a written transcript of what you say), and does not send anything over the internet. If you want to check, `3-Release-notes.md` explains each point, including what the tester run showed about window titles and screenshots.
 - **What to send back at the end:**
   1. the exported package `.zip` (Check 6);
   2. the diagnostics `.zip` (Check 7);
-  3. the filled-in results form (`tester-results-form.md`);
+  3. the filled-in results form (`2-Results-form.md`);
   4. any screenshots of warnings or oddities.
 
 Fill in the header of the results form now (Windows version, laptop model, monitors and scale, antivirus). Windows version: Start → Settings → System → About. Display scale: Settings → System → Display, the "Scale" box (for example 125%).
@@ -39,7 +39,7 @@ What happened: ____
 1. Open the link the owner sent you and download the installer. It is called something like `Handover-0.1.0-windows-x64.exe`.
 2. Note the file size and whether the browser warned you about the file.
 
-What you should see: a download of roughly 500 MB.
+What you should see: a download of about 627 MB (it includes the speech model).
 What happened: ____
 
 ### 2. Run the installer and get past SmartScreen
@@ -160,7 +160,7 @@ What happened: ____
 1. In the same recording's page, click **Done reviewing** (label may differ slightly). Export stays disabled until you have marked the review done. Then click **Export package**.
 2. A "save" window opens. Choose the **Desktop**.
 3. When it finishes it says how many steps it exported. Note the message.
-4. On the Desktop you should now have a folder ending in `.handover` and a `.zip` with the same name. Open the folder.
+4. On the Desktop you should now have a folder ending in `.handover` and a `.zip` with nearly the same name that starts with `handover-`. Open the folder.
 5. Open **PROCESS.md** in **Notepad** (right-click → Open with → Notepad).
 6. Read it. Do the steps make sense and are they in the order you did them? Does each click name the right button? Does the blurred screenshot still hide your note? Is your narration there? Note anything wrong, missing or wrongly named, for example "step 4 says Button 'OK' but I clicked a link".
 7. Open the `media` folder, open one `…_before_full.png`, and one image whose name ends `_annotated.png` (it should show your box, arrow and highlight with labels such as H1).
