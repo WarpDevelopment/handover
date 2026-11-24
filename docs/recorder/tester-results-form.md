@@ -11,6 +11,7 @@ Fill this in as you go and send it back with the zips. See `windows-test-script.
 | Number of monitors | |
 | Display scale of each monitor (Settings → System → Display → Scale, for example 125%) | |
 | Antivirus product (for example Microsoft Defender) | |
+| Smart App Control state (Windows Security → App & browser control → Smart App Control settings): Off, Evaluation or On. If On or Evaluation, stop and tell the owner. | |
 
 Mark each check **pass**, **fail** or **partly**. "What happened" can be one line. Say **y** or **n** for whether you took a screenshot.
 
@@ -32,7 +33,7 @@ Mark each check **pass**, **fail** or **partly**. "What happened" can be one lin
 | Check 5: delete a step | | | |
 | Check 5: edit a comment or step text | | | |
 | Check 5: blur the note text | | | |
-| Check 6: export package to the Desktop | | | |
+| Check 6: "Done reviewing", then export package to the Desktop | | | |
 | Check 6: PROCESS.md makes sense, buttons named correctly | | | |
 | Check 7: Save diagnostics… | | | |
 | Check 8 (optional): app run as administrator | | | |

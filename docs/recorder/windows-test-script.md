@@ -8,7 +8,7 @@ For every step, write what you saw in the line **"What happened: ____"**, or in 
 
 - **Test data only.** Use made-up text, as this script says. Do not open client files, client websites or real passwords while Handover is recording. The app shows a banner, "TEST BUILD — use test data only, not real client data", as a reminder.
 - **Time:** about 30 to 40 minutes.
-- **You need:** a Windows 11 x64 laptop where you have admin rights, an internet connection for the download and for one web page, and (for the narration check) a working microphone. A second monitor is optional.
+- **You need:** a Windows 11 x64 laptop where you can install apps for your own user (the installer is per-user and should not need admin rights), an internet connection for the download and for one web page, and (for the narration check) a working microphone. A second monitor is optional.
 - **Privacy, in plain words:** Handover does not record what you type, does not read what is inside text boxes, does not read your clipboard, does not record audio or video into the package (only a written transcript of what you say), and does not send anything over the internet. If you want to check, `release-notes-0.1.0-tester.md` explains each point.
 - **What to send back at the end:**
   1. the exported package `.zip` (Check 6);
@@ -17,6 +17,19 @@ For every step, write what you saw in the line **"What happened: ____"**, or in 
   4. any screenshots of warnings or oddities.
 
 Fill in the header of the results form now (Windows version, laptop model, monitors and scale, antivirus). Windows version: Start → Settings → System → About. Display scale: Settings → System → Display, the "Scale" box (for example 125%).
+
+---
+
+## Before installing: check Smart App Control
+
+Smart App Control can silently block an unsigned installer, and once it is turned off it **cannot be turned back on without resetting Windows**. So the owner decides about it, never the tester.
+
+1. Open **Windows Security** → **App & browser control** → **Smart App Control settings**.
+2. Note whether it says **Off**, **Evaluation** or **On**.
+3. If it is **On** or **Evaluation**: **stop here, do not change the setting**, and tell the owner. Do not continue until the owner has decided.
+4. If it is **Off** (or the setting is not shown), carry on.
+
+What happened: ____
 
 ---
 
@@ -33,7 +46,7 @@ What happened: ____
 The installer is not signed yet, so Windows is expected to warn you.
 1. Double-click the downloaded file.
 2. If a blue box says **"Windows protected your PC"**, click **More info**, then **Run anyway**.
-3. If **User Account Control** asks "Do you want to allow this app to make changes?", note it and click **Yes**.
+3. The installer is per-user, so **User Account Control** should not ask for permission. If it does ("Do you want to allow this app to make changes?"), note it, because that is worth reporting, and click **Yes**.
 
 What you should see: the blue SmartScreen box, then the installer opening.
 What happened: ____ (screenshot the blue box)
@@ -47,7 +60,7 @@ What you should see: ideally nothing.
 What happened: ____
 
 ### 4. Choose where to install
-1. The installer offers a folder. It installs for **your user only** (no all-users option), and you can click **Browse** to pick another folder. Leave the default.
+1. The installer offers a folder. It installs for **your Windows user only**: there is no "Anyone who uses this computer" choice, and it should not ask for administrator rights. If you do see an all-users choice, note it. You can click **Browse** to pick another folder. Leave the default.
 2. Click **Install**, wait for it to finish, then click **Finish** with "Run Handover" ticked, if it is offered.
 
 What you should see: a folder choice page, a progress bar, then a finish page.
@@ -144,7 +157,7 @@ What happened: ____
 
 ## Check 6: export the package
 
-1. In the same recording's page, click **Export package**.
+1. In the same recording's page, click **Done reviewing** (label may differ slightly). Export stays disabled until you have marked the review done. Then click **Export package**.
 2. A "save" window opens. Choose the **Desktop**.
 3. When it finishes it says how many steps it exported. Note the message.
 4. On the Desktop you should now have a folder ending in `.handover` and a `.zip` with the same name. Open the folder.
