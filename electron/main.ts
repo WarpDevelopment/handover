@@ -303,6 +303,8 @@ function openLibrary(sessionId?: string): void {
   libraryWindow = createLibraryWindow(recorderWindow);
   libraryWindow.on("closed", () => {
     libraryWindow = null;
+    // Drop the reviewed session's pictures from memory (APP-9). The cache holds one session.
+    review.evict();
     // Return the recorder to where it sat before it made room for the library.
     if (recorderWindow && !recorderWindow.isDestroyed() && recorderHome) {
       recorderWindow.setBounds(recorderHome);
