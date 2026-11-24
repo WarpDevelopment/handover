@@ -35,7 +35,8 @@ export function parseEdits(jsonl: string): Edit[] {
     } catch {
       throw new Error(`edits.jsonl line ${i + 1} is not valid JSON`);
     }
-    edits.push(assertEdit(raw));
+    // Reading back: an empty comment saved by an earlier build must not make the session unusable.
+    edits.push(assertEdit(raw, { legacy: true }));
   }
   return edits;
 }
@@ -60,7 +61,7 @@ export function foldEditText(raw: string, what: "summary" | "comment"): string {
 }
 
 /** Narrow an unknown value to an {@link Edit}; an unknown `op` fails closed. */
-export function assertEdit(raw: unknown): Edit {
+export function assertEdit(raw: unknown, opts: { legacy?: boolean } = {}): Edit {
   const e = raw as Record<string, unknown> | null;
   if (!e || typeof e !== "object") throw new Error("edit must be an object");
   const op = e.op;
@@ -81,6 +82,9 @@ export function assertEdit(raw: unknown): Edit {
       if (!isString(e.annotation_id) || typeof e.text !== "string") {
         throw new Error("edit_comment needs annotation_id and text");
       }
+      // New edits must have text. A stored legacy empty comment means "comment removed": the
+      // builder drops that comment instead of throwing.
+      if (opts.legacy && e.text.trim() === "") return { ...e, text: "" } as unknown as Edit;
       return { ...e, text: foldEditText(e.text, "comment") } as unknown as Edit;
     case "blur_rect": {
       const r = e.rect_fpx;

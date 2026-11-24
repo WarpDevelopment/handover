@@ -4,7 +4,7 @@
 
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -30,6 +30,8 @@ export interface ExportOptions {
   timezone?: string;
   /** Injected for tests; defaults to {@link validatePackage}. */
   validate?: typeof validatePackage;
+  /** Injected for tests. */
+  fsOps?: Partial<MoveOps>;
 }
 
 export interface ExportResult {
@@ -78,6 +80,74 @@ async function writeZip(
   });
 }
 
+/** `reviewed_at` from the session's `reviewed.json` marker (only that field), when there is one. */
+async function readReviewedAt(sessionDir: string): Promise<{ reviewed_at?: string }> {
+  try {
+    const marker = JSON.parse(await readFile(path.join(sessionDir, "reviewed.json"), "utf8")) as {
+      reviewed_at?: unknown;
+    };
+    return typeof marker.reviewed_at === "string" && marker.reviewed_at !== ""
+      ? { reviewed_at: marker.reviewed_at }
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function exists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The file operations {@link moveWithRetry} uses; injected for tests. */
+export interface MoveOps {
+  rename: (from: string, to: string) => Promise<void>;
+  cp: (from: string, to: string) => Promise<void>;
+  rm: (p: string) => Promise<void>;
+  /** Waits between attempts, in ms. */
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const BUSY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/**
+ * Move a file or folder. On Windows a rename can fail with EPERM, EACCES or EBUSY while Defender or
+ * an indexer holds a file, so it is retried with a growing wait; if it still fails the item is
+ * copied and the source removed (a source that cannot be removed is left for the scratch cleanup).
+ */
+export async function moveWithRetry(from: string, to: string, ops?: Partial<MoveOps>): Promise<void> {
+  const o: MoveOps = {
+    rename: ops?.rename ?? ((a, b) => rename(a, b)),
+    cp: ops?.cp ?? ((a, b) => cp(a, b, { recursive: true })),
+    rm: ops?.rm ?? ((p) => rm(p, { recursive: true, force: true })),
+    delaysMs: ops?.delaysMs ?? [50, 100, 200, 400, 800],
+    sleep: ops?.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+  };
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= (o.delaysMs?.length ?? 0); attempt++) {
+    try {
+      await o.rename(from, to);
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!BUSY_CODES.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+      const wait = o.delaysMs?.[attempt];
+      if (wait !== undefined) await o.sleep?.(wait);
+    }
+  }
+  try {
+    await o.cp(from, to);
+  } catch {
+    throw lastError;
+  }
+  await o.rm(from).catch(() => undefined);
+}
+
 export async function exportPackage(opts: ExportOptions): Promise<ExportResult> {
   try {
     const now = (opts.now ?? (() => new Date()))();
@@ -93,6 +163,7 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
       exported_at: isoWithOffset(now.getTime(), timezone),
       timezone,
       tool_version: opts.toolVersion,
+      ...(await readReviewedAt(opts.sessionDir)),
     };
     const files = await buildPackage(session, edits, ctx);
 
@@ -122,10 +193,25 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
         };
       }
       await writeZip(scratchZip, folderName, files, now);
-      await rm(folder, { recursive: true, force: true });
-      await rm(zip, { force: true });
-      await rename(scratchFolder, folder);
-      await rename(scratchZip, zip);
+      // The new package is complete. Anything already at the destination is moved aside (and only
+      // deleted with the scratch folder at the end), so a failure to place the new one can put it back.
+      const aside: { from: string; to: string }[] = [];
+      try {
+        for (const [dest, label] of [[folder, "old-folder"], [zip, "old-zip"]] as const) {
+          if (await exists(dest)) {
+            const to = path.join(scratch, label);
+            await moveWithRetry(dest, to, opts.fsOps);
+            aside.push({ from: to, to: dest });
+          }
+        }
+        await moveWithRetry(scratchFolder, folder, opts.fsOps);
+        await moveWithRetry(scratchZip, zip, opts.fsOps);
+      } catch (err) {
+        await rm(folder, { recursive: true, force: true }).catch(() => undefined);
+        await rm(zip, { force: true }).catch(() => undefined);
+        for (const a of aside) await moveWithRetry(a.from, a.to, opts.fsOps).catch(() => undefined);
+        throw err;
+      }
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }

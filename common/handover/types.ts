@@ -69,6 +69,8 @@ export interface BuildContext {
   /** IANA timezone of the recording. */
   timezone: string;
   tool_version: string;
+  /** When the user finished review (`reviewed.json`), ISO 8601. Defaults to `exported_at`. */
+  reviewed_at?: string;
 }
 
 // --- Edits (append-only, `edits.jsonl`) ---

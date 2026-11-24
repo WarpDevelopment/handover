@@ -38,3 +38,9 @@ Regenerated with `UPDATE_GOLDEN=1`. Only `steps.jsonl` and the manifest hash of 
 - **PKG-2 residual:** the suppression window is 1.8 s before and 0.3 s after the activate report. A click on the same app after a keyboard (Alt-Tab) switch within 1.8 s of the switch report also suppresses that switch step. Judged an acceptable trade for the tester build.
 - **PKG-6 residual:** a freeze with no earlier event now says "Explain on the screen" with an unknown app, rather than borrowing the first app seen later.
 - **Real-device behaviour** of the preview thumbnails and the "Before / After" toggle is not exercised (no Electron in the test run).
+
+## Delta review (after merging `5e4665b`)
+- **N3** (`edits.ts`, `build-package.ts`): `parseEdits` reads with `{legacy: true}`; an empty `edit_comment` saved by the previous build is kept as empty text and the builder drops that comment ("comment removed") instead of throwing. New edits still refuse empty text (`ReviewService.toEdit`, `assertEdit` without the flag). Test: `export.test.ts` "N3…".
+- **N6** (`electron/export.ts`): `moveWithRetry` retries `rename` on EPERM/EACCES/EBUSY with 50/100/200/400/800 ms waits, then copies and deletes. An earlier export at the destination is moved aside and deleted only with the scratch folder, and is put back if placing the new one fails. Tests: "N6…" (two).
+- **N4 (FP half)** (`export.ts`, `build-package.ts`, `types.ts`): `BuildContext.reviewed_at` is read from `reviewed.json` (that field only); the manifest's `privacy.reviewed_at` uses it, else the export time. Test: "N4…".
+- `npm test` 408 pass, `npm run build` exits 0.

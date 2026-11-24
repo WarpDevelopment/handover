@@ -598,7 +598,8 @@ export async function buildPackageDetailed(
   // --- Apply edits ---
   const deleted = new Set<string>();
   const summaryEdits = new Map<string, string>();
-  const commentEdits = new Map<string, string>();
+  /** `null` is a comment removed: a legacy edit with empty text (see assertEdit). */
+  const commentEdits = new Map<string, string | null>();
   /** User blur rectangles per pre-edit step id, in full-image px (`rect_fpx`). */
   const blurEdits = new Map<string, Rect[]>();
   /** The same, for rectangles drawn on the last step's after image (`frame: "after"`). */
@@ -607,7 +608,7 @@ export async function buildPackageDetailed(
     if (e.op === "delete_step") deleted.add(e.step_id);
     // Text is one line and never empty: a newline would start a heading or a fake step in PROCESS.md.
     else if (e.op === "edit_summary") summaryEdits.set(e.step_id, foldEditText(e.text, "summary"));
-    else if (e.op === "edit_comment") commentEdits.set(e.annotation_id, foldEditText(e.text, "comment"));
+    else if (e.op === "edit_comment") commentEdits.set(e.annotation_id, e.text.trim() === "" ? null : foldEditText(e.text, "comment"));
     else if (e.op === "blur_rect") {
       const target = e.frame === "after" ? blurAfterEdits : blurEdits;
       const list = target.get(e.step_id) ?? [];
@@ -889,7 +890,8 @@ export async function buildPackageDetailed(
       t_start_ms: Math.round(d.tMs),
       t_end_ms: ds.tEnd,
       summary: edited ?? d.summary,
-      summary_provenance: edited !== undefined ? "user" : "observed",      observed_via: d.observedVia,
+      summary_provenance: edited !== undefined ? "user" : "observed",
+      observed_via: d.observedVia,
       ...(ds.explain
         ? {}
         : {
@@ -1014,6 +1016,7 @@ export async function buildPackageDetailed(
     if (hadSteps && stepIds.length === 0) continue; // its step was deleted
     if (rec.kind === "comment") {
       const edited = commentEdits.get(rec.annotation_id);
+      if (edited === null) continue; // the comment was removed (a legacy empty edit_comment)
       annotations.push({
         ...rec,
         step_ids: stepIds,
@@ -1213,7 +1216,7 @@ export async function buildPackageDetailed(
       video_included: false,
       audio_included: false,
     },
-    privacy: { reviewed_by_user: true, reviewed_at: ctx.exported_at, test_build: true },
+    privacy: { reviewed_by_user: true, reviewed_at: ctx.reviewed_at ?? ctx.exported_at, test_build: true },
     files: fileEntries,
   };
   put("manifest.json", canonicalJson(manifest));
