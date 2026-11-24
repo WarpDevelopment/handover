@@ -178,6 +178,8 @@ namespace Handover
         private volatile int lastCallbackTick = Environment.TickCount;
         private volatile bool hookInstalled;
         private volatile bool stopped;
+        private volatile bool lostStreak;      // hook_lost already reported and no callback seen since
+        private volatile bool reinstallQuiet;  // a repeat reinstall inside a streak: do not re-announce
 
         public ClickHook() { proc = Callback; }
 
@@ -229,9 +231,12 @@ namespace Handover
             if (hookId != IntPtr.Zero) { Native.UnhookWindowsHookEx(hookId); hookId = IntPtr.Zero; }
             hookId = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
             hookInstalled = hookId != IntPtr.Zero;
-            lastCallbackTick = Environment.TickCount;
+            // lastCallbackTick is NOT touched here: only a real callback proves the hook works, and it ends the streak.
+            bool quiet = reinstallQuiet;
+            reinstallQuiet = false;
             // hook:true closes the helper_restart gap in the app; hook:false keeps it open and the watchdog retries.
-            Program.EmitCapabilities(hookInstalled);
+            // A repeat reinstall inside a streak that succeeded stays quiet, so a dead hook cannot spam gaps.
+            if (!quiet || !hookInstalled) Program.EmitCapabilities(hookInstalled);
         }
 
         /// <summary>
@@ -260,11 +265,24 @@ namespace Handover
                 int tick = lastCallbackTick;
                 bool moved = haveCur && havePrev && (cur.x != prev.x || cur.y != prev.y);
                 bool inputSince = input != prevInput;
-                if (moved && inputSince && tick == prevTick)
+                if (tick != prevTick) lostStreak = false; // a callback arrived: the hook is alive
+                // UIPI may withhold hook callbacks while the cursor or the foreground window belongs to a
+                // higher-integrity process. Silence there is not a lost hook, so do not judge it (unproven on device).
+                bool overHigher = haveCur && Native.CursorOrForegroundHigherIntegrity(cur.x, cur.y);
+                if (moved && inputSince && tick == prevTick && !overHigher)
                 {
-                    Program.Log("watchdog: no hook callback while the mouse moved; reinstalling");
-                    hookInstalled = false;
-                    Program.Emit("{\"type\":\"hook_lost\"}");
+                    if (!lostStreak)
+                    {
+                        // Say so once per streak; later checks in the same streak reinstall quietly.
+                        lostStreak = true;
+                        hookInstalled = false;
+                        Program.Log("watchdog: no hook callback while the mouse moved; reinstalling");
+                        Program.Emit("{\"type\":\"hook_lost\"}");
+                    }
+                    else
+                    {
+                        reinstallQuiet = true;
+                    }
                     Native.PostThreadMessage(loopThreadId, Native.WM_REINSTALL_HOOK, UIntPtr.Zero, IntPtr.Zero);
                 }
                 prev = cur; havePrev = haveCur; prevTick = lastCallbackTick; prevInput = input;
@@ -738,6 +756,7 @@ namespace Handover
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
         [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr GetModuleHandle(string name);
@@ -836,6 +855,21 @@ namespace Handover
                 finally { Marshal.FreeHGlobal(buffer); }
             }
             finally { CloseHandle(token); }
+        }
+
+        /// <summary>True when the window under the point, or the foreground window, belongs to a higher-integrity process.</summary>
+        public static bool CursorOrForegroundHigherIntegrity(int x, int y)
+        {
+            try
+            {
+                uint pid; string t;
+                RootWindowAt(x, y, out pid, out t);
+                if (IsHigherIntegrity(pid)) return true;
+                uint fg;
+                GetWindowThreadProcessId(GetForegroundWindow(), out fg);
+                return IsHigherIntegrity(fg);
+            }
+            catch { return false; }
         }
 
         private static int ownRid = -2;

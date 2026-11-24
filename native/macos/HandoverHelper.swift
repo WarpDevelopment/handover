@@ -422,16 +422,23 @@ func tapHealthy() -> Bool {
     return CFMachPortIsValid(tap) && CGEvent.tapIsEnabled(tap: tap)
 }
 
-/// One pass of the poll: tear down when trust is gone or the tap died, (re)build when trusted and missing.
-/// Returns the trust and hook state to report.
+var previouslyTrusted = false
+var trustRevoked = false
+
+/// One pass of the poll. Trust that is REVOKED mid-run (trusted, then not) tears the tap down, and it is not
+/// rebuilt until trust returns. A Mac that was never trusted keeps trying to create the tap as before, so
+/// clicks still arrive as visual-only `permission_missing` steps when the tap can exist without Accessibility.
+/// A tap that exists but is dead or disabled is rebuilt. Returns the trust and hook state to report.
 func reconcileTap() -> (trusted: Bool, hook: Bool) {
     let trusted = AXIsProcessTrusted()
-    if !trusted {
+    if previouslyTrusted, !trusted {
         teardownTap()
-    } else if eventTap != nil, !tapHealthy() {
-        teardownTap() // rebuilt just below
+        trustRevoked = true
     }
-    if trusted, eventTap == nil { _ = installTap() }
+    if trusted { trustRevoked = false }
+    previouslyTrusted = trusted
+    if eventTap != nil, !tapHealthy() { teardownTap() } // rebuilt just below
+    if eventTap == nil, !trustRevoked { _ = installTap() }
     return (trusted, tapHealthy())
 }
 

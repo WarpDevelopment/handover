@@ -33,6 +33,12 @@ Files outside lane FN, touched with the orchestrator's approval (`hc` message, "
 | SEC-7 | Spawn failures store `spawn error (ENOENT)` style codes, never `err.message` | `SEC-7: a spawn failure stores a code ...` |
 | SEC-11 / NAT-12 | `defaultHelperLaunch` adds the cwd candidate only when not packaged (`isPackagedApp()`: Electron and not `defaultApp`) | `SEC-11: a packaged app never launches a helper ...` |
 
+## Deviations to know about
+
+- SEC-11 uses `isPackagedApp()` (Electron present and `process.defaultApp` unset) instead of `app.isPackaged`, so `helper-status.ts` stays free of an `electron` import and stays testable in Node. The two agree in a packaged and in an `electron .` run. The function takes `packaged` as a parameter, so a caller can pass `app.isPackaged` directly.
+- NAT-4: `trackerStateAfterError` keeps a `crashed` or `no-permission` state, so the `error` line the macOS helper sends right after `hook:false` cannot make the doctor say ok. The `hook-false-trusted` mode sends that error line and the test asserts `crashed` after it.
+- `pointer-helper.test.ts` lines 331 and 334 still hold a raw U+2028 inside a string. It works but is invisible; the Edit tool could not match it to replace it.
+
 ## Checks run
 
 `npm test`: 330 tests, 330 pass, 0 fail (320 before, 10 new). `npm run build`: exit 0. `tsc --noEmit`: clean.
@@ -63,7 +69,9 @@ Build succeeded.
 - Windows: the 200 ms ancestry deadline and the early-element return in Edge, Office and Teams (the NAT-5 hypothesis).
 - Windows: UIA `TransactionTimeout`, not implemented (see NAT-11).
 - macOS: tap teardown and rebuild when Accessibility is revoked and re-granted live; `AXManualAccessibility` retry and switch-off; the per-pid stuck counter via `CGWindowListCopyWindowInfo`. The helper builds and runs, but trust was not toggled here.
-- macOS no longer creates the tap while untrusted (the contract says to tear it down when trust is gone), so an untrusted Mac reports `hook:false` and a `permission_lost` gap rather than `permission_missing` clicks.
+- macOS tap policy: a Mac that was never trusted still tries to create the tap each poll, as before, so clicks keep arriving as visual-only `permission_missing` steps (the `no-ax` mode and test). The tap is torn down only on a trusted-to-untrusted transition and rebuilt when trust returns or when the tap is dead or disabled.
+- Windows: whether a normal-integrity `WH_MOUSE_LL` hook gets callbacks while the cursor or foreground window is a higher-integrity one. The watchdog skips its check there (`CursorOrForegroundHigherIntegrity`) and reports `hook_lost` once per no-callback streak (repeat reinstalls are quiet), so it cannot spam gaps if UIPI withholds callbacks. Untested on a device.
+- Privacy floors (`tester-package.md` §1) checked: no keyboard hook added. `GetLastInputInfo` returns a tick count only, never which input. `CGWindowListCopyWindowInfo` reads each window's pid and bounds only, never names. The Windows image path is read in-process but only the file name without folder is emitted.
 
 ## Not done
 

@@ -209,8 +209,10 @@ export class PointerHelperCollector implements Collector {
     }
   }
 
-  private trackerStateAfterError(): "ok" | "no-permission" {
-    return this.tracker.report().helper === "no-permission" ? "no-permission" : "ok";
+  /** An `error` line must not make an unhealthy helper look healthy: keep a non-ok state (NAT-4). */
+  private trackerStateAfterError(): "ok" | "no-permission" | "crashed" {
+    const state = this.tracker.report().helper;
+    return state === "no-permission" || state === "crashed" ? state : "ok";
   }
 
   private onExit(reason: string, which?: ChildProcessWithoutNullStreams): void {

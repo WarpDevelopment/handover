@@ -347,7 +347,10 @@ test("NAT-4: hook false while Accessibility is granted is a gap and not healthy"
   try {
     await waitFor(() => gaps(events).length >= 1, "a gap");
     assert.deepEqual(gaps(events)[0], { reason: "helper_restart" });
+    // The real macOS helper follows this line with an `error` line; it must not flip the state back to ok.
+    await waitFor(() => /event tap/.test(tracker.report().lastError ?? ""), "the error line");
     assert.notEqual(tracker.report().helper, "ok");
+    assert.equal(tracker.report().helper, "crashed");
   } finally {
     await collector.stop();
   }
