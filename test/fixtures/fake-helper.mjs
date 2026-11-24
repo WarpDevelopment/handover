@@ -4,6 +4,11 @@
 //   crash-once   first run: hello then exit 1; later runs (stateFile exists) behave like `good`
 //   no-ax        capabilities with accessibility:false (hook still works), then a permission_missing click
 //   no-tap       capabilities with hook:false, accessibility:false (macOS before the grant)
+//   trust-revoked      (NAT-1) capabilities ok, a click, then hook:false accessibility:false
+//   hook-lost          (NAT-2) capabilities ok, {"type":"hook_lost"}, then capabilities ok again
+//   unicode-name       (NAT-3) a click whose name holds raw U+2028/U+2029/U+0085, CRLF-terminated
+//   hook-false-trusted (NAT-4) capabilities hook:false accessibility:true
+//   crash-after-hello  (NAT-8) hello, then exit 1 after 20 ms, every time
 //   silent       prints nothing at all (a hung helper)
 import { existsSync, writeFileSync } from "node:fs";
 
@@ -59,6 +64,42 @@ if (mode === "good") {
   out({ type: "capabilities", hook: false, accessibility: false, space: "macos_global_points" });
   process.stdin.resume();
   process.stdin.on("end", () => process.exit(0));
+} else if (mode === "trust-revoked") {
+  // NAT-1: Accessibility is taken away mid-run; the helper tears the tap down and says so.
+  hello();
+  out({ type: "capabilities", hook: true, accessibility: true, space: "macos_global_points" });
+  out({ type: "click", button: "left", clickCount: 1, x: 1, y: 2, lookupMs: 5, target });
+  setTimeout(() => out({ type: "capabilities", hook: false, accessibility: false, space: "macos_global_points" }), 60);
+  process.stdin.resume();
+  process.stdin.on("end", () => process.exit(0));
+} else if (mode === "hook-lost") {
+  // NAT-2: the Windows watchdog saw the hook disappear, reinstalled it, and re-announced it.
+  hello();
+  out({ type: "capabilities", hook: true, accessibility: null, space: "windows_virtual_px" });
+  setTimeout(() => out({ type: "hook_lost" }), 40);
+  setTimeout(() => out({ type: "capabilities", hook: true, accessibility: null, space: "windows_virtual_px" }), 140);
+  process.stdin.resume();
+  process.stdin.on("end", () => process.exit(0));
+} else if (mode === "unicode-name") {
+  // NAT-3: a raw U+2028 / U+2029 / U+0085 inside a control name, as a helper that does not escape them sends it.
+  hello();
+  out({ type: "capabilities", hook: true, accessibility: true, space: "windows_virtual_px" });
+  process.stdout.write(
+    `${JSON.stringify({ type: "click", button: "left", clickCount: 1, x: 7, y: 8, lookupMs: 3, target: { ...target, name: "Line One Two\u0085Three" } })}\r\n`,
+  );
+  out({ type: "click", button: "left", clickCount: 1, x: 9, y: 9, lookupMs: 3, unavailableReason: "timeout" });
+  process.stdin.resume();
+  process.stdin.on("end", () => process.exit(0));
+} else if (mode === "hook-false-trusted") {
+  // NAT-4: Accessibility is granted but the hook is not installed.
+  hello();
+  out({ type: "capabilities", hook: false, accessibility: true, space: "macos_global_points" });
+  process.stdin.resume();
+  process.stdin.on("end", () => process.exit(0));
+} else if (mode === "crash-after-hello") {
+  // NAT-8: every run says hello and dies; the test counts how often it is relaunched.
+  hello();
+  setTimeout(() => process.exit(1), 20);
 } else if (mode === "silent") {
   process.stdin.resume();
   process.stdin.on("end", () => process.exit(0));

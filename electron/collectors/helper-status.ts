@@ -14,6 +14,11 @@ function helperFileName(platform: NodeJS.Platform): string | null {
   return null;
 }
 
+/** Electron sets `defaultApp` only when run unpackaged (`electron .`); a plain Node run is not packaged either. */
+export function isPackagedApp(): boolean {
+  return Boolean(process.versions.electron) && !(process as { defaultApp?: boolean }).defaultApp;
+}
+
 /**
  * Where the helper lives: `<resources>/helper/` when packaged (electron-builder extraResources),
  * `native/build/` in a dev checkout. Returns null when the binary is not there.
@@ -22,12 +27,14 @@ export function defaultHelperLaunch(
   platform: NodeJS.Platform = process.platform,
   resourcesPath: string | undefined = (process as { resourcesPath?: string }).resourcesPath,
   cwd: string = process.cwd(),
+  packaged: boolean = isPackagedApp(),
 ): HelperLaunch | null {
   const name = helperFileName(platform);
   if (!name) return null;
+  // A packaged app must never launch an executable from the working directory (SEC-11 / NAT-12).
   const candidates = [
     ...(resourcesPath ? [path.join(resourcesPath, "helper", name)] : []),
-    path.join(cwd, "native", "build", name),
+    ...(packaged ? [] : [path.join(cwd, "native", "build", name)]),
   ];
   const file = candidates.find((candidate) => existsSync(candidate));
   return file ? { file, args: [] } : null;
