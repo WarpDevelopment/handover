@@ -141,7 +141,12 @@ function clip(i: Interval, duration: number): Interval | null {
   return end > start ? { start, end } : null;
 }
 
-const BLIND_EDGE_TOLERANCE_MS = 1500;
+/**
+ * How far the helper's blind-spot line and the active-window poll can disagree about the same moment. The helper
+ * ticks every 1 s and the active-window poll every 1,000 ms, or 1,600 ms while a browser is frontmost; 2.5 s covers
+ * the slower poll plus the helper's tick and some slack.
+ */
+const BLIND_EDGE_TOLERANCE_MS = 2500;
 
 /** `C:\Windows\System32\Taskmgr.exe`, `Taskmgr.exe` and `taskmgr` are the same process. */
 function processKey(name: string): string {
@@ -174,7 +179,11 @@ export function resolveGaps(
     const process = typeof p.process === "string" && p.process ? { process: p.process.slice(0, 60) } : {};
     if (p.tEndMs === undefined) {
       if (current) continue; // already open for this reason
-      const g: ResolvedGap = { reason: p.reason, start: ev.t, end: durationMs, ...process };
+      const start =
+        typeof p.tStartMs === "number" && Number.isFinite(p.tStartMs) && p.tStartMs >= 0 && p.tStartMs <= ev.t
+          ? p.tStartMs
+          : ev.t;
+      const g: ResolvedGap = { reason: p.reason, start, end: durationMs, ...process };
       open.set(p.reason, g);
       out.push(g);
     } else if (current) {
@@ -1137,8 +1146,10 @@ export async function buildPackageDetailed(
     const end = Math.round(g.end);
     let after: string | undefined;
     let beforeStep: string | undefined;
+    let afterT: number | undefined;
+    let beforeT: number | undefined;
     // The helper reports an elevated window on its own 1 s tick and the active-window poll reports the app
-    // switch on another, so the two disagree by up to about a second. For elevated_window only: a switch to
+    // switch on another, so the two disagree by up to a couple of seconds. For elevated_window only: a switch to
     // the same process just after the gap opened is the step the gap follows, and a step just before the gap
     // closed is already after it (no step lies inside a gap).
     const blind = g.reason === "elevated_window";
@@ -1147,13 +1158,26 @@ export async function buildPackageDetailed(
       const t = s.t_start_ms;
       const switchIn =
         wanted !== "" && t > start && t <= start + BLIND_EDGE_TOLERANCE_MS && isSwitchTo(s, wanted);
-      if (t <= start || switchIn) after = s.step_id;
-      else if (beforeStep === undefined && t >= (blind ? end - BLIND_EDGE_TOLERANCE_MS : end)) beforeStep = s.step_id;
+      if (t <= start || switchIn) {
+        after = s.step_id;
+        afterT = t;
+      } else if (beforeStep === undefined && t >= (blind ? end - BLIND_EDGE_TOLERANCE_MS : end)) {
+        beforeStep = s.step_id;
+        beforeT = t;
+      }
+    }
+    // The tolerance can pick a step that is a little inside the raw interval. Clamp the written interval to
+    // the two steps it sits between, so no named step lies inside it (CLAUDE_HANDOFF.md says none does).
+    let outStart = start;
+    let outEnd = end;
+    if (blind) {
+      if (afterT !== undefined) outStart = Math.max(outStart, afterT);
+      if (beforeT !== undefined) outEnd = Math.min(outEnd, beforeT);
     }
     gaps.push({
       gap_id: `gap_${pad(gaps.length + 1, 4)}`,
-      t_start_ms: start,
-      t_end_ms: Math.max(start, end),
+      t_start_ms: outStart,
+      t_end_ms: Math.max(outStart, outEnd),
       reason: p.reason,
       ...(g.process && p.reason === "elevated_window" ? { process: g.process } : {}),
       ...(after ? { after_step: after } : {}),

@@ -450,7 +450,9 @@ test("G1 F1: a switch to the admin window just AFTER the gap opened is the step 
   const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
   assert.ok(r.taskmgr && r.notepad, "both switch steps exist");
   assert.equal(r.gaps[0].after_step, r.taskmgr);
-  const notObserved = r.md.indexOf("Not observed (2.0 s)");
+  // D2: the written interval starts no earlier than the step it follows (3,400, not 3,100).
+  assert.equal(r.gaps[0].t_start_ms, 3400);
+  const notObserved = r.md.indexOf("Not observed (1.4 s)");
   assert.ok(notObserved > r.md.indexOf(`**${r.taskmgr}.`), "the notice is below 'Switch to Task Manager'");
   assert.ok(notObserved < r.md.indexOf(`**${r.notepad}.`), "and above the step that leaves");
 });
@@ -458,6 +460,42 @@ test("G1 F1: a switch to the admin window just AFTER the gap opened is the step 
 test("G1 F1: the step that leaves the admin window just BEFORE the gap closed is the step after the gap", async () => {
   const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
   assert.equal(r.gaps[0].before_step, r.notepad, "a step 300 ms before the end is not inside the gap");
+  // D2: the written interval ends no later than the step after it (4,800, not 5,100).
+  assert.equal(r.gaps[0].t_end_ms, 4800);
+});
+
+test("G1 D2: no named step lies inside the written interval of an elevated_window gap", async () => {
+  const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  const steps = text(r.files, "steps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const g = r.gaps[0];
+  const inside = steps.filter((s) => s.t_start_ms > g.t_start_ms && s.t_start_ms < g.t_end_ms);
+  assert.deepEqual(inside.map((s) => s.step_id), []);
+  assert.ok(g.t_end_ms >= g.t_start_ms);
+});
+
+test("G1 D1: an elevated_window open event with tStartMs starts the gap there, not at the event's own time", async () => {
+  const { session } = await load();
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    gap(60, 6400, { reason: "elevated_window", process: "Taskmgr", tStartMs: 6000 }), // written 400 ms after the resume
+    gap(61, 8000, { reason: "elevated_window", tEndMs: 8000 }),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const g = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l))[0];
+  assert.equal(g.t_start_ms, 6000);
+});
+
+test("G1 D3: the switch-in tolerance is 2.5 s (the poll runs every 1.6 s after a browser)", async () => {
+  // Placed after the session's own clicks and its freeze (6,000 to 9,000), which would otherwise absorb the switch.
+  const within = await blindSession({ start: 16200, end: 19600, process: "Taskmgr", switchIn: 18600, switchOut: 19400 });
+  assert.ok(within.taskmgr, "the switch step exists");
+  assert.equal(within.gaps[0].after_step, within.taskmgr, "2.4 s after the start still counts");
+  const beyond = await blindSession({ start: 16200, end: 19600, process: "Taskmgr", switchIn: 18800, switchOut: 19400 });
+  assert.ok(beyond.taskmgr, "the switch step exists");
+  assert.notEqual(beyond.gaps[0].after_step, beyond.taskmgr, "2.6 s after the start does not");
 });
 
 test("G1 F1: without a process name the tolerance does not apply to the switch-in", async () => {
