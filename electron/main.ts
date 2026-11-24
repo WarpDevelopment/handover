@@ -32,7 +32,8 @@ import { processSession } from "./pipeline";
 import { registerIpc } from "./ipc";
 import { isValidSessionId, sessionDir } from "./recorder/session-store";
 import { FreezeCoordinator, type OverlayWindow } from "./freeze";
-import { registerHotkey } from "./hotkeys";
+import { adaptOverlayWindow } from "./overlay-window";
+import { ExplainHotkey } from "./explain-hotkey";
 import { ReviewService } from "./review";
 import { saveDiagnosticsToDesktop } from "./diagnostics-info";
 import { createLogger, initFileLogging } from "./logger";
@@ -192,48 +193,21 @@ const overlayReveal = new Map<number, () => void>();
 function overlayWindow(display: Electron.Display): OverlayWindow {
   const win = createFreezeOverlay(display);
   const senderId = win.webContents.id;
-  let wantFocus = false;
-  let revealed = false;
-  const reveal = () => {
-    if (revealed || win.isDestroyed()) return;
-    revealed = true;
-    // Only the display under the pointer takes the keyboard; the others appear without stealing it,
-    // whichever of them finishes loading last.
-    if (wantFocus) {
-      win.show();
-      win.focus();
-    } else {
-      win.showInactive();
-    }
-    win.moveTop();
-  };
-  overlayReveal.set(senderId, reveal);
-  const timer = setTimeout(reveal, OVERLAY_REVEAL_TIMEOUT_MS);
-  win.once("closed", () => {
-    clearTimeout(timer);
-    overlayReveal.delete(senderId);
+  // A load failure, crash, hang, or a page that never became ready cancels the freeze (APP-1).
+  const adapter = adaptOverlayWindow(win, {
+    platform: process.platform,
+    revealTimeoutMs: OVERLAY_REVEAL_TIMEOUT_MS,
+    onFailure: () => {
+      void freeze.cancel();
+      // Say why Explain vanished instead of leaving the user guessing.
+      const bar = recordingControlsWindow;
+      if (bar && !bar.isDestroyed()) bar.webContents.send(IPC.actionError, "Explain could not open. Try again.");
+    },
+    log,
   });
-  return {
-    senderId,
-    // Shown by the page's "ready" signal or the timeout above, whichever comes first.
-    show: () => undefined,
-    focus: () => {
-      wantFocus = true;
-      if (revealed && !win.isDestroyed()) win.focus();
-    },
-    destroy: () => {
-      if (!win.isDestroyed()) win.destroy();
-    },
-    isDestroyed: () => win.isDestroyed(),
-    onClosed: (cb) => win.once("closed", cb),
-    onEscape: (cb) => {
-      win.webContents.on("before-input-event", (event, input) => {
-        if (input.type !== "keyDown" || input.key !== "Escape") return;
-        event.preventDefault();
-        cb();
-      });
-    },
-  };
+  overlayReveal.set(senderId, adapter.ready);
+  win.once("closed", () => overlayReveal.delete(senderId));
+  return adapter.overlay;
 }
 
 const freeze: FreezeCoordinator = new FreezeCoordinator({
@@ -249,6 +223,11 @@ const freeze: FreezeCoordinator = new FreezeCoordinator({
     return `data:${mime};base64,${bytes.toString("base64")}`;
   },
   openWindow: overlayWindow,
+  // Escape works even when the overlay page cannot see the key; held only while frozen.
+  registerEscape: (cb) => {
+    if (!globalShortcut.register("Escape", cb)) log.warn("Escape shortcut could not be registered for the freeze");
+    return () => globalShortcut.unregister("Escape");
+  },
   activateApp: () => {
     if (process.platform === "darwin") app.focus({ steal: true });
   },
@@ -266,7 +245,20 @@ async function startExplain(): Promise<ActionResult> {
 
 /** The Explain hotkey, or null when it could not be registered (the bar's button still works). */
 const EXPLAIN_HOTKEY = "CommandOrControl+Shift+E";
-let explainHotkey: string | null = null;
+/** Held system-wide only while recording (APP-8); see ExplainHotkey. */
+const explainHotkey = new ExplainHotkey(
+  globalShortcut,
+  EXPLAIN_HOTKEY,
+  () => {
+    // A hotkey has no button to show a failure on, so the bar does (APP-5).
+    void startExplain().then((result) => {
+      if (result.ok) return;
+      const bar = recordingControlsWindow;
+      if (bar && !bar.isDestroyed()) bar.webContents.send(IPC.actionError, result.error ?? "Explain did not start.");
+    });
+  },
+  log,
+);
 
 async function startRecording(): Promise<StartResult> {
   if (recordingStartPending) {
@@ -422,7 +414,8 @@ function showRecordingControls(): void {
   const win = ensureRecordingControlsWindow();
   clampRecordingControlsWindow(win);
   if (!win.isVisible()) win.showInactive();
-  win.moveTop();
+  // On Windows the bar must not rise above the freeze overlay (APP-10).
+  if (!freeze.active) win.moveTop();
 }
 
 function showRecorderWindow(): BrowserWindow {
@@ -515,6 +508,8 @@ app.whenReady().then(async () => {
     installWebRequestDeny(session.defaultSession.webRequest, (m) => log.warn(m));
     log.warn("HANDOVER_DENY_NETWORK=1: all non-local network access is blocked");
   }
+  // SEC-3: no dictionary downloads from Google, no spell-checking of typed notes.
+  session.defaultSession.setSpellCheckerEnabled(false);
   if (process.platform === "win32") Menu.setApplicationMenu(null);
   if (dock && app.dock) app.dock.setIcon(dock);
 
@@ -548,6 +543,7 @@ app.whenReady().then(async () => {
         controls && !controls.isDestroyed() && sender === controls.webContents,
       );
     },
+    (sender) => Boolean(libraryWindow && !libraryWindow.isDestroyed() && sender === libraryWindow.webContents),
   );
   sensitiveModels.initialize();
   ipcMain.handle(IPC.start, () => requestStartRecording());
@@ -673,7 +669,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.pause, (event) => (fromControls(event.sender) ? recorder.pause() : notAllowed));
   ipcMain.handle(IPC.resume, (event) => (fromControls(event.sender) ? recorder.resume() : notAllowed));
   ipcMain.handle(IPC.explain, (event) => (fromControls(event.sender) ? startExplain() : notAllowed));
-  ipcMain.handle(IPC.explainHotkey, () => explainHotkey);
+  ipcMain.handle(IPC.explainHotkey, () => explainHotkey.current());
   // Freeze overlay windows only; the coordinator ignores any other sender.
   ipcMain.handle(IPC.freezeInit, (event) => freeze.init(event.sender.id));
   ipcMain.on(IPC.freezeState, (event, state: unknown) => freeze.setState(event.sender.id, state));
@@ -713,19 +709,27 @@ app.whenReady().then(async () => {
   });
 
   recorder.onStatusChanged((status) => {
+    // Before the bar is shown, so its Explain hotkey query already sees the registration.
+    explainHotkey.sync(status.state === "recording");
     broadcast(IPC.statusChanged, status);
     syncRecordingWindows(status);
   });
   recorderWindow = createRecorderWindow();
 
-  const handleDisplayChange = () => {
+  const handleDisplayChange = (reason: string, affectsOverlay = true) => {
+    log.info(`Display layout changed (${reason}), ${screen.getAllDisplays().length} display(s)`);
+    // Overlay windows sized for the old layout are wrong: end the freeze, unsaved (APP-7, APP-4).
+    // A work-area-only change (taskbar moved) does not move or resize a full-screen overlay.
+    if (affectsOverlay) freeze.displaysChanged();
     clampControlsToDisplay();
     void screens.refresh();
     recorder.publishDisplays();
   };
-  screen.on("display-added", handleDisplayChange);
-  screen.on("display-removed", handleDisplayChange);
-  screen.on("display-metrics-changed", handleDisplayChange);
+  screen.on("display-added", () => handleDisplayChange("added"));
+  screen.on("display-removed", () => handleDisplayChange("removed"));
+  screen.on("display-metrics-changed", (_event, _display, changed) =>
+    handleDisplayChange("metrics", changed.includes("bounds") || changed.includes("scaleFactor")),
+  );
 
   try {
     createTray(
@@ -748,11 +752,6 @@ app.whenReady().then(async () => {
   if (!globalShortcut.register("CommandOrControl+Shift+R", toggle)) {
     log.warn("Global shortcut registration failed");
   }
-  // Explain: if another app owns the hotkey the recording bar's Explain button still works.
-  if (registerHotkey(globalShortcut, EXPLAIN_HOTKEY, () => void startExplain(), log)) {
-    explainHotkey = EXPLAIN_HOTKEY;
-  }
-
   instanceReady?.();
 });
 

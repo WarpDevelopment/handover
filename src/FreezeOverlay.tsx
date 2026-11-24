@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ExplainAnnotationInput, ExplainShape } from "../common/handover/explain";
 import { cssToDpx, thinPoints } from "../common/handover/overlay-geometry";
 import type { FreezeInit } from "../common/ipc";
+import { enterShouldSave } from "./freeze-keys";
 
 type Point = [number, number];
 interface Shape {
@@ -181,7 +182,14 @@ export function FreezeOverlay() {
       if (e.key === "Escape") {
         e.preventDefault();
         void cancel();
-      } else if (e.key === "Enter" && !e.shiftKey && !(e.target instanceof HTMLButtonElement)) {
+      } else if (
+        enterShouldSave({
+          key: e.key,
+          shiftKey: e.shiftKey,
+          targetIsButton: e.target instanceof HTMLButtonElement,
+          documentHasFocus: document.hasFocus(),
+        })
+      ) {
         e.preventDefault();
         void done();
       }
@@ -189,6 +197,20 @@ export function FreezeOverlay() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [cancel, done]);
+
+  // Windows can refuse the overlay the keyboard (foreground lock). Say so, and let a click fix it.
+  const [focused, setFocused] = useState(() => document.hasFocus());
+  useEffect(() => {
+    const sync = () => setFocused(document.hasFocus());
+    window.addEventListener("focus", sync);
+    window.addEventListener("blur", sync);
+    const poll = window.setInterval(sync, 500);
+    return () => {
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("blur", sync);
+      window.clearInterval(poll);
+    };
+  }, []);
 
   const point = (e: React.PointerEvent): Point => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -298,6 +320,16 @@ export function FreezeOverlay() {
       </div>
 
       <section className="freeze-card" aria-label="Add a note">
+        {!focused && (
+          <button
+            type="button"
+            role="alert"
+            style={{ display: "block", width: "100%", marginBottom: 8, padding: "8px 10px", border: "1px solid #E5484D", borderRadius: 6, background: "#FFF1F1", color: "#7A1E22", font: "inherit", cursor: "text", textAlign: "left" }}
+            onClick={() => noteRef.current?.focus()}
+          >
+            Click here to type your note. Typing now would go to the app underneath.
+          </button>
+        )}
         <label htmlFor="freeze-note">Add a note for whoever reads this (optional)</label>
         <textarea
           id="freeze-note"

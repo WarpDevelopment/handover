@@ -30,22 +30,44 @@ const DISPLAYS: DisplayLike[] = [
   { id: 22, bounds: { x: 1536, y: 0, width: 2560, height: 1440 }, size: { width: 2560, height: 1440 }, scaleFactor: 1.5 },
 ];
 
-function setup(opts: { begin?: BeginExplainResult; cursor?: number; failOpenAt?: number; order?: string[] } = {}) {
+function setup(
+  opts: {
+    begin?: BeginExplainResult;
+    cursor?: number;
+    failOpenAt?: number;
+    order?: string[];
+    endThrows?: boolean;
+    beginGate?: Promise<void>;
+  } = {},
+) {
   const windows: FakeWindow[] = [];
   const ended: unknown[] = [];
+  const escape = { registered: 0, released: 0, held: false, fire: () => {} };
   let activated = 0;
   const deps: FreezeDeps = {
-    beginExplain: async () =>
-      opts.begin ?? {
+    registerEscape: (cb) => {
+      escape.registered++;
+      escape.held = true;
+      escape.fire = cb;
+      return () => {
+        escape.released++;
+        escape.held = false;
+      };
+    },
+    beginExplain: async () => {
+      await opts.beginGate;
+      return opts.begin ?? {
         ok: true,
         sessionDir: "/s",
         frames: [
           { file: "shots/000001.jpg", displayId: 11, epoch: 1 },
           { file: "shots/000002.jpg", displayId: 22, epoch: 1 },
         ],
-      },
+      };
+    },
     endExplain: async (r): Promise<EndExplainResult> => {
       ended.push(r);
+      if (opts.endThrows) throw new Error("recorder gone");
       return { ok: true, annotationIds: [] };
     },
     getDisplays: () => DISPLAYS,
@@ -63,7 +85,7 @@ function setup(opts: { begin?: BeginExplainResult; cursor?: number; failOpenAt?:
     },
     activateApp: () => { activated++; },
   };
-  return { freeze: new FreezeCoordinator(deps), windows, ended, activated: () => activated };
+  return { freeze: new FreezeCoordinator(deps), windows, ended, escape, activated: () => activated };
 }
 
 const rect = (displayId: number) => ({
@@ -214,4 +236,75 @@ test("frames for a display that is gone are skipped; with none left the freeze i
   assert.equal(res.ok, false);
   assert.deepEqual(none.ended, [{ cancelled: true }]);
   assert.equal(none.windows.length, 0);
+});
+
+test("APP-1: Escape is registered globally only during a freeze and released when it closes", async () => {
+  const done = setup();
+  assert.equal(done.escape.registered, 0, "not held before a freeze");
+  await done.freeze.begin();
+  assert.equal(done.escape.held, true);
+  await done.freeze.done(100);
+  assert.equal(done.escape.held, false);
+  assert.equal(done.escape.released, 1);
+
+  const esc = setup();
+  await esc.freeze.begin();
+  esc.escape.fire(); // the global Escape, with no overlay page involved
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(esc.ended, [{ cancelled: true, annotations: [] }]);
+  assert.equal(esc.escape.held, false);
+  assert.ok(esc.windows.every((w) => w.destroyed));
+
+  const stopped = setup();
+  await stopped.freeze.begin();
+  stopped.freeze.abort();
+  assert.equal(stopped.escape.held, false, "released when the recording stops");
+});
+
+test("APP-1: the overlay closes even when ending the freeze in the recorder throws", async () => {
+  const { freeze, windows, escape } = setup({ endThrows: true });
+  await freeze.begin();
+  const res = await freeze.cancel();
+  assert.equal(res.ok, false);
+  assert.ok(windows.every((w) => w.destroyed), "no black window is left behind");
+  assert.equal(escape.held, false);
+  assert.equal(freeze.active, false, "a later Explain is not refused");
+});
+
+test("APP-6: a recording that stops while a freeze is opening opens no windows", async () => {
+  let release!: () => void;
+  const beginGate = new Promise<void>((r) => { release = r; });
+  const { freeze, windows, ended, escape } = setup({ beginGate });
+  const pending = freeze.begin();
+  freeze.abort(); // the controller stopped the recording; it wrote explain.end itself
+  release();
+  const res = await pending;
+  assert.equal(res.ok, false);
+  assert.equal(windows.length, 0);
+  assert.deepEqual(ended, [], "no second explain.end");
+  assert.equal(escape.registered, 0);
+  assert.equal(freeze.active, false);
+});
+
+test("APP-7: a display change cancels an open freeze, and one that arrives while opening", async () => {
+  const open = setup();
+  await open.freeze.begin();
+  open.freeze.displaysChanged();
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(open.ended, [{ cancelled: true, annotations: [] }]);
+  assert.ok(open.windows.every((w) => w.destroyed));
+
+  let release!: () => void;
+  const beginGate = new Promise<void>((r) => { release = r; });
+  const opening = setup({ beginGate });
+  const pending = opening.freeze.begin();
+  opening.freeze.displaysChanged();
+  release();
+  assert.equal((await pending).ok, false);
+  assert.equal(opening.windows.length, 0);
+  assert.deepEqual(opening.ended, [{ cancelled: true }]);
+
+  const idle = setup();
+  idle.freeze.displaysChanged(); // nothing frozen: harmless
+  assert.equal(idle.freeze.active, false);
 });

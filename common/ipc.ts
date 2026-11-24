@@ -34,6 +34,8 @@ export interface SessionSummary {
   sizeBytes: number | null;
   /** True once post-processing produced a bundle. */
   processed: boolean;
+  /** True once the user marked review done and has not edited since (SEC-2): export is allowed. */
+  reviewed: boolean;
   hasVideo: boolean;
   /** True when the user opted into narration and usable audio was saved. */
   hasAudio: boolean;
@@ -389,6 +391,8 @@ export const IPC = {
   reviewLoad: "review:load",
   reviewImage: "review:image",
   reviewEdit: "review:edit",
+  markReviewed: "sessions:mark-reviewed",
+  actionError: "recorder:action-error",
 } as const;
 
 /** Shape exposed on `window.handover` by the preload bridge. */
@@ -498,4 +502,8 @@ export interface HandoverApi {
     sessionId: string,
     edit: import("./handover/review").ReviewEditInput,
   ): Promise<ReviewLoadResult>;
+  /** Recording bar: an action started from a hotkey failed (APP-5); the bar shows the message. */
+  onActionError(cb: (message: string) => void): () => void;
+  /** Library: the user finished reviewing; export stays disabled until this is recorded (SEC-2). */
+  markReviewed(sessionId: string): Promise<{ ok: boolean }>;
 }

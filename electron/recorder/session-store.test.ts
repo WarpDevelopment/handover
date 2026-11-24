@@ -5,7 +5,32 @@ import path from "node:path";
 import test from "node:test";
 
 import type { SessionMeta } from "../../common/types";
-import { SessionStore } from "./session-store";
+import { resolveSessionsRoot, SessionStore } from "./session-store";
+
+test("APP-11: on Windows the sessions root is under LOCALAPPDATA, not roaming AppData", () => {
+  const root = resolveSessionsRoot({
+    platform: "win32",
+    env: { LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local", APPDATA: "C:\\Users\\tester\\AppData\\Roaming" },
+    userData: () => "C:\\Users\\tester\\AppData\\Roaming\\Handover",
+  });
+  assert.equal(root, "C:\\Users\\tester\\AppData\\Local\\Handover\\sessions");
+  assert.ok(root.startsWith("C:\\Users\\tester\\AppData\\Local\\"));
+});
+
+test("APP-11: other platforms, a missing LOCALAPPDATA and the test override keep their old roots", () => {
+  assert.equal(
+    resolveSessionsRoot({ platform: "darwin", env: { LOCALAPPDATA: "/x" }, userData: () => "/u" }),
+    path.join("/u", "sessions"),
+  );
+  assert.equal(
+    resolveSessionsRoot({ platform: "win32", env: {}, userData: () => "C:\\u" }),
+    path.join("C:\\u", "sessions"),
+  );
+  assert.equal(
+    resolveSessionsRoot({ platform: "win32", env: { HANDOVER_SESSIONS_DIR: "/tmp/s", LOCALAPPDATA: "C:\\L" }, userData: () => "/u" }),
+    path.resolve("/tmp/s"),
+  );
+});
 
 function makeMeta(id: string): SessionMeta {
   return {

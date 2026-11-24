@@ -147,6 +147,7 @@ export class VideoRecorder {
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: false,
+          spellcheck: false,
           backgroundThrottling: false,
         },
       });

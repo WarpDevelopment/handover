@@ -43,6 +43,7 @@ test("session size includes every artifact and deletion removes the whole direct
     assert.equal(summary?.sizeBytes, expectedBytes);
     assert.equal(summary?.hasAudio, true);
     assert.equal(summary?.narrationLanguage, "en");
+    assert.equal(summary?.reviewed, false, "SEC-2: a recording nobody reviewed cannot be exported");
     // The summary carries only recording facts: no analysis/skill/automation/import state.
     assert.deepEqual(Object.keys(summary ?? {}).sort(), [
       "durationMs",
@@ -54,6 +55,7 @@ test("session size includes every artifact and deletion removes the whole direct
       "narrationSegmentCount",
       "narrationUpdatedAt",
       "processed",
+      "reviewed",
       "sizeBytes",
       "startedAt",
       "stoppedAt",

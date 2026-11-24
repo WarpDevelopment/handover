@@ -29,6 +29,7 @@ import type { NarrationManager } from "./narration/manager";
 import type { RecorderController } from "./recorder/controller";
 import type { ScreenSourceService } from "./video/sources";
 import { exportPackage, suggestedZipName } from "./export";
+import { isReviewed, markReviewed } from "./reviewed-marker";
 import { isValidSessionId, sessionDir, sessionsRoot } from "./recorder/session-store";
 import type { SensitiveModelManager } from "./sensitive/model-manager";
 import { deleteSession, listSessions } from "./sessions";
@@ -57,7 +58,9 @@ export function registerIpc(
   sensitiveModels: SensitiveModelManager,
   isRecordingStartPending: () => boolean,
   canForceTerminalFinish: (sender: WebContents) => boolean,
+  isLibrarySender: (sender: WebContents) => boolean,
 ): void {
+  const unavailable = { ok: false, error: "This action is only available from the Sessions window." } as const;
   ipcMain.handle(IPC.stop, (event, forceTerminal?: boolean) => {
     if (forceTerminal === true && !canForceTerminalFinish(event.sender)) {
       return { ok: false, error: "Terminal interruption confirmation is unavailable." };
@@ -180,7 +183,8 @@ export function registerIpc(
     }
   });
 
-  ipcMain.handle(IPC.deleteSession, async (_event, sessionId: string): Promise<DeleteSessionResult> => {
+  ipcMain.handle(IPC.deleteSession, async (event, sessionId: string): Promise<DeleteSessionResult> => {
+    if (!isLibrarySender(event.sender)) return unavailable;
     if (!isValidSessionId(sessionId)) return { ok: false, error: "Unknown session." };
     if (recorder.status().sessionId === sessionId) {
       return { ok: false, error: "You can't delete a recording while it's still in progress." };
@@ -202,9 +206,14 @@ export function registerIpc(
   ipcMain.handle(
     IPC.exportPackage,
     async (event, sessionId: string): Promise<ExportPackageResult> => {
+      if (!isLibrarySender(event.sender)) return unavailable;
       if (!isValidSessionId(sessionId)) return { ok: false, error: "Unknown session." };
       if (recorder.status().sessionId === sessionId) {
         return { ok: false, error: "You can't export a recording while it's still in progress." };
+      }
+      // SEC-2: the manifest says the user reviewed it, so they must have, and not edited since.
+      if (!(await isReviewed(sessionDir(sessionId)))) {
+        return { ok: false, error: "Review the steps and choose Done reviewing before exporting." };
       }
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
       const opts: SaveDialogOptions = {
@@ -225,9 +234,22 @@ export function registerIpc(
     },
   );
 
+  ipcMain.handle(IPC.markReviewed, async (event, sessionId: unknown): Promise<{ ok: boolean }> => {
+    if (!isLibrarySender(event.sender) || !isValidSessionId(sessionId)) return { ok: false };
+    if (recorder.status().sessionId === sessionId) return { ok: false };
+    try {
+      await markReviewed(sessionDir(sessionId));
+      return { ok: true };
+    } catch (err) {
+      log.warn("mark reviewed failed:", err instanceof Error ? err.message : String(err));
+      return { ok: false };
+    }
+  });
+
   ipcMain.handle(
     IPC.exportDebugBundle,
     async (event, sessionId: string): Promise<DebugBundleResult> => {
+      if (!isLibrarySender(event.sender)) return unavailable;
       if (!isValidSessionId(sessionId)) return { ok: false, error: "Unknown session." };
       // The session folder is still being written while it records; refuse to zip
       // a moving target.

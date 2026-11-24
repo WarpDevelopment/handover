@@ -38,6 +38,12 @@ export interface FreezeDeps {
   openWindow(display: DisplayLike): OverlayWindow;
   /** Bring the app forward so the overlay can take keyboard focus (macOS). */
   activateApp?(): void;
+  /**
+   * Register a system-wide Escape for the lifetime of one freeze (APP-1). A frozen overlay that never
+   * painted, or whose renderer died, cannot see the key, so Escape must not depend on it. Returns the
+   * function that releases it; it is called when the freeze closes.
+   */
+  registerEscape?(cb: () => void): () => void;
   log?: { info(...a: unknown[]): void; warn(...a: unknown[]): void };
 }
 
@@ -52,6 +58,11 @@ export class FreezeCoordinator {
   private views = new Map<number, View>();
   private opening = false;
   private ending = false;
+  /** Bumped by {@link abort}: a `begin()` that started before it must not open windows (APP-6). */
+  private generation = 0;
+  /** A display was added or removed while the windows were being opened (APP-7). */
+  private displaysChangedWhileOpening = false;
+  private releaseEscape: (() => void) | null = null;
 
   constructor(private readonly deps: FreezeDeps) {}
 
@@ -63,6 +74,10 @@ export class FreezeCoordinator {
   async begin(): Promise<ActionResult> {
     if (this.active) return { ok: false, error: "The screen is already frozen." };
     this.opening = true;
+    this.displaysChangedWhileOpening = false;
+    const generation = this.generation;
+    // The recording stopped meanwhile: the controller already wrote explain.end, so open nothing.
+    const aborted = () => generation !== this.generation;
     try {
       let begun: BeginExplainResult;
       try {
@@ -71,6 +86,7 @@ export class FreezeCoordinator {
         this.deps.log?.warn("could not freeze:", error instanceof Error ? error.message : error);
         return { ok: false, error: "Could not freeze the screen." };
       }
+      if (aborted()) return { ok: false, error: "The recording stopped." };
       if (!begun.ok || !begun.frames || !begun.sessionDir) {
         return { ok: false, error: begun.error ?? "Could not freeze the screen." };
       }
@@ -90,7 +106,8 @@ export class FreezeCoordinator {
           this.deps.log?.warn("could not read a frozen frame:", error instanceof Error ? error.message : error);
         }
       }
-      if (ready.length === 0) {
+      if (aborted()) return { ok: false, error: "The recording stopped." };
+      if (ready.length === 0 || this.displaysChangedWhileOpening) {
         await this.deps.endExplain({ cancelled: true });
         return { ok: false, error: "Could not show the frozen screen." };
       }
@@ -119,12 +136,14 @@ export class FreezeCoordinator {
           v.win.onClosed(() => this.windowClosed(v.win.senderId));
           v.win.onEscape(() => void this.cancel());
         }
+        this.releaseEscape = this.deps.registerEscape?.(() => void this.cancel()) ?? null;
         this.deps.activateApp?.();
         for (const v of views) v.win.show();
         views.find((v) => v.init.primary)?.win.focus();
       } catch (error) {
         this.deps.log?.warn("could not open the freeze windows:", error instanceof Error ? error.message : error);
         this.views.clear();
+        this.releaseEscapeShortcut();
         for (const v of views) {
           try {
             if (!v.win.isDestroyed()) v.win.destroy();
@@ -185,7 +204,17 @@ export class FreezeCoordinator {
 
   /** The recording stopped while frozen: the controller already wrote explain.end, so just close. */
   abort(): void {
+    this.generation++;
     this.closeAll();
+  }
+
+  /**
+   * A display was added, removed or changed. Windows sized for the old layout are wrong, so the
+   * freeze is cancelled (unsaved) rather than left covering the wrong area (APP-7).
+   */
+  displaysChanged(): void {
+    if (this.views.size > 0) void this.cancel();
+    else if (this.opening) this.displaysChangedWhileOpening = true;
   }
 
   private async end(result: { cancelled: boolean; annotations: ExplainAnnotationInput[] }): Promise<ActionResult> {
@@ -193,9 +222,13 @@ export class FreezeCoordinator {
     this.ending = true;
     try {
       const res = await this.deps.endExplain(result);
-      this.closeAll();
       return res.ok ? { ok: true } : { ok: false, error: res.error };
+    } catch (error) {
+      this.deps.log?.warn("ending the freeze failed:", error instanceof Error ? error.message : error);
+      return { ok: false, error: "Could not end the freeze." };
     } finally {
+      // Whatever the recorder said, the overlay must never outlive the request to close it (APP-1).
+      this.closeAll();
       this.ending = false;
     }
   }
@@ -205,6 +238,7 @@ export class FreezeCoordinator {
     this.views.delete(senderId);
     // Every window gone without Done or Esc (a display was unplugged): the freeze is over, unsaved.
     if (this.views.size === 0 && !this.ending && !this.opening) {
+      this.releaseEscapeShortcut();
       this.ending = true;
       void this.deps
         .endExplain({ cancelled: true, annotations: [] })
@@ -215,11 +249,26 @@ export class FreezeCoordinator {
     }
   }
 
+  private releaseEscapeShortcut(): void {
+    const release = this.releaseEscape;
+    this.releaseEscape = null;
+    try {
+      release?.();
+    } catch (error) {
+      this.deps.log?.warn("could not release the Escape shortcut:", error instanceof Error ? error.message : error);
+    }
+  }
+
   private closeAll(): void {
+    this.releaseEscapeShortcut();
     const views = [...this.views.values()];
     this.views.clear();
     for (const v of views) {
-      if (!v.win.isDestroyed()) v.win.destroy();
+      try {
+        if (!v.win.isDestroyed()) v.win.destroy();
+      } catch {
+        // already gone
+      }
     }
   }
 }

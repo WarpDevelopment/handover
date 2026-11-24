@@ -10,9 +10,30 @@ const log = createLogger("SessionStore");
 
 /** Root folder that holds one sub-directory per recorded session. */
 export function sessionsRoot(): string {
-  const override = process.env.HANDOVER_SESSIONS_DIR;
+  return resolveSessionsRoot({
+    platform: process.platform,
+    env: process.env,
+    userData: () => app.getPath("userData"),
+  });
+}
+
+/**
+ * Where recordings live. On Windows that is `%LOCALAPPDATA%\Handover\sessions` (APP-11): userData is
+ * in roaming AppData, which a domain profile syncs to a server, and a recording is private capture data
+ * that must stay on this machine. Pure, with platform and environment injected, so it is unit-tested.
+ */
+export function resolveSessionsRoot(opts: {
+  platform: NodeJS.Platform;
+  env: Record<string, string | undefined>;
+  userData: () => string;
+}): string {
+  const override = opts.env.HANDOVER_SESSIONS_DIR;
   if (override) return path.resolve(override);
-  return path.join(app.getPath("userData"), "sessions");
+  const local = opts.env.LOCALAPPDATA;
+  if (opts.platform === "win32" && local && path.win32.isAbsolute(local)) {
+    return path.win32.join(local, "Handover", "sessions");
+  }
+  return path.join(opts.userData(), "sessions");
 }
 
 /**

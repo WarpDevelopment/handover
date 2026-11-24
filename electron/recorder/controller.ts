@@ -27,6 +27,7 @@ import {
   type NarrationLanguage,
 } from "../../common/narration";
 import type { RecEvent, RecorderState, SessionMeta } from "../../common/types";
+import { isOwnAppEvent } from "./own-events";
 import {
   SYSTEM_DEFAULT_MICROPHONE_ID,
   type MicrophoneDevice,
@@ -177,9 +178,10 @@ export class RecorderController {
 
   constructor(private readonly deps: RecorderDeps) {
     this.host = new CollectorHost(this.bus);
-    this.bus.setFilter((input) =>
-      input.type === EventType.PointerClick ? (this.deps.isOwnWindowClick?.(input.payload) ?? false) : false,
-    );
+    this.bus.setFilter((input) => {
+      if (input.type === EventType.PointerClick) return this.deps.isOwnWindowClick?.(input.payload) ?? false;
+      return isOwnAppEvent(input);
+    });
     // Every persisted event refreshes live status (event count, etc.).
     this.bus.subscribe(() => this.emit());
   }
@@ -574,7 +576,7 @@ export class RecorderController {
     this.lastDisplays = null;
     this.lastDisplaysEvent = null;
     this.publishDisplays();
-    log.info("Recording started:", store.meta.id, "->", store.dir);
+    log.info("Recording started:", store.meta.id); // the id only: the folder path names the OS user (SEC-8)
     this.emit();
 
     try {
@@ -595,7 +597,12 @@ export class RecorderController {
           if (video.onEvent) {
             // The sidecar learns the layout first, then sees every later event.
             if (this.lastDisplaysEvent) video.onEvent(this.lastDisplaysEvent);
-            this.videoUnsubscribe = this.bus.subscribe((ev) => video.onEvent?.(ev));
+            this.videoUnsubscribe = this.bus.subscribe((ev) => {
+              // A click now reaches the log while paused or frozen (PKG-11), but it must not take
+              // before/after frames of the screen: the user paused so nothing would be captured.
+              if (ev.type === EventType.PointerClick && (this.paused || this.explain !== null)) return;
+              video.onEvent?.(ev);
+            });
           }
         } catch (error) {
           log.warn("video start failed:", error instanceof Error ? error.message : error);
