@@ -11,6 +11,8 @@ export interface CollectorContext {
   /** The current session's directory (for collectors that write side files). */
   sessionDir: string;
   log: Logger;
+  /** Milliseconds since the recording started, on the same clock as an event's `t`. */
+  elapsedMs?(): number;
 }
 
 /**
@@ -37,11 +39,16 @@ export class CollectorHost {
     this.log = createLogger("Collectors");
   }
 
-  async startAll(collectors: readonly Collector[], sessionDir: string): Promise<void> {
+  async startAll(
+    collectors: readonly Collector[],
+    sessionDir: string,
+    elapsedMs?: () => number,
+  ): Promise<void> {
     this.active = [];
     for (const collector of collectors) {
       const ctx: CollectorContext = {
         sessionDir,
+        ...(elapsedMs ? { elapsedMs } : {}),
         log: createLogger(collector.name),
         publish: (type, payload) => {
           this.bus.publish({ type, source: collector.name, payload } as EventInput);

@@ -50,6 +50,22 @@ const clicks = (events: Published[]) =>
 const gaps = (events: Published[]) =>
   events.filter((e) => e.type === "gap").map((e) => e.payload as EventPayloads["gap"]);
 
+// --- CollectorContext.elapsedMs (NAT-7) ---
+
+test("CollectorHost hands each collector the session clock as ctx.elapsedMs", async () => {
+  const { CollectorHost } = await import("../recorder/collector");
+  const { EventBus } = await import("../recorder/event-bus");
+  let seen: (() => number) | undefined;
+  const host = new CollectorHost(new EventBus());
+  await host.startAll(
+    [{ name: "Probe", start: (ctx) => { seen = ctx.elapsedMs?.bind(ctx); }, stop: () => undefined }],
+    "",
+    () => 1234,
+  );
+  assert.equal(seen?.(), 1234);
+  await host.stopAll();
+});
+
 // --- Protocol parsing ---
 
 test("a well-formed click with a target keeps declared fields only", () => {
