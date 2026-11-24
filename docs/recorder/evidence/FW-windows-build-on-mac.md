@@ -65,3 +65,20 @@ Merged `origin/task/workflow-recording-assistant` (b3bd188; fast-forward) and re
 - `@img/sharp-win32-x64@0.35.3`: `iiXKzcdajCYHfAf7pR6AVqrkdPE=` matches the lockfile.
 - `@koromix/koffi-win32-x64@3.1.1`: `WERVlSEG4mSqtpoHIFEdzoGK6cs=` matches the lockfile.
 - A sha512 comparison cannot be made from the lockfile. The registry's sha512 for koffi (`KqHPmvj6...`) equals my downloaded file's sha512, so the download is the registry's file.
+
+## Builds at 7bf0ff4
+
+Merged `origin/task/workflow-recording-assistant` (7bf0ff4; fast-forward). `package.json` and `package-lock.json` unchanged since the previous round.
+
+**Windows x64** (same procedure as before: dotnet helper, win32-x64 prebuilds already extracted, darwin natives moved aside, models, compliance under the win32 shim, `npm run build`, `electron-builder --win nsis --x64`):
+- `verify-windows-package.mjs x64` passes; PE check unchanged (31 files: 15 PE x64, 11 arm64, 3 Mach-O, 2 ELF).
+- `~/Desktop/Handover-0.1.0-windows-x64-7bf0ff4.exe`, 657,069,291 bytes, sha256 `d499a0585e08762b1b8b2e197a800277608b422691195dac8921a9332f8f5dff`. Unsigned, never run on Windows. The earlier `...-MAC-BUILT.exe` was not touched.
+
+**macOS arm64** (native build on this Mac, darwin natives restored, win32 packages moved out of `node_modules`):
+- `npm run build:helper:mac` OK; `native/build/HandoverHelper --selftest` printed hello, capabilities and selftest lines (accessibility not trusted for this shell, so `reason: permission_missing`, as expected).
+- `CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac` OK (models:fetch, compliance:prepare, helper, vite, electron-builder; ad-hoc signed, not notarized).
+- macOS CI checks: `unzip -l` lists `Handover.app/Contents/Resources/helper/HandoverHelper` (Mach-O arm64); `fetch-models.mjs --verify --out=release/mac-arm64/Handover.app/Contents/Resources/models` verified 7 files; `codesign -v` on the app printed nothing (valid ad-hoc signature).
+- Not run: `npm test` or the CI window-provider/license coverage steps in non-windows.yml.
+- `~/Desktop/Handover-0.1.0-macos-arm64-7bf0ff4.zip`, 668,921,977 bytes, sha256 `f3aefa4d96ac3543689e16b471f9f23f5d5696ea0715ba2130c31c78a49a428e`.
+
+`node_modules` now holds the darwin natives and the win32 packages are moved out again (back in `node_modules` after this step).
