@@ -36,8 +36,13 @@ export interface OverlayAdapterOptions {
   focusCheckMs?: number;
   /** The freeze must end: the primary overlay cannot be shown or has died. */
   onFailure(reason: string): void;
-  /** A secondary display's overlay failed: drop just that window and keep the freeze (D5). */
-  onSecondaryFailure?(reason: string): void;
+  /**
+   * A secondary display's overlay failed. The freeze decides whether to drop just that window or cancel
+   * (D5, N2); `revealed` says whether the user could already see it.
+   */
+  onSecondaryFailure?(reason: string, info: { revealed: boolean }): void;
+  /** Another freeze overlay holds the keyboard now (focus moved between displays), which is not a loss. */
+  isOtherOverlayFocused?(): boolean;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   log?: { warn(...a: unknown[]): void; info?(...a: unknown[]): void };
@@ -81,7 +86,7 @@ export function adaptOverlayWindow(win: OverlayBrowserWindowLike, opts: OverlayA
     // D5: a secondary display's overlay (one that was never asked to take the keyboard) is dropped on its
     // own; cancelling the whole freeze would discard what was drawn on the primary. Only the primary
     // failing ends the freeze.
-    if (!wantFocus && opts.onSecondaryFailure) opts.onSecondaryFailure(reason);
+    if (!wantFocus && opts.onSecondaryFailure) opts.onSecondaryFailure(reason, { revealed });
     else opts.onFailure(reason);
   };
 
@@ -138,8 +143,15 @@ export function adaptOverlayWindow(win: OverlayBrowserWindowLike, opts: OverlayA
   win.webContents.on("unresponsive", () => fail("the overlay is not responding"));
 
   // Focus lost later (another app grabbed it, or the user clicked away): the banner comes back (D4).
+  // Judged on the next tick: clicking another freeze overlay (a second display) blurs this one while the
+  // keyboard stays inside the freeze, so that is not a loss (N4).
   win.on("blur", () => {
-    if (revealed && wantFocus && !win.isDestroyed()) opts.onFocusFailed?.();
+    if (!revealed || !wantFocus) return;
+    setTimer(() => {
+      if (win.isDestroyed() || win.isFocused()) return;
+      if (opts.isOtherOverlayFocused?.()) return;
+      opts.onFocusFailed?.();
+    }, 0);
   });
 
   win.once("closed", () => {

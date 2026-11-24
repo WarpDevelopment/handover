@@ -34,7 +34,8 @@ async function countEdits(dir: string): Promise<number> {
   }
 }
 
-async function narrationHash(dir: string): Promise<string> {
+/** `sha256:<hex>` of narration.json on disk, or {@link NARRATION_ABSENT}. Same format as the review's. */
+export async function narrationHash(dir: string): Promise<string> {
   try {
     const bytes = await readFile(path.join(dir, NARRATION_FILE));
     return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;

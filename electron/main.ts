@@ -186,6 +186,7 @@ const recorder = new RecorderController({
 const review = new ReviewService({ toolVersion: app.getVersion() });
 
 const overlayReveal = new Map<number, () => void>();
+const overlayWindows = new Map<number, BrowserWindow>();
 
 /** An overlay `BrowserWindow` as the freeze flow sees it. It is shown once its page has drawn the frame. */
 function overlayWindow(display: Electron.Display): OverlayWindow {
@@ -196,8 +197,12 @@ function overlayWindow(display: Electron.Display): OverlayWindow {
     platform: process.platform,
     // Hidden until the page says it drew the frame; this is only the kill switch for a dead page (N1).
     revealTimeoutMs: OVERLAY_READY_TIMEOUT_MS,
-    onSecondaryFailure: () => {
-      if (!win.isDestroyed()) win.destroy(); // the freeze goes on with the other displays
+    // Drop just this display (it stays live) unless the user could see it or drew on it (D5, N2).
+    onSecondaryFailure: (_reason, { revealed }) => freeze.secondaryFailed(senderId, revealed),
+    // Focus moving to another freeze overlay is not a loss of the keyboard (N4).
+    isOtherOverlayFocused: () => {
+      const focused = BrowserWindow.getFocusedWindow();
+      return focused !== null && focused !== win && [...overlayWindows.values()].includes(focused);
     },
     onFocusFailed: () => {
       if (!win.isDestroyed()) win.webContents.send(IPC.freezeFocusFailed);
@@ -211,7 +216,11 @@ function overlayWindow(display: Electron.Display): OverlayWindow {
     log,
   });
   overlayReveal.set(senderId, adapter.ready);
-  win.once("closed", () => overlayReveal.delete(senderId));
+  overlayWindows.set(senderId, win);
+  win.once("closed", () => {
+    overlayReveal.delete(senderId);
+    overlayWindows.delete(senderId);
+  });
   return adapter.overlay;
 }
 
@@ -228,6 +237,10 @@ const freeze: FreezeCoordinator = new FreezeCoordinator({
     return `data:${mime};base64,${bytes.toString("base64")}`;
   },
   openWindow: overlayWindow,
+  notify: (senderId, notice) => {
+    const target = overlayWindows.get(senderId);
+    if (target && !target.isDestroyed()) target.webContents.send(IPC.freezeNotice, notice);
+  },
   // Escape works even when the overlay page cannot see the key; held only while frozen.
   registerEscape: (cb) => {
     if (!globalShortcut.register("Escape", cb)) log.warn("Escape shortcut could not be registered for the freeze");

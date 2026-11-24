@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ExplainAnnotationInput, ExplainShape } from "../common/handover/explain";
 import { cssToDpx, thinPoints } from "../common/handover/overlay-geometry";
-import type { FreezeInit } from "../common/ipc";
+import type { FreezeInit, FreezeNotice } from "../common/ipc";
 import { enterShouldSave, showFocusBanner } from "./freeze-keys";
 
 type Point = [number, number];
@@ -202,16 +202,24 @@ export function FreezeOverlay() {
   // that also failed, tells this window (N5). The banner is for the primary overlay only.
   const [focusFailed, setFocusFailed] = useState(false);
   const [focused, setFocused] = useState(() => document.hasFocus());
+  // Another display's overlay was dropped (N2): the corrected screen count, and a notice on the primary.
+  const [screenNote, setScreenNote] = useState<FreezeNotice | null>(null);
+  useEffect(() => window.handover.onFreezeNotice(setScreenNote), []);
   useEffect(() => {
     const sync = () => setFocused(document.hasFocus());
-    window.addEventListener("focus", sync);
+    // The keyboard is back: the banner is over until the main process reports another loss (N4).
+    const regained = () => {
+      setFocusFailed(false);
+      sync();
+    };
+    window.addEventListener("focus", regained);
     window.addEventListener("blur", sync);
     const off = window.handover.onFreezeFocusFailed(() => {
       setFocusFailed(true);
       sync();
     });
     return () => {
-      window.removeEventListener("focus", sync);
+      window.removeEventListener("focus", regained);
       window.removeEventListener("blur", sync);
       off();
     };
@@ -257,7 +265,8 @@ export function FreezeOverlay() {
   };
 
   if (!init) return <div className="freeze" />;
-  const multi = init.count > 1;
+  const { index, count } = screenNote ?? init;
+  const multi = count > 1;
 
   return (
     <div className="freeze" style={{ width: init.cssSize[0], height: init.cssSize[1] }}>
@@ -282,8 +291,11 @@ export function FreezeOverlay() {
 
       <div className="freeze-toolbar" role="toolbar" aria-label="Drawing tools">
         <span className="freeze-title">
-          Explain{multi ? ` · screen ${init.index} of ${init.count}` : ""}
+          Explain{multi ? ` · screen ${index} of ${count}` : ""}
         </span>
+        {screenNote?.notice && (
+          <span role="status" style={{ color: "#B54708", fontWeight: 600 }}>{screenNote.notice}</span>
+        )}
         {TOOLS.map((t) => (
           <button
             key={t.id}

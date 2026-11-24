@@ -67,6 +67,7 @@ const IPC = {
   markReviewed: "sessions:mark-reviewed",
   actionError: "recorder:action-error",
   freezeFocusFailed: "freeze:focus-failed",
+  freezeNotice: "freeze:notice",
 };
 
 let recordingPrivacyWarningPending = false;
@@ -194,6 +195,11 @@ const api = {
   reviewImage: (sessionId, path) => ipcRenderer.invoke(IPC.reviewImage, sessionId, path),
   reviewEdit: (sessionId, edit) => ipcRenderer.invoke(IPC.reviewEdit, sessionId, edit),
   markReviewed: (sessionId) => ipcRenderer.invoke(IPC.markReviewed, sessionId),
+  onFreezeNotice: (cb) => {
+    const listener = (_event, notice) => cb(notice);
+    ipcRenderer.on(IPC.freezeNotice, listener);
+    return () => ipcRenderer.removeListener(IPC.freezeNotice, listener);
+  },
   onFreezeFocusFailed: (cb) => {
     const listener = () => cb();
     ipcRenderer.on(IPC.freezeFocusFailed, listener);
@@ -208,7 +214,7 @@ const api = {
 
 // SEC-10: the freeze overlay shows a screenshot of the user's screen, so its window gets only the
 // freeze channels. The main process marks it with --handover-window=freeze (createFreezeOverlay).
-const FREEZE_ONLY = ["freezeReady", "freezeInit", "freezeState", "freezeDone", "freezeCancel", "onFreezeFocusFailed"];
+const FREEZE_ONLY = ["freezeReady", "freezeInit", "freezeState", "freezeDone", "freezeCancel", "onFreezeFocusFailed", "onFreezeNotice"];
 const isFreezeWindow = process.argv.includes("--handover-window=freeze");
 const exposed = isFreezeWindow
   ? Object.fromEntries(FREEZE_ONLY.map((name) => [name, api[name]]))

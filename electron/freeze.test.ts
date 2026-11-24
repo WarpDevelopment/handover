@@ -43,8 +43,10 @@ function setup(
   const windows: FakeWindow[] = [];
   const ended: unknown[] = [];
   const escape = { registered: 0, released: 0, held: false, fire: () => {} };
+  const notices: { senderId: number; index: number; count: number; notice: string | null }[] = [];
   let activated = 0;
   const deps: FreezeDeps = {
+    notify: (senderId, n) => { notices.push({ senderId, ...n }); },
     registerEscape: (cb) => {
       escape.registered++;
       escape.held = true;
@@ -85,7 +87,7 @@ function setup(
     },
     activateApp: () => { activated++; },
   };
-  return { freeze: new FreezeCoordinator(deps), windows, ended, escape, activated: () => activated };
+  return { freeze: new FreezeCoordinator(deps), windows, ended, escape, notices, activated: () => activated };
 }
 
 const rect = (displayId: number) => ({
@@ -284,6 +286,37 @@ test("APP-6: a recording that stops while a freeze is opening opens no windows",
   assert.deepEqual(ended, [], "no second explain.end");
   assert.equal(escape.registered, 0);
   assert.equal(freeze.active, false);
+});
+
+test("N2: a secondary overlay that failed unseen is dropped; the primary is told that screen is live and the count is corrected", async () => {
+  const { freeze, windows, ended, notices } = setup({ cursor: 22 }); // 11 is secondary (sender 100), 22 primary (101)
+  await freeze.begin();
+  freeze.setState(101, { annotations: [rect(22)] }); // drawing on the primary must survive
+  freeze.secondaryFailed(100, false);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(windows[0].destroyed, true, "only the failed window is destroyed");
+  assert.equal(windows[1].destroyed, false);
+  assert.deepEqual(ended, [], "the freeze goes on");
+  assert.deepEqual(notices, [{ senderId: 101, index: 1, count: 1, notice: "Screen 1 could not be frozen; it is live." }]);
+  assert.deepEqual(freeze.init(101)!.count, 1);
+  assert.deepEqual(await freeze.done(101), { ok: true });
+  assert.deepEqual((ended[0] as { annotations: unknown[] }).annotations, [rect(22)], "nothing was lost");
+});
+
+test("N2: a secondary overlay that was already revealed, or had annotations, cancels the whole freeze", async () => {
+  const seen = setup({ cursor: 22 });
+  await seen.freeze.begin();
+  seen.freeze.secondaryFailed(100, true);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(seen.ended, [{ cancelled: true, annotations: [] }]);
+  assert.ok(seen.windows.every((w) => w.destroyed));
+
+  const drawn = setup({ cursor: 22 });
+  await drawn.freeze.begin();
+  drawn.freeze.setState(100, { annotations: [rect(11)] });
+  drawn.freeze.secondaryFailed(100, false);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(drawn.ended, [{ cancelled: true, annotations: [] }], "a drawing is never silently lost");
 });
 
 test("APP-7: a display change cancels an open freeze, and one that arrives while opening", async () => {

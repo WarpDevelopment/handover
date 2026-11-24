@@ -2,7 +2,7 @@
 // in each, and ends the freeze on Done (save) or Esc/Cancel (throw it away). Electron-free: windows
 // and the recorder are injected, so the flow is unit-tested with fakes.
 
-import type { ActionResult, FreezeInit } from "../common/ipc";
+import type { ActionResult, FreezeInit, FreezeNotice } from "../common/ipc";
 import type { ExplainAnnotationInput } from "../common/handover/explain";
 import type { BeginExplainResult, EndExplainResult, FrozenFrame } from "./recorder/controller";
 
@@ -44,6 +44,8 @@ export interface FreezeDeps {
    * function that releases it; it is called when the freeze closes.
    */
   registerEscape?(cb: () => void): () => void;
+  /** Tell one overlay window its corrected screen count and, on the primary, why a screen is live (N2). */
+  notify?(senderId: number, notice: FreezeNotice): void;
   log?: { info(...a: unknown[]): void; warn(...a: unknown[]): void };
 }
 
@@ -206,6 +208,40 @@ export class FreezeCoordinator {
   abort(): void {
     this.generation++;
     this.closeAll();
+  }
+
+  /**
+   * A secondary display's overlay failed (D5, N2). If the user could already see it, or something was drawn
+   * on it, the whole freeze is cancelled so a drawing is never silently lost. Otherwise only that window is
+   * dropped: that display stays live, the remaining overlays are renumbered, and the primary is told.
+   */
+  secondaryFailed(senderId: number, revealed: boolean): void {
+    const view = this.views.get(senderId);
+    if (!view) return;
+    if (revealed || view.annotations.length > 0) {
+      void this.cancel();
+      return;
+    }
+    this.views.delete(senderId);
+    try {
+      if (!view.win.isDestroyed()) view.win.destroy();
+    } catch {
+      // already gone
+    }
+    if (this.views.size === 0) {
+      void this.cancel();
+      return;
+    }
+    const left = [...this.views.values()].sort((a, b) => a.init.index - b.init.index);
+    left.forEach((v, i) => {
+      v.init.index = i + 1;
+      v.init.count = left.length;
+      this.deps.notify?.(v.win.senderId, {
+        index: i + 1,
+        count: left.length,
+        notice: v.init.primary ? `Screen ${view.init.index} could not be frozen; it is live.` : null,
+      });
+    });
   }
 
   /**

@@ -173,19 +173,66 @@ test("D4: a primary overlay that loses focus later flags focusFailed; a secondar
   const primary = make("win32");
   primary.adapter.overlay.focus();
   primary.adapter.ready();
+  primary.win.focused = false;
   primary.win.emit("blur");
+  assert.deepEqual(primary.focusFailed, [], "judged on the next tick");
+  primary.c.fire(0);
   assert.deepEqual(primary.focusFailed, [1]);
 
   const secondary = make("win32");
   secondary.adapter.ready(); // never asked to take the keyboard
   secondary.win.emit("blur");
+  secondary.c.fire(0);
   assert.deepEqual(secondary.focusFailed, []);
 
   const hidden = make("win32");
   hidden.adapter.overlay.focus();
   hidden.win.emit("blur"); // not revealed yet
+  hidden.c.fire(0);
   assert.deepEqual(hidden.focusFailed, []);
 });
+
+test("N4: a blur because focus moved to another freeze overlay, or came straight back, is not a loss", () => {
+  const moved = makeWith({ isOtherOverlayFocused: () => true });
+  moved.adapter.overlay.focus();
+  moved.adapter.ready();
+  moved.win.focused = false;
+  moved.win.emit("blur");
+  moved.c.fire(0);
+  assert.deepEqual(moved.focusFailed, [], "clicking a secondary display must not raise the banner");
+
+  const back = makeWith({});
+  back.adapter.overlay.focus();
+  back.adapter.ready();
+  back.win.emit("blur");
+  back.win.focused = true; // focus returned before the next tick
+  back.c.fire(0);
+  assert.deepEqual(back.focusFailed, []);
+
+  const lost = makeWith({ isOtherOverlayFocused: () => false });
+  lost.adapter.overlay.focus();
+  lost.adapter.ready();
+  lost.win.focused = false;
+  lost.win.emit("blur");
+  lost.c.fire(0);
+  assert.deepEqual(lost.focusFailed, [1], "another app took it: the banner shows");
+});
+
+function makeWith(extra: { isOtherOverlayFocused?: () => boolean }) {
+  const win = new FakeWin();
+  const focusFailed: number[] = [];
+  const c = clock();
+  const adapter = adaptOverlayWindow(win as unknown as OverlayBrowserWindowLike, {
+    platform: "win32",
+    revealTimeoutMs: 8000,
+    onFailure: () => {},
+    onFocusFailed: () => focusFailed.push(1),
+    setTimer: c.setTimer,
+    clearTimer: c.clearTimer,
+    ...extra,
+  });
+  return { win, c, adapter, focusFailed };
+}
 
 function makeWithSecondary() {
   const win = new FakeWin();
@@ -195,7 +242,7 @@ function makeWithSecondary() {
     platform: "win32",
     revealTimeoutMs: 8000,
     onFailure: (r) => out.failures.push(r),
-    onSecondaryFailure: (r) => out.secondary.push(r),
+    onSecondaryFailure: (r, info) => out.secondary.push(`${r}|revealed=${info.revealed}`),
     setTimer: c.setTimer,
     clearTimer: c.clearTimer,
   });
@@ -210,6 +257,11 @@ test("D5: a secondary overlay that fails or times out is dropped alone; the prim
   const crashed = makeWithSecondary();
   crashed.win.webContents.emit("render-process-gone", {}, { reason: "crashed" });
   assert.deepEqual([crashed.failures.length, crashed.secondary.length], [0, 1]);
+
+  const seen = makeWithSecondary();
+  seen.adapter.ready(); // the user could already see this display
+  seen.win.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+  assert.match(seen.secondary[0], /revealed=true/, "the freeze is told, so it can cancel instead of dropping");
 
   const primary = makeWithSecondary();
   primary.adapter.overlay.focus(); // the primary is the one that takes the keyboard

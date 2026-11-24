@@ -394,7 +394,16 @@ export const IPC = {
   markReviewed: "sessions:mark-reviewed",
   actionError: "recorder:action-error",
   freezeFocusFailed: "freeze:focus-failed",
+  freezeNotice: "freeze:notice",
 } as const;
+
+/** Sent to a freeze overlay when another display's overlay was dropped (N2): the corrected count and a notice. */
+export interface FreezeNotice {
+  index: number;
+  count: number;
+  /** Shown on the primary overlay only; null elsewhere. */
+  notice: string | null;
+}
 
 /** Shape exposed on `window.handover` by the preload bridge. */
 export interface HandoverApi {
@@ -490,6 +499,8 @@ export interface HandoverApi {
   freezeInit(): Promise<FreezeInit | null>;
   /** Freeze overlay only: report the shapes and comment drawn so far on this display. */
   freezeState(state: import("./handover/explain").ExplainResult): void;
+  /** Freeze overlay only: another display's overlay was dropped; the corrected screen count and a notice. */
+  onFreezeNotice(cb: (notice: FreezeNotice) => void): () => void;
   /** Freeze overlay only: Windows refused this overlay the keyboard even after a retry. */
   onFreezeFocusFailed(cb: () => void): () => void;
   /** Freeze overlay only: save everything drawn on every display and unfreeze. */
