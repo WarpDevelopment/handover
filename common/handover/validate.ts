@@ -54,6 +54,16 @@ export function validateAgainst(node: Schema, value: Json, at: string, errors: s
     errors.push(`${at}: expected ${node.type}`);
     return;
   }
+  // allOf / if-then-else: the kind-specific requirements of steps, targets and annotations.
+  if (Array.isArray(node.allOf)) {
+    for (const sub of node.allOf) validateAgainst(sub as Schema, value, at, errors);
+  }
+  if (node.if && typeof node.if === "object") {
+    const probe: string[] = [];
+    validateAgainst(node.if as Schema, value, at, probe);
+    const branch = probe.length === 0 ? node.then : node.else;
+    if (branch && typeof branch === "object") validateAgainst(branch as Schema, value, at, errors);
+  }
   if ("const" in node && value !== node.const) {
     errors.push(`${at}: expected ${JSON.stringify(node.const)}`);
   }
@@ -171,6 +181,26 @@ export async function validatePackage(dir: string): Promise<ValidationResult> {
     if (s.step_id !== want) errors.push(`steps.jsonl:${i + 1}: step_id ${String(s.step_id)} should be ${want}`);
     if (s.seq !== i + 1) errors.push(`steps.jsonl:${i + 1}: seq ${String(s.seq)} should be ${i + 1}`);
   });
+
+  // `before` is required on an action or context step. It may be missing only where the session had
+  // no frame yet (the first second of capture, or a frozen frame that was not saved), and then the
+  // step must say so with `low_confidence_target`.
+  for (const s of steps) {
+    if (s.kind !== "action" && s.kind !== "context") continue;
+    const flags = (s.flags as string[] | undefined) ?? [];
+    if (s.before === undefined && !flags.includes("low_confidence_target")) {
+      errors.push(`${String(s.step_id)}: no before frame, and not flagged low_confidence_target`);
+    }
+  }
+  // A highlight names the frame it is drawn on, unless its step has no frame at all.
+  const stepsById = new Map(steps.map((s) => [s.step_id as string, s]));
+  for (const a of annotations) {
+    if (a.kind !== "highlight" || a.frame_id !== undefined) continue;
+    const owner = stepsById.get(((a.step_ids as string[] | undefined) ?? [])[0] ?? "");
+    if (owner?.before !== undefined) {
+      errors.push(`${String(a.annotation_id)}: highlight has no frame_id but its step has a before frame`);
+    }
+  }
 
   // Every annotation_ids / step_ids reference resolves.
   const stepIds = new Set(steps.map((s) => s.step_id as string));

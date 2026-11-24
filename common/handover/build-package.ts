@@ -10,7 +10,7 @@ import type {
 } from "../events";
 import type { RecEvent } from "../types";
 import { canonicalJson, canonicalJsonl, isoWithOffset, sha256Hex, slugify, utf8 } from "./canonical";
-import { assertEditsApplicable } from "./edits";
+import { assertEditsApplicable, foldEditText } from "./edits";
 import {
   boundsToDpx,
   displayForGlobalPoint,
@@ -20,7 +20,7 @@ import {
   fitFullImage,
   fpxToCrop,
   globalToDpx,
-  planCrop,
+  planClickCrop,
   selectBeforeFrame,
   type DisplayInfo,
   type Rect,
@@ -29,7 +29,14 @@ import { renderAnnotated, type RenderableHighlight } from "./annotation-render";
 import { renderHandoffMd } from "./handoff-md";
 import { blurPng, blurRect, clampRect, decode, renderCrop, renderFull } from "./images";
 import { renderProcessMd } from "./process-md";
-import { buildSteps, clickLookupMs, groundingOf, layoutAt, type StepDraft } from "./steps";
+import {
+  buildStepsWithState,
+  clickLookupMs,
+  groundingOf,
+  isOwnAppName,
+  layoutAt,
+  type StepDraft,
+} from "./steps";
 import {
   SCHEMA_VERSION,
   TEST_BUILD_BANNER,
@@ -53,9 +60,51 @@ const BEFORE_LEAD_MS = 50;
 const AFTER_DELAY_MS = 500;
 const AFTER_MAX_MS = 2000;
 const PASSWORD_PAD_FRAME_PX = 4;
+/** What a redacted text object looks like once the user has edited the step's wording (SEC-6). */
+const REDACTED = "[REDACTED]";
+const redactedText = (): TextObj => ({ text: REDACTED, redacted: true, classes: ["user_marked"] });
+/** A freeze's frozen frame is looked for this far before `explain.start` (PKG-6). */
+const FROZEN_FRAME_LEAD_MS = 1000;
 
 export function packageFolderName(title: string, packageId: string): string {
   return `${slugify(title)}__${packageId}.handover`;
+}
+
+/**
+ * The rectangle to blur for a password field, in pixels of the captured frame (`capK` frame px per
+ * dpx). It is clamped to the frame before anything else. When the control's bounds miss the frame
+ * entirely (bad bounds from the helper), a 400×100 logical-px rectangle around the click is used
+ * instead; when that misses too, the export fails rather than claim a redaction that did not happen.
+ */
+export function passwordRectFrame(
+  display: DisplayInfo,
+  capK: number,
+  frameWidth: number,
+  frameHeight: number,
+  elementDpx: Rect | undefined,
+  pointDpx: [number, number],
+): Rect {
+  const grown = (r: Rect): Rect | null =>
+    clampRect(
+      [
+        r[0] * capK - PASSWORD_PAD_FRAME_PX,
+        r[1] * capK - PASSWORD_PAD_FRAME_PX,
+        r[2] * capK + 2 * PASSWORD_PAD_FRAME_PX,
+        r[3] * capK + 2 * PASSWORD_PAD_FRAME_PX,
+      ],
+      frameWidth,
+      frameHeight,
+    );
+  const fromElement = elementDpx ? grown(elementDpx) : null;
+  if (fromElement) return fromElement;
+  const around = grown([
+    pointDpx[0] - 200 * display.scaleFactor,
+    pointDpx[1] - 50 * display.scaleFactor,
+    400 * display.scaleFactor,
+    100 * display.scaleFactor,
+  ]);
+  if (around) return around;
+  throw new Error("Cannot blur a password field: its position is outside the captured frame.");
 }
 
 interface Layout {
@@ -220,7 +269,9 @@ export function isOwnAppClick(click: PointerClickPayload): boolean {
  * - a `pointer.click` is judged by when the user acted, not when the helper reported it: the helper
  *   reports up to 300 ms after the mouse-down (`lookupMs`), so the click on the overlay's Done button
  *   or on Resume can arrive just after the freeze or pause has ended;
- * - a click on a Handover control (the recording bar's own buttons).
+ * - a click on a Handover control (the recording bar's own buttons);
+ * - Handover's own `app.activate` and window-title events: clicking its bar or overlay makes it the
+ *   foreground app, and that is not a "Switch to Handover" step (PKG-10).
  */
 export function withoutFrozenCollectorEvents(
   events: readonly RecEvent[],
@@ -237,6 +288,17 @@ export function withoutFrozenCollectorEvents(
       if (isOwnAppClick(click)) return false;
       const acted = e.t - clickLookupMs(click);
       return !quiet.some((i) => acted >= i.start && acted < i.end);
+    }
+    if (e.type === "app.activate" || e.type === "app.title-change") {
+      const p = e.payload as { app?: unknown; path?: unknown };
+      if (
+        isOwnAppName(
+          typeof p.app === "string" ? p.app : undefined,
+          typeof p.path === "string" ? p.path : undefined,
+        )
+      ) {
+        return false;
+      }
     }
     if (!FROZEN_DROPPED_TYPES.has(e.type)) return true;
     return !freezes.some((i) => e.t >= i.start && e.t < i.end);
@@ -318,7 +380,10 @@ export async function buildPackageDetailed(
 
   // --- Steps (pre-edit ids) ---
   const freezes = explainIntervals(events, durationMs);
-  const baseDrafts = buildSteps(withoutFrozenCollectorEvents(events, durationMs), clickToDpx);
+  const { steps: baseDrafts, stateAt } = buildStepsWithState(
+    withoutFrozenCollectorEvents(events, durationMs),
+    clickToDpx,
+  );
 
   // Explain steps (tester-package.md §4.4): each freeze with highlights or a comment becomes one step
   // per display that got a highlight (one step for the pointer's display when there are only
@@ -345,18 +410,21 @@ export async function buildPackageDetailed(
         layout?.displays[0]?.id;
       targets = fallback === undefined ? [] : [fallback];
     }
-    // App and window frontmost at freeze time: the last step before it, else the first after it.
-    let prior: StepDraft | undefined;
-    for (const d of baseDrafts) if (d.tMs <= f.start) prior = d;
-    prior ??= baseDrafts[0];
+    // App, window and URL frontmost at freeze time: what the events up to `explain.start` say, not
+    // the last step (a title change or a URL change is not a step but moves the window). When
+    // nothing was seen yet the app is unknown, not whatever came later.
+    const prior = stateAt(f.start);
     for (const displayElectronId of targets) {
       let shotFile = highlights.find((a) => a.p.displayId === displayElectronId && a.p.frameFile)?.p.frameFile;
       if (!shotFile || !session.files.has(shotFile)) {
-        // Nearest frozen frame of that display to the moment of the freeze.
+        // Nearest frozen frame of that display to the moment of the freeze, taken during the
+        // freeze (or just before it); a frame from another freeze is a different screen.
         const startEpoch = startEv?.epoch ?? baseEpoch + f.start;
+        const endEpoch = baseEpoch + f.end;
         let best: ShotEntry | undefined;
         for (const s of session.shots) {
           if (s.purpose !== "annotation" || s.displayId !== displayElectronId) continue;
+          if (s.epoch < startEpoch - FROZEN_FRAME_LEAD_MS || s.epoch > endEpoch) continue;
           if (!best || Math.abs(s.epoch - startEpoch) < Math.abs(best.epoch - startEpoch)) best = s;
         }
         shotFile = best?.file;
@@ -370,7 +438,7 @@ export async function buildPackageDetailed(
           frameTMs: f.start,
           app: prior?.app ?? { name: "", kind: "unknown" },
           ...(prior?.windowTitle !== undefined ? { windowTitle: prior.windowTitle } : {}),
-          ...(prior?.url ? { url: prior.url } : {}),
+          ...(prior?.url && prior.app.kind === "browser" ? { url: prior.url } : {}),
           summary: "", // filled once the step's marks and comment are known
           seq: startEv?.seq ?? 0,
         },
@@ -436,11 +504,18 @@ export async function buildPackageDetailed(
     for (const s of draftSteps) if (s.draft.tMs <= at) before = s;
     return (before ?? draftSteps[0])?.id;
   };
+  /** The freeze whose Explain steps carry an annotation made at `tMs`, if it has any. */
+  const freezeWithSteps = (tMs: number): number | undefined => {
+    const fi = freezes.findIndex((f) => tMs >= f.start && tMs <= f.end);
+    return fi >= 0 && draftSteps.some((s) => s.explain?.freezeIdx === fi) ? fi : undefined;
+  };
 
   interface PendingAnn {
     record: AnnotationRecord;
     /** Step the geometry must be converted for. */
     payload?: AnnotationPayload;
+    /** The freeze this annotation was made in, when that freeze has Explain steps (PKG-7). */
+    freezeIdx?: number;
   }
   const pending: PendingAnn[] = [];
   let markCounter = 0;
@@ -458,6 +533,7 @@ export async function buildPackageDetailed(
           text: text(p.text ?? ""),
           source: p.source ?? "typed",
         },
+        freezeIdx: freezeWithSteps(ev.t),
       });
     } else if (p.kind === "narration") {
       pending.push({
@@ -482,8 +558,7 @@ export async function buildPackageDetailed(
           t_ms: Math.round(ev.t),
           mark: `H${markCounter}`,
           shape: p.shape,
-          frame_id: "", // filled once frames exist
-          geometry_fpx: [],
+          geometry_fpx: [], // and `frame_id`, filled once frames exist
         },
         payload: p,
       });
@@ -526,17 +601,21 @@ export async function buildPackageDetailed(
   const commentEdits = new Map<string, string>();
   /** User blur rectangles per pre-edit step id, in full-image px (`rect_fpx`). */
   const blurEdits = new Map<string, Rect[]>();
+  /** The same, for rectangles drawn on the last step's after image (`frame: "after"`). */
+  const blurAfterEdits = new Map<string, Rect[]>();
   for (const e of edits) {
     if (e.op === "delete_step") deleted.add(e.step_id);
-    else if (e.op === "edit_summary") summaryEdits.set(e.step_id, e.text);
-    else if (e.op === "edit_comment") commentEdits.set(e.annotation_id, e.text);
+    // Text is one line and never empty: a newline would start a heading or a fake step in PROCESS.md.
+    else if (e.op === "edit_summary") summaryEdits.set(e.step_id, foldEditText(e.text, "summary"));
+    else if (e.op === "edit_comment") commentEdits.set(e.annotation_id, foldEditText(e.text, "comment"));
     else if (e.op === "blur_rect") {
-      const list = blurEdits.get(e.step_id) ?? [];
+      const target = e.frame === "after" ? blurAfterEdits : blurEdits;
+      const list = target.get(e.step_id) ?? [];
       list.push([...e.rect_fpx] as Rect);
-      blurEdits.set(e.step_id, list);
+      target.set(e.step_id, list);
     }
   }
-  for (const id of [...deleted, ...summaryEdits.keys(), ...blurEdits.keys()]) {
+  for (const id of [...deleted, ...summaryEdits.keys(), ...blurEdits.keys(), ...blurAfterEdits.keys()]) {
     if (!draftSteps.some((s) => s.id === id)) {
       throw new Error(`Edit refers to unknown step ${id}`);
     }
@@ -563,6 +642,8 @@ export async function buildPackageDetailed(
   let frameCounter = 0;
   /** Finished before-full image bytes per output step id, for drawing the annotated image later. */
   const fullPngs = new Map<string, Uint8Array>();
+  /** Password-field geometry of each output step, so the same field is blurred in its after frame. */
+  const passwordGeometry = new Map<string, { elementDpx?: Rect; pointDpx: [number, number] }>();
   const stepRecords: StepRecord[] = [];
   for (const [idx, ds] of kept.entries()) {
     const stepId = renumber.get(ds.id) as string;
@@ -578,10 +659,13 @@ export async function buildPackageDetailed(
     let pointFpx: [number, number] | undefined;
     let elementDpx: Rect | undefined;
     let elementFpx: Rect | undefined;
-    if (ds.layout && display && displayId) {
+    // Where the click was, in display pixels: known from the layout even when there is no picture.
+    if (ds.layout && display) {
       const space = ds.layout.globalSpace;
       if (click) pointDpx = globalToDpx(space, display, click.x, click.y);
       if (click?.target?.bounds) elementDpx = boundsToDpx(space, display, click.target.bounds);
+    }
+    if (ds.layout && display && displayId) {
       // An Explain step's picture is the frozen frame the user annotated.
       const frozen = ds.explain?.shotFile
         ? session.shots.find((s) => s.file === ds.explain?.shotFile)
@@ -600,22 +684,11 @@ export async function buildPackageDetailed(
         const capK = img.width / display.sizeDpx[0];
         const regionsFpx: Rect[] = [];
 
-        // Password field: blur it before anything is cut from the frame (privacy floor).
+        // Password field: blur it before anything is cut from the frame (privacy floor). The
+        // rectangle is clamped to the frame first, and what is recorded as redacted is what was blurred.
         if (click?.target?.isPassword) {
-          const rectDpx: Rect =
-            elementDpx ??
-            ([
-              (pointDpx?.[0] ?? 0) - 200 * display.scaleFactor,
-              (pointDpx?.[1] ?? 0) - 50 * display.scaleFactor,
-              400 * display.scaleFactor,
-              100 * display.scaleFactor,
-            ] as Rect);
-          const rectFrame: Rect = [
-            rectDpx[0] * capK - PASSWORD_PAD_FRAME_PX,
-            rectDpx[1] * capK - PASSWORD_PAD_FRAME_PX,
-            rectDpx[2] * capK + 2 * PASSWORD_PAD_FRAME_PX,
-            rectDpx[3] * capK + 2 * PASSWORD_PAD_FRAME_PX,
-          ];
+          if (!pointDpx) throw new Error("Cannot blur a password field: the click has no position.");
+          const rectFrame = passwordRectFrame(display, capK, img.width, img.height, elementDpx, pointDpx);
           img = await blurRect(img, rectFrame);
           const k = scale / capK;
           regionsFpx.push([
@@ -643,15 +716,13 @@ export async function buildPackageDetailed(
         fullPngs.set(stepId, fullBytes);
         let crop: FrameRecord["crop"];
         if (click && pointDpx) {
-          const centre: [number, number] = elementDpx
-            ? [elementDpx[0] + elementDpx[2] / 2, elementDpx[1] + elementDpx[3] / 2]
-            : pointDpx;
-          const plan = planCrop({
+          const plan = planClickCrop({
             display,
             frameWidth: img.width,
             frameHeight: img.height,
             fullScale: scale,
-            centreDpx: centre,
+            pointDpx,
+            ...(elementDpx ? { elementDpx } : {}),
           });
           const cropPath = `media/${stepId}_before_crop.png`;
           let cropBytes = await renderCrop(img, plan.rectFrame, plan.out);
@@ -691,19 +762,28 @@ export async function buildPackageDetailed(
           ...(crop ? { crop } : {}),
           redacted_regions_fpx: regionsFpx,
         };
-        if (pointDpx) pointFpx = dpxToFpx(source, scale, pointDpx[0], pointDpx[1]);
-        if (elementDpx) {
-          const a = dpxToFpx(source, scale, elementDpx[0], elementDpx[1]);
-          elementFpx = [a[0], a[1], elementDpx[2] * scale, elementDpx[3] * scale];
-        }
       }
     }
+    // Full-image px: from the real frame's scale, else from the scale a frame of this display would
+    // have, so a step with no picture still has a real locator and never "0,0" (PKG-4).
+    if (display && (pointDpx || elementDpx)) {
+      const source: Rect = [0, 0, display.sizeDpx[0], display.sizeDpx[1]];
+      const scale = before?.scale ?? expectedFrameScale(display);
+      if (pointDpx) pointFpx = dpxToFpx(source, scale, pointDpx[0], pointDpx[1]);
+      if (elementDpx) {
+        const a = dpxToFpx(source, scale, elementDpx[0], elementDpx[1]);
+        elementFpx = [a[0], a[1], elementDpx[2] * scale, elementDpx[3] * scale];
+      }
+    }
+    if (click?.target?.isPassword && pointDpx) passwordGeometry.set(stepId, { elementDpx, pointDpx });
 
     const edited = summaryEdits.get(ds.id);
     const flags: string[] = [];
     if (edited !== undefined) flags.push("user_edited");
     if (before && before.redacted_regions_fpx.length > 0) flags.push("contains_redaction");
-    if (ground && ground.grounding !== "accessibility") flags.push("low_confidence_target");
+    // No picture of the screen at that moment (for example in the first second of capture): the
+    // target is less certain, and the package says so.
+    if (!before || (ground && ground.grounding !== "accessibility")) flags.push("low_confidence_target");
     flags.sort();
 
     // Target (tester-package.md §4.2).
@@ -723,16 +803,21 @@ export async function buildPackageDetailed(
       if (ground.unavailable) target.unavailable = { reason: ground.unavailable };
       if (t) {
         target.grounding_source = t.source;
+        // The user rewrote this step's wording because the control's name was private (or wrong):
+        // the same words must not survive in the element, the ancestry or the locator (SEC-6).
+        const userEdited = edited !== undefined;
         target.element = {
           role: t.role,
           native_role: t.nativeRole,
-          name: text(t.name),
+          name: userEdited ? redactedText() : text(t.name),
           ...(t.automationId ? { automation_id: t.automationId } : {}),
           ...(t.axIdentifier ? { ax_identifier: t.axIdentifier } : {}),
           is_password: t.isPassword,
         };
         if (t.ancestry?.length) {
-          target.ancestry = t.ancestry.slice(0, 6).map((a) => ({ role: a.role, name: a.name }));
+          target.ancestry = t.ancestry
+            .slice(0, 6)
+            .map((a) => ({ role: a.role, name: userEdited ? REDACTED : a.name }));
         }
       }
       if (displayId && elementDpx && elementFpx) {
@@ -755,18 +840,21 @@ export async function buildPackageDetailed(
         const path = [...(t.ancestry ?? []).map((a) => `${a.role}:${a.name}`), `${t.role}:${t.name}`];
         locators.push({
           strategy: "role_name_path",
-          value: path.join(" > "),
+          value: edited !== undefined ? REDACTED : path.join(" > "),
           rank: rank++,
           stability: "medium",
         });
       }
-      const fp = pointFpx ?? [0, 0];
-      locators.push({
-        strategy: "frame_point",
-        value: `${Math.round(fp[0])},${Math.round(fp[1])}`,
-        rank,
-        stability: "low",
-      });
+      // The click's place in the full image. Never a made-up "0,0": with no display to place it on,
+      // there is no frame_point, and validatePackage refuses a step with no locator at all.
+      if (pointFpx) {
+        locators.push({
+          strategy: "frame_point",
+          value: `${Math.round(pointFpx[0])},${Math.round(pointFpx[1])}`,
+          rank,
+          stability: "low",
+        });
+      }
       target.locators = locators;
     } else if (d.kind === "context") {
       // No clicked control: nothing failed, there was none to find (tester-package.md §4.2).
@@ -801,8 +889,7 @@ export async function buildPackageDetailed(
       t_start_ms: Math.round(d.tMs),
       t_end_ms: ds.tEnd,
       summary: edited ?? d.summary,
-      summary_provenance: edited !== undefined ? "user" : "observed",
-      observed_via: d.observedVia,
+      summary_provenance: edited !== undefined ? "user" : "observed",      observed_via: d.observedVia,
       ...(ds.explain
         ? {}
         : {
@@ -827,31 +914,61 @@ export async function buildPackageDetailed(
   // After frame on the last step only: about 500 ms after its action.
   const lastDs = kept[kept.length - 1];
   const lastRec = stepRecords[stepRecords.length - 1];
-  if (lastDs && !lastDs.explain && lastRec?.before && lastDs.display) {
+  // It belongs to the last step the user did. When that step was deleted in review, the frame taken
+  // after it shows a later screen, so the new last step gets none (PKG-1).
+  const lastWasRecordedLast = lastDs !== undefined && lastDs === draftSteps[draftSteps.length - 1];
+  if (lastDs && !lastDs.explain && lastWasRecordedLast && lastRec?.before && lastDs.display) {
     const afterCands = candidatesFor(lastDs.display.id, "after");
     const want = lastDs.draft.tMs + AFTER_DELAY_MS;
     let pick: Candidate | undefined;
     for (const c of afterCands) {
-      // About 500 ms after the action: a frame much later shows something else (for example when
-      // the real last step was deleted in review), so it is not used.
-      if (c.t < lastDs.draft.tMs || c.t - lastDs.draft.tMs > AFTER_MAX_MS) continue;
+      // About 500 ms after the action, and before the step ends (`tEnd` is measured before edits).
+      if (c.t < lastDs.draft.tMs || c.t - lastDs.draft.tMs > AFTER_MAX_MS || c.t >= lastDs.tEnd) continue;
       if (!pick || Math.abs(c.t - want) < Math.abs(pick.t - want)) pick = c;
     }
     const bytes = pick && session.files.get(pick.shot.file);
     if (pick && bytes) {
-      const img = await decode(bytes);
+      let img = await decode(bytes);
       const full = fitFullImage(img.width, img.height);
       const scale = full.width / lastDs.display.sizeDpx[0];
       frameCounter++;
       const path = `media/${lastRec.step_id}_after_full.png`;
-      // The after frame is the same screen a moment later, so the user's blur on this step also
-      // covers it; otherwise a blurred value would show through in the after image.
-      const afterRects = (blurEdits.get(lastDs.id) ?? [])
+      const afterRects: Rect[] = [];
+      // A password field on the last step is blurred in the after frame too (SEC-4).
+      const pw = passwordGeometry.get(lastRec.step_id);
+      if (pw) {
+        const capK = img.width / lastDs.display.sizeDpx[0];
+        const rectFrame = passwordRectFrame(lastDs.display, capK, img.width, img.height, pw.elementDpx, pw.pointDpx);
+        img = await blurRect(img, rectFrame);
+        const k = scale / capK;
+        afterRects.push([
+          round2(rectFrame[0] * k),
+          round2(rectFrame[1] * k),
+          round2(rectFrame[2] * k),
+          round2(rectFrame[3] * k),
+        ]);
+      }
+      // The after frame is the same screen a moment later, so the user's blur on this step's before
+      // image also covers it; otherwise a blurred value would show through in the after image.
+      // Rectangles drawn on the after image itself (`frame: "after"`) are in its own pixels.
+      const coverRects = (blurEdits.get(lastDs.id) ?? [])
         .map((r) => clampRect(r, full.width, full.height))
         .filter((r): r is Rect => r !== null);
+      const ownRaw = blurAfterEdits.get(lastDs.id) ?? [];
+      const ownRects = ownRaw
+        .map((r) => clampRect(r, full.width, full.height))
+        .filter((r): r is Rect => r !== null);
+      if (ownRaw.length > ownRects.length) {
+        throw new Error(`Blur on the after image of step ${lastDs.id} lies outside it; refusing to export it unblurred.`);
+      }
       let afterBytes = await renderFull(img, full);
-      for (const r of afterRects) afterBytes = await blurPng(afterBytes, r);
+      for (const r of [...coverRects, ...ownRects]) afterBytes = await blurPng(afterBytes, r);
+      afterRects.push(...coverRects, ...ownRects);
       put(path, afterBytes);
+      if (afterRects.length > 0 && !lastRec.flags.includes("contains_redaction")) {
+        lastRec.flags.push("contains_redaction");
+        lastRec.flags.sort();
+      }
       lastRec.after = {
         frame_id: `frm_${pad(frameCounter, 4)}`,
         t_ms: Math.round(pick.t),
@@ -868,6 +985,13 @@ export async function buildPackageDetailed(
       };
     }
   }
+  // An edit aimed at an after image this export does not have fails closed: it would otherwise be dropped.
+  for (const id of blurAfterEdits.keys()) {
+    const outId = renumber.get(id); // undefined when that step was deleted: nothing to blur
+    if (outId && !stepRecords.find((s) => s.step_id === outId)?.after) {
+      throw new Error(`Blur on the after image of step ${id}, which has no after image.`);
+    }
+  }
 
   // --- Finish annotations ---
   const stepById = new Map(stepRecords.map((s) => [s.step_id, s]));
@@ -880,6 +1004,13 @@ export async function buildPackageDetailed(
     const stepIds = rec.step_ids
       .map((id) => renumber.get(id))
       .filter((id): id is string => id !== undefined);
+    // A freeze's comment sits on its first Explain step. When the user deletes that step (one of a
+    // multi-display freeze), the comment moves to the freeze's first surviving Explain step instead
+    // of vanishing with it (PKG-7).
+    if (hadSteps && stepIds.length === 0 && rec.kind === "comment" && p.freezeIdx !== undefined) {
+      const heir = kept.find((s) => s.explain?.freezeIdx === p.freezeIdx);
+      if (heir) stepIds.push(renumber.get(heir.id) as string);
+    }
     if (hadSteps && stepIds.length === 0) continue; // its step was deleted
     if (rec.kind === "comment") {
       const edited = commentEdits.get(rec.annotation_id);
@@ -894,10 +1025,13 @@ export async function buildPackageDetailed(
       const pl = p.payload;
       const layout = layoutAt(layouts, rec.t_ms);
       const dispInfo = layout?.displays.find((x) => x.id === pl?.displayId);
-      if (!step || !before || !pl?.pointsDpx || !dispInfo) continue; // nothing to map onto
+      if (!step || !pl?.pointsDpx || !dispInfo) continue; // nothing to map onto
+      // A step with no picture (its frozen frame was never saved) still keeps the user's mark, in
+      // the geometry a frame of that display would have. It has no `frame_id`, and its step says
+      // `low_confidence_target`; it is never dropped without a trace (PKG-4).
       const sourceRect: Rect = [0, 0, dispInfo.sizeDpx[0], dispInfo.sizeDpx[1]];
-      const sameDisplay = displayIds.get(dispInfo.id) === before.display_id;
-      const scale = sameDisplay ? before.scale : expectedFrameScale(dispInfo);
+      const sameDisplay = !!before && displayIds.get(dispInfo.id) === before.display_id;
+      const scale = before && sameDisplay ? before.scale : expectedFrameScale(dispInfo);
       const geometry = pl.pointsDpx.map((pt) => {
         const f = dpxToFpx(sourceRect, scale, pt[0], pt[1]);
         return [round2(f[0]), round2(f[1])] as [number, number];
@@ -917,7 +1051,7 @@ export async function buildPackageDetailed(
         ...rec,
         step_ids: stepIds,
         mark: `H${++markOut}`,
-        frame_id: before.frame_id,
+        ...(before ? { frame_id: before.frame_id } : {}),
         geometry_fpx: geometry,
         ...(snapped ? { snapped_to: snapped } : {}),
       });

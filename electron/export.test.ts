@@ -47,6 +47,50 @@ test("exports a validating folder and a zip with the same content", async () => 
   }
 });
 
+test("PKG-8: a package that does not validate leaves nothing behind", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
+  try {
+    const result = await exportPackage({
+      sessionDir: FIXTURE,
+      destZip: path.join(out, "anything.zip"),
+      toolVersion: "0.1.0",
+      timezone: "Africa/Johannesburg",
+      now: () => new Date(Date.UTC(2026, 10, 24, 7, 30, 0)),
+      random: () => new Uint8Array(10).fill(7),
+      validate: async () => ({ ok: false, errors: ["S01: something is wrong"] }),
+    });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.validationErrors, ["S01: something is wrong"]);
+    assert.equal(result.folder, undefined);
+    assert.equal(result.zip, undefined);
+    assert.deepEqual(await readdir(out), [], "no folder, no zip and no scratch folder");
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("PKG-8: an earlier export at the same place is not touched when a new one fails", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
+  try {
+    const opts = {
+      sessionDir: FIXTURE,
+      destZip: path.join(out, "anything.zip"),
+      toolVersion: "0.1.0",
+      timezone: "Africa/Johannesburg",
+      now: () => new Date(Date.UTC(2026, 10, 24, 7, 30, 0)),
+      random: () => new Uint8Array(10).fill(7),
+    };
+    const good = await exportPackage(opts);
+    assert.equal(good.ok, true);
+    const before = await readdir(out);
+    const bad = await exportPackage({ ...opts, validate: async () => ({ ok: false, errors: ["x"] }) });
+    assert.equal(bad.ok, false);
+    assert.deepEqual(await readdir(out), before);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
 test("an unreadable session reports an error instead of throwing", async () => {
   const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
   try {

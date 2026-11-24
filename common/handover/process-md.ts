@@ -2,6 +2,7 @@
 // No model. LF endings, one trailing newline, no trailing spaces.
 
 import { dateInTimezone, formatDuration } from "./canonical";
+import { LINE_BREAKS } from "./edits";
 import type { AnnotationRecord, GapRecord, StepRecord } from "./types";
 
 export interface ProcessMdData {
@@ -40,8 +41,13 @@ function unavailableReason(step: StepRecord): string | undefined {
   return u?.reason;
 }
 
+/** One line: any kind of line break becomes a space, so text cannot start a heading or a fake step. */
+function oneLine(s: string): string {
+  return s.replace(LINE_BREAKS, " ").replace(/ +$/g, "");
+}
+
 function textOf(t: { text: string }): string {
-  return t.text.replace(/\r?\n/g, " ").replace(/ +$/g, "");
+  return oneLine(t.text);
 }
 
 function stripScheme(url: string): string {
@@ -60,13 +66,14 @@ function whereLine(step: StepRecord): string | undefined {
       }
     | undefined;
   if (!t) return undefined;
-  const app = t.app?.name || "unknown app";
-  const place = t.url?.text ? stripScheme(t.url.text) : t.window?.title?.text;
+  const app = oneLine(t.app?.name || "unknown app");
+  const rawPlace = t.url?.text ? stripScheme(t.url.text) : t.window?.title?.text;
+  const place = rawPlace === undefined ? undefined : oneLine(rawPlace);
   if (t.grounding === "accessibility" || t.grounding === "accessibility_weak") {
     const el = t.element;
     const parts = [app];
     if (place) parts.push(place);
-    parts.push(`${el?.role ?? "other"} "${el?.name?.text ?? ""}"`);
+    parts.push(`${el?.role ?? "other"} "${oneLine(el?.name?.text ?? "")}"`);
     return `${parts.join(" › ")} (${t.grounding})`;
   }
   if (t.grounding === "visual_only") {
@@ -76,7 +83,9 @@ function whereLine(step: StepRecord): string | undefined {
     return `${app} › point ${pt} in ${img ?? "the screen"} (pixels only)`;
   }
   // Window title (not the URL) for an Explain step.
-  const where = step.observed_via === "explain" ? t.window?.title?.text : place;
+  const explainTitle = t.window?.title?.text;
+  const where =
+    step.observed_via === "explain" ? (explainTitle === undefined ? undefined : oneLine(explainTitle)) : place;
   return [app, where].filter(Boolean).join(" › ") + (step.observed_via === "explain" ? " (explain)" : " (app switch)");
 }
 
@@ -115,7 +124,7 @@ export function renderProcessMd(d: ProcessMdData): string {
     const reason = unavailableReason(step);
     const tierNote = tier(step) !== "T3" && reason ? ` (${reason})` : "";
     lines.push(
-      `**${step.step_id}. ${step.summary}**${marks.length ? ` (${marks.join(", ")})` : ""} ` +
+      `**${step.step_id}. ${oneLine(step.summary)}**${marks.length ? ` (${marks.join(", ")})` : ""} ` +
         `\`[${step.summary_provenance}]\` · evidence ${tier(step)}${tierNote}`,
     );
     const where = whereLine(step);

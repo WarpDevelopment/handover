@@ -182,7 +182,7 @@ test("the before frame is chosen before the click, not before the time the helpe
   const files = await buildPackage(slow, [], CTX);
   const s2 = steps(files)[1];
   assert.equal(s2.before.t_ms, 0);
-  assert.equal(s2.t_start_ms, 3000, "the step keeps the time the click was reported");
+  assert.equal(s2.t_start_ms, 2600, "the step is timed when the user acted, not when the helper reported it");
   // Without a lookup time the same click still uses the t=2,700 frame.
   const fast = await buildPackage(session, [], CTX);
   assert.equal(steps(fast)[1].before.t_ms, 2700);

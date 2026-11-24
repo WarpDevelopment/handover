@@ -6,6 +6,8 @@ import { randomBytes } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
+import sharp from "sharp";
+
 import { buildPackageDetailed } from "../common/handover/build-package";
 import { assertEdit } from "../common/handover/edits";
 import { EDITS_FILE, readSessionInput } from "../common/handover/read-session";
@@ -23,10 +25,21 @@ export interface ReviewServiceOptions {
 interface Built {
   files: PackageBytes;
   data: ReviewData;
+  /** Small previews of the step pictures, as data URLs, keyed by the package path of the full image. */
+  thumbs: Map<string, string>;
 }
 
+/** The long edge of a filmstrip preview. The full picture is only sent when a step is opened. */
+const THUMB_EDGE = 320;
+/** A preview of a package image is asked for by putting this in front of its path. */
+export const THUMB_PREFIX = "thumb/";
+
 export class ReviewService {
-  private readonly cache = new Map<string, Built>();
+  /**
+   * Only the latest session is kept: every full image of a session is in memory while it is under
+   * review, and a library with many sessions must not hold them all (APP-9).
+   */
+  private current: { sessionId: string; built: Built } | null = null;
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly opts: ReviewServiceOptions) {}
@@ -52,32 +65,54 @@ export class ReviewService {
       tool_version: this.opts.toolVersion,
     };
     const built = await buildPackageDetailed(session, all, ctx);
-    return {
+    const data = reviewDataFrom({
       files: built.files,
-      data: reviewDataFrom({
-        files: built.files,
-        stepIds: built.stepIds,
-        sessionId,
-        title: session.process.title,
-        editCount: all.length,
-      }),
-    };
+      stepIds: built.stepIds,
+      sessionId,
+      title: session.process.title,
+      editCount: all.length,
+    });
+    const thumbs = new Map<string, string>();
+    for (const step of data.steps) {
+      const p = step.image?.path;
+      const bytes = p ? built.files.get(p) : undefined;
+      if (!p || !bytes || thumbs.has(p)) continue;
+      const small = await sharp(Buffer.from(bytes))
+        .resize({ width: THUMB_EDGE, height: THUMB_EDGE, fit: "inside", withoutEnlargement: true })
+        .png()
+        .toBuffer();
+      thumbs.set(p, `data:image/png;base64,${small.toString("base64")}`);
+    }
+    return { files: built.files, data, thumbs };
   }
 
   /** Build the session with its stored edits and remember the result for {@link image}. */
   load(sessionDir: string, sessionId: string): Promise<ReviewData> {
     return this.serial(async () => {
       const built = await this.build(sessionDir, sessionId, []);
-      this.cache.set(sessionId, built);
+      this.current = { sessionId, built };
       return built.data;
     });
   }
 
-  /** A package image of the last {@link load} as a PNG data URL, or null if it is not one. */
+  /**
+   * A package image of the last {@link load} as a PNG data URL, or null if it is not one. With the
+   * {@link THUMB_PREFIX} in front of the path, a small preview instead of the full picture.
+   */
   image(sessionId: string, imagePath: string): string | null {
-    if (!/^media\/[A-Za-z0-9_.-]+\.png$/.test(imagePath)) return null;
-    const bytes = this.cache.get(sessionId)?.files.get(imagePath);
+    if (this.current?.sessionId !== sessionId) return null;
+    const wantThumb = imagePath.startsWith(THUMB_PREFIX);
+    const p = wantThumb ? imagePath.slice(THUMB_PREFIX.length) : imagePath;
+    if (!/^media\/[A-Za-z0-9_.-]+\.png$/.test(p)) return null;
+    const { built } = this.current;
+    if (wantThumb) return built.thumbs.get(p) ?? null;
+    const bytes = built.files.get(p);
     return bytes ? `data:image/png;base64,${Buffer.from(bytes).toString("base64")}` : null;
+  }
+
+  /** Forget a session's pictures (it was deleted, or its library window closed). */
+  evict(sessionId?: string): void {
+    if (sessionId === undefined || this.current?.sessionId === sessionId) this.current = null;
   }
 
   /**
@@ -90,7 +125,7 @@ export class ReviewService {
       const built = await this.build(sessionDir, sessionId, [edit]);
       await mkdir(sessionDir, { recursive: true });
       await appendFile(path.join(sessionDir, EDITS_FILE), `${JSON.stringify(edit)}\n`, "utf8");
-      this.cache.set(sessionId, built);
+      this.current = { sessionId, built };
       return built.data;
     });
   }
@@ -112,9 +147,18 @@ export class ReviewService {
           }
           return { ...base, op: "edit_summary", step_id: input.preEditId, text: input.text.trim() };
         case "edit_comment":
+          if (typeof input.text !== "string" || input.text.trim() === "") {
+            throw new Error("A note cannot be empty.");
+          }
           return { ...base, op: "edit_comment", annotation_id: input.annotationId, text: input.text };
         case "blur_rect":
-          return { ...base, op: "blur_rect", step_id: input.preEditId, rect_fpx: input.rectFpx };
+          return {
+            ...base,
+            op: "blur_rect",
+            step_id: input.preEditId,
+            rect_fpx: input.rectFpx,
+            ...(input.frame ? { frame: input.frame } : {}),
+          };
         default:
           // An unknown operation from the renderer fails closed (assertEdit throws).
           return { ...base, op: String((input as { op?: unknown }).op) };

@@ -2,13 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { RecEvent } from "../types";
-import { appKind, buildSteps, groundingOf, reduceUrl, summaryFor } from "./steps";
+import { appKind, buildSteps, buildStepsWithState, groundingOf, reduceUrl, summaryFor } from "./steps";
 
 let seq = 0;
 function ev(t: number, type: string, payload: Record<string, unknown>): RecEvent {
   return { seq: seq++, t, epoch: 1_000_000 + t, type, source: "test", payload };
 }
 const dpx = (c: { x: number; y: number }): [number, number] => [c.x * 2, c.y * 2];
+/** A window that contains every point the tests click, so a control-less click keeps its app. */
+const BOUNDS = { x: 0, y: 0, width: 1000, height: 800 };
+/** A second window to the right of the first (x 500 to 1500). */
+const BOUNDS_B = { x: 500, y: 0, width: 1000, height: 800 };
 
 test("summaries come from templates and never carry typed values", () => {
   assert.equal(
@@ -49,11 +53,11 @@ test("clicks, app switches and ordering: click, then app switch", () => {
   const steps = buildSteps(
     [
       ev(0, "session.start", {}),
-      ev(100, "app.activate", { app: "Excel", title: "Book1" }),
+      ev(100, "app.activate", { app: "Excel", title: "Book1", bounds: { x: 0, y: 0, width: 400, height: 800 } }),
       ev(1000, "pointer.click", { button: "left", clickCount: 1, space: "macos_global_points", x: 5, y: 6 }),
-      ev(2000, "app.activate", { app: "Google Chrome", title: "Inbox", url: "https://a.example/x?q=1#f" }),
-      ev(3000, "pointer.click", { button: "right", clickCount: 1, space: "macos_global_points", x: 7, y: 8 }),
-      ev(4000, "pointer.click", { button: "left", clickCount: 2, space: "macos_global_points", x: 7, y: 8 }),
+      ev(2000, "app.activate", { app: "Google Chrome", title: "Inbox", url: "https://a.example/x?q=1#f", bounds: BOUNDS_B }),
+      ev(3000, "pointer.click", { button: "right", clickCount: 1, space: "macos_global_points", x: 700, y: 8 }),
+      ev(4000, "pointer.click", { button: "left", clickCount: 2, space: "macos_global_points", x: 700, y: 8 }),
     ],
     dpx,
   );
@@ -61,10 +65,10 @@ test("clicks, app switches and ordering: click, then app switch", () => {
     steps.map((s) => [s.kind, s.actionType, s.summary]),
     [
       ["context", "app_switch", "Switch to Excel"],
-      ["action", "click", "Click at (10, 12) in Excel"],
+      ["action", "click", "Click at (10, 12) in Excel"], // inside Excel's last known window
       ["context", "app_switch", "Switch to Google Chrome"],
-      ["action", "right_click", "Right-click at (14, 16) in Google Chrome"],
-      ["action", "double_click", "Double-click at (14, 16) in Google Chrome"],
+      ["action", "right_click", "Right-click at (1400, 16) in Google Chrome"],
+      ["action", "double_click", "Double-click at (1400, 16) in Google Chrome"],
     ],
   );
   // The browser URL is reduced to origin + path.
@@ -144,7 +148,7 @@ test("a double-click (two clicks, the second with clickCount 2) is one double_cl
   assert.equal(steps.length, 2);
   assert.equal(steps[0].actionType, "double_click");
   assert.equal(steps[0].summary, 'Double-click cell "B2" in Excel');
-  assert.equal(steps[0].tMs, 1000, "the step keeps the first click's time");
+  assert.equal(steps[0].tMs, 980, "the step keeps the first click's time, back-dated to when the user acted");
   assert.equal(steps[0].frameTMs, 980);
   assert.equal(steps[0].click?.clickCount, 2);
   // Too far apart, a different button, or no first click: not merged.
@@ -164,6 +168,107 @@ test("a double-click (two clicks, the second with clickCount 2) is one double_cl
     dpx,
   );
   assert.equal(otherButton.length, 2);
+});
+
+const clickPayload = (over: Record<string, unknown>) => ({
+  button: "left", clickCount: 1, space: "macos_global_points", x: 0, y: 0, ...over,
+});
+
+test("PKG-2: a click that switched apps is one step; the poll lag does not add a 'Switch to' step", () => {
+  const send = {
+    grounding: "accessibility", source: "ax", role: "button", nativeRole: "AXButton", name: "Send",
+    isPassword: false, app: { name: "Google Chrome" },
+  };
+  const steps = buildSteps(
+    [
+      ev(16500, "app.activate", { app: "Microsoft Excel", title: "Budget", bounds: BOUNDS }),
+      // The user clicked in Chrome at 17,000 (reported 17,250 after a 250 ms lookup). The 1 s active-window
+      // poll saw Chrome at 17,100, between the mouse-down and the helper's report.
+      ev(17100, "app.activate", { app: "Google Chrome", title: "Inbox", bounds: BOUNDS_B }),
+      ev(17250, "pointer.click", clickPayload({ x: 700, y: 250, lookupMs: 250, target: send })),
+    ],
+    dpx,
+  );
+  assert.deepEqual(steps.map((s) => s.summary), ["Switch to Microsoft Excel", 'Click button "Send" in Google Chrome']);
+  assert.equal(steps[1].tMs, 17000, "the click is timed when the user acted");
+});
+
+test("PKG-2: a double-click on a background window is one step, not click + switch + click", () => {
+  const cell = {
+    grounding: "accessibility", source: "ax", role: "cell", nativeRole: "AXCell", name: "B4",
+    isPassword: false, app: { name: "Microsoft Excel" },
+  };
+  const steps = buildSteps(
+    [
+      ev(100, "app.activate", { app: "Google Chrome", title: "Inbox", bounds: BOUNDS_B }),
+      // First click: no control found (timeout); then the poll reports Excel; then the second click.
+      ev(17000, "pointer.click", clickPayload({ x: 40, y: 300, lookupMs: 300, unavailableReason: "timeout" })),
+      ev(17100, "app.activate", { app: "Microsoft Excel", title: "Budget", bounds: { x: 0, y: 0, width: 450, height: 800 } }),
+      ev(17250, "pointer.click", clickPayload({ x: 40, y: 300, clickCount: 2, lookupMs: 20, target: cell })),
+    ],
+    dpx,
+  );
+  assert.deepEqual(
+    steps.map((s) => [s.kind, s.actionType, s.summary]),
+    [
+      ["context", "app_switch", "Switch to Google Chrome"],
+      ["action", "double_click", 'Double-click cell "B4" in Microsoft Excel'],
+    ],
+  );
+});
+
+test("PKG-2: an app switch with no click near it is still a step", () => {
+  const steps = buildSteps(
+    [
+      ev(100, "app.activate", { app: "Excel", title: "Book1", bounds: BOUNDS }),
+      ev(9000, "app.activate", { app: "Finder", title: "Desktop", bounds: BOUNDS_B }),
+      ev(30000, "pointer.click", clickPayload({ x: 700, y: 10 })),
+    ],
+    dpx,
+  );
+  assert.deepEqual(steps.map((s) => s.summary), ["Switch to Excel", "Switch to Finder", "Click at (1400, 20) in Finder"]);
+});
+
+test("PKG-3: a click with no control keeps the last app only inside its window; otherwise it claims no app", () => {
+  const inside = buildSteps(
+    [
+      ev(100, "app.activate", { app: "Excel", title: "Book1", bounds: { x: 100, y: 100, width: 300, height: 300 } }),
+      ev(5000, "pointer.click", clickPayload({ x: 150, y: 150, unavailableReason: "timeout" })),
+      ev(6000, "pointer.click", clickPayload({ x: 900, y: 900, unavailableReason: "timeout" })),
+    ],
+    dpx,
+  );
+  assert.equal(inside[1].app.name, "Excel");
+  assert.equal(inside[2].app.name, "", "outside the window: the app is not known");
+  assert.equal(inside[2].app.kind, "unknown");
+  assert.equal(inside[2].windowTitle, undefined);
+  assert.equal(inside[2].summary, "Click at (1800, 1800)", "the summary names no app it does not know");
+  // With no window bounds at all, nothing can be verified.
+  const noBounds = buildSteps(
+    [
+      ev(100, "app.activate", { app: "Excel", title: "Book1" }),
+      ev(5000, "pointer.click", clickPayload({ x: 150, y: 150, unavailableReason: "timeout" })),
+    ],
+    dpx,
+  );
+  assert.equal(noBounds[1].app.name, "");
+});
+
+test("PKG-10 / PKG-6: stateAt tells which app, title and URL were frontmost at a moment", () => {
+  const { stateAt } = buildStepsWithState(
+    [
+      ev(100, "app.activate", { app: "Google Chrome", title: "Inbox", url: "https://mail.example/inbox?x=1", bounds: BOUNDS }),
+      ev(5600, "app.title-change", { app: "Google Chrome", title: "Payroll" }),
+      ev(5700, "browser.url", { url: "https://mail.example/payroll#x" }),
+      ev(9000, "app.activate", { app: "Excel", title: "Book1", bounds: BOUNDS }),
+    ],
+    dpx,
+  );
+  assert.equal(stateAt(50), undefined, "nothing was known yet");
+  assert.equal(stateAt(6000)?.windowTitle, "Payroll");
+  assert.equal(stateAt(6000)?.url, "https://mail.example/payroll");
+  assert.equal(stateAt(6000)?.app.name, "Google Chrome");
+  assert.equal(stateAt(9500)?.app.name, "Excel");
 });
 
 test("app kind recognises browsers and remote sessions", () => {

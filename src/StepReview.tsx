@@ -9,6 +9,17 @@ import type { ReviewData, ReviewEditInput, ReviewStep } from "../common/handover
 
 type Rect = [number, number, number, number];
 
+/**
+ * "Done reviewing": the app records that the user finished, and only then lets the package be
+ * exported. The channel is defined by the app side (`sessions:mark-reviewed`); until a build has it
+ * the button is not shown, so this screen never calls something that is not there.
+ */
+type MarkReviewed = (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
+function markReviewedFn(): MarkReviewed | null {
+  const fn = (window.handover as unknown as { markReviewed?: unknown }).markReviewed;
+  return typeof fn === "function" ? (fn as MarkReviewed).bind(window.handover) : null;
+}
+
 /** A step image loaded on demand and remembered until the steps are rebuilt. */
 function useStepImage(sessionId: string, path: string | undefined, version: number): string | null {
   const [src, setSrc] = useState<string | null>(null);
@@ -38,7 +49,8 @@ function Thumb({ sessionId, step, version }: { sessionId: string; step: ReviewSt
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
-  const src = useStepImage(sessionId, visible ? step.image?.path : undefined, version);
+  // A small preview: the full pictures of every step must not all be held in this window (APP-9).
+  const src = useStepImage(sessionId, visible && step.image ? `thumb/${step.image.path}` : undefined, version);
   return (
     <div ref={ref} className="rv-thumb">
       {src ? <img src={src} alt="" draggable={false} /> : <span>{step.image ? "" : "no image"}</span>}
@@ -54,6 +66,24 @@ export function StepReview({ sessionId, onClose }: { sessionId: string; onClose:
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [blurMode, setBlurMode] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const markReviewed = markReviewedFn();
+
+  const doneReviewing = useCallback(async () => {
+    const mark = markReviewedFn();
+    if (!mark) return;
+    setFinishing(true);
+    setError(null);
+    try {
+      const res = await mark(sessionId);
+      if (res.ok) onClose();
+      else setError(res.error ?? "Could not record that the review is done.");
+    } catch {
+      setError("Could not record that the review is done.");
+    } finally {
+      setFinishing(false);
+    }
+  }, [sessionId, onClose]);
 
   useEffect(() => {
     let alive = true;
@@ -122,6 +152,16 @@ export function StepReview({ sessionId, onClose }: { sessionId: string; onClose:
           <h2>{data.title}</h2>
         </div>
         <span className="pill">{data.steps.length} steps</span>
+        {markReviewed && (
+          <button
+            className="record-cta"
+            disabled={busy || finishing}
+            onClick={() => void doneReviewing()}
+            title="Tell Handover you have checked every step. Export is only possible after this."
+          >
+            Done reviewing
+          </button>
+        )}
       </header>
       <p className="rv-note">
         Fix anything before you export. Deleting a step or blurring an area changes the export only;
@@ -174,7 +214,14 @@ export function StepReview({ sessionId, onClose }: { sessionId: string; onClose:
               onComment={(text) =>
                 step.comment ? edit({ op: "edit_comment", annotationId: step.comment.annotationId, text }) : Promise.resolve(false)
               }
-              onBlur={(rectFpx) => edit({ op: "blur_rect", preEditId: step.preEditId, rectFpx })}
+              onBlur={(rectFpx, frame) =>
+                edit({
+                  op: "blur_rect",
+                  preEditId: step.preEditId,
+                  rectFpx,
+                  ...(frame === "after" ? { frame } : {}),
+                })
+              }
               onDelete={() => void deleteStep()}
             />
           )}
@@ -195,31 +242,54 @@ function StepDetail(props: {
   setConfirmDelete: (on: boolean) => void;
   onSummary: (text: string) => Promise<boolean>;
   onComment: (text: string) => Promise<boolean>;
-  onBlur: (rect: Rect) => Promise<boolean>;
+  onBlur: (rect: Rect, frame: "before" | "after") => Promise<boolean>;
   onDelete: () => void;
 }) {
   const { step, busy } = props;
-  const src = useStepImage(props.sessionId, step.image?.path, props.version);
+  // The last step is exported with a second picture, taken just after it. It is reviewed here as its
+  // own item, so a private value on it can be blurred like on the first picture (SEC-1).
+  const [frame, setFrame] = useState<"before" | "after">("before");
+  const shown = frame === "after" && step.afterImage ? step.afterImage : step.image;
+  const src = useStepImage(props.sessionId, shown?.path, props.version);
   const [summary, setSummary] = useState(step.summary);
   const [comment, setComment] = useState(step.comment?.text ?? "");
 
   return (
     <section className="rv-detail" aria-label={`Step ${step.stepId}`}>
       <div className="rv-frame-wrap">
-        {step.image && src ? (
+        {step.afterImage && (
+          <div className="rv-tools" role="group" aria-label="Which picture">
+            <button
+              className={frame === "before" ? "record-cta" : "linky"}
+              disabled={busy || props.blurMode}
+              onClick={() => setFrame("before")}
+            >
+              Before the click
+            </button>
+            <button
+              className={frame === "after" ? "record-cta" : "linky"}
+              disabled={busy || props.blurMode}
+              onClick={() => setFrame("after")}
+            >
+              After (exported too)
+            </button>
+          </div>
+        )}
+        {shown && src ? (
           <BlurFrame
+            key={shown.path}
             src={src}
-            natural={[step.image.width, step.image.height]}
+            natural={[shown.width, shown.height]}
             enabled={props.blurMode}
             busy={busy}
             onApply={async (rect) => {
-              const ok = await props.onBlur(rect);
+              const ok = await props.onBlur(rect, frame === "after" && step.afterImage ? "after" : "before");
               if (ok) props.setBlurMode(false);
             }}
             onCancel={() => props.setBlurMode(false)}
           />
         ) : (
-          <div className="rv-noimage">{step.image ? "Loading the picture…" : "This step has no picture."}</div>
+          <div className="rv-noimage">{shown ? "Loading the picture…" : "This step has no picture."}</div>
         )}
       </div>
 
@@ -286,6 +356,11 @@ function StepDetail(props: {
         )}
         {step.blurredFpx.length > 0 && (
           <p className="rv-hint">{step.blurredFpx.length} area(s) on this step are blurred in the export.</p>
+        )}
+        {step.blurredAfterFpx.length > 0 && (
+          <p className="rv-hint">
+            {step.blurredAfterFpx.length} area(s) on the picture after this step are blurred in the export.
+          </p>
         )}
       </div>
     </section>
