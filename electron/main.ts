@@ -32,6 +32,7 @@ import { processSession } from "./pipeline";
 import { registerIpc } from "./ipc";
 import { isValidSessionId, sessionDir } from "./recorder/session-store";
 import { FreezeCoordinator, type OverlayWindow } from "./freeze";
+import { adaptOverlayWindow } from "./overlay-window";
 import { registerHotkey } from "./hotkeys";
 import { ReviewService } from "./review";
 import { saveDiagnosticsToDesktop } from "./diagnostics-info";
@@ -192,48 +193,16 @@ const overlayReveal = new Map<number, () => void>();
 function overlayWindow(display: Electron.Display): OverlayWindow {
   const win = createFreezeOverlay(display);
   const senderId = win.webContents.id;
-  let wantFocus = false;
-  let revealed = false;
-  const reveal = () => {
-    if (revealed || win.isDestroyed()) return;
-    revealed = true;
-    // Only the display under the pointer takes the keyboard; the others appear without stealing it,
-    // whichever of them finishes loading last.
-    if (wantFocus) {
-      win.show();
-      win.focus();
-    } else {
-      win.showInactive();
-    }
-    win.moveTop();
-  };
-  overlayReveal.set(senderId, reveal);
-  const timer = setTimeout(reveal, OVERLAY_REVEAL_TIMEOUT_MS);
-  win.once("closed", () => {
-    clearTimeout(timer);
-    overlayReveal.delete(senderId);
+  // A load failure, crash, hang, or a page that never became ready cancels the freeze (APP-1).
+  const adapter = adaptOverlayWindow(win, {
+    platform: process.platform,
+    revealTimeoutMs: OVERLAY_REVEAL_TIMEOUT_MS,
+    onFailure: () => void freeze.cancel(),
+    log,
   });
-  return {
-    senderId,
-    // Shown by the page's "ready" signal or the timeout above, whichever comes first.
-    show: () => undefined,
-    focus: () => {
-      wantFocus = true;
-      if (revealed && !win.isDestroyed()) win.focus();
-    },
-    destroy: () => {
-      if (!win.isDestroyed()) win.destroy();
-    },
-    isDestroyed: () => win.isDestroyed(),
-    onClosed: (cb) => win.once("closed", cb),
-    onEscape: (cb) => {
-      win.webContents.on("before-input-event", (event, input) => {
-        if (input.type !== "keyDown" || input.key !== "Escape") return;
-        event.preventDefault();
-        cb();
-      });
-    },
-  };
+  overlayReveal.set(senderId, adapter.ready);
+  win.once("closed", () => overlayReveal.delete(senderId));
+  return adapter.overlay;
 }
 
 const freeze: FreezeCoordinator = new FreezeCoordinator({
@@ -249,6 +218,11 @@ const freeze: FreezeCoordinator = new FreezeCoordinator({
     return `data:${mime};base64,${bytes.toString("base64")}`;
   },
   openWindow: overlayWindow,
+  // Escape works even when the overlay page cannot see the key; held only while frozen.
+  registerEscape: (cb) => {
+    if (!globalShortcut.register("Escape", cb)) log.warn("Escape shortcut could not be registered for the freeze");
+    return () => globalShortcut.unregister("Escape");
+  },
   activateApp: () => {
     if (process.platform === "darwin") app.focus({ steal: true });
   },
@@ -422,7 +396,8 @@ function showRecordingControls(): void {
   const win = ensureRecordingControlsWindow();
   clampRecordingControlsWindow(win);
   if (!win.isVisible()) win.showInactive();
-  win.moveTop();
+  // On Windows the bar must not rise above the freeze overlay (APP-10).
+  if (!freeze.active) win.moveTop();
 }
 
 function showRecorderWindow(): BrowserWindow {
@@ -718,14 +693,17 @@ app.whenReady().then(async () => {
   });
   recorderWindow = createRecorderWindow();
 
-  const handleDisplayChange = () => {
+  const handleDisplayChange = (reason: string) => {
+    log.info(`Display layout changed (${reason}), ${screen.getAllDisplays().length} display(s)`);
+    // Overlay windows sized for the old layout are wrong: end the freeze, unsaved (APP-7, APP-4).
+    freeze.displaysChanged();
     clampControlsToDisplay();
     void screens.refresh();
     recorder.publishDisplays();
   };
-  screen.on("display-added", handleDisplayChange);
-  screen.on("display-removed", handleDisplayChange);
-  screen.on("display-metrics-changed", handleDisplayChange);
+  screen.on("display-added", () => handleDisplayChange("added"));
+  screen.on("display-removed", () => handleDisplayChange("removed"));
+  screen.on("display-metrics-changed", () => handleDisplayChange("metrics"));
 
   try {
     createTray(
