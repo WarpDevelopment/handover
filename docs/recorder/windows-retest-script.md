@@ -1,13 +1,13 @@
 # Handover test build: Windows retest (10 minutes)
 
-Thank you again. This is a short second round on the **next build**, for the same tester. It covers only five things that went wrong or looked odd on 24 Nov. Nothing you see can be "your fault". Write what you saw on the line **"What happened: ____"** and in the small **results table at the end of this file**. Take a screenshot (Windows key + Shift + S) whenever something looks wrong.
+Thank you again. This is a short second round on **the build you were sent with this script**, for the same tester. It covers only five things that went wrong or looked odd on 24 Nov. Nothing you see can be "your fault". Write what you saw on the line **"What happened: ____"** and in the small **results table at the end of this file**. Take a screenshot (Windows key + Shift + S) whenever something looks wrong.
 
 **Test data only**, as before. The "TEST BUILD" banner is still there as a reminder.
 
 ## Before you start
 
 - **Time:** about 10 minutes.
-- **Install the new build first.** Run the installer as before (SmartScreen: **More info**, then **Run anyway**). It replaces the old one.
+- **Install the build you were sent with this script first.** Run the installer as before (SmartScreen: **More info**, then **Run anyway**). It replaces the old one.
 - **Do the checks in this order.** Check A uses one short recording; Check B needs its own new one.
 - **What to send back:** this file with the results table filled in (it is not the old results form), the new package `.zip`, `reviewed-1.json`, `reviewed-2.json` and `manifest.json` from Check B, and any screenshots.
 
@@ -55,13 +55,18 @@ What happened: ____ (write down the exact zip name)
 ## Check D: administrator window (the old Check 8)
 
 1. Start a new recording (Ctrl + Shift + R).
-2. Press the Windows key, type **Task Manager**, right-click it, choose **Run as administrator**, then **Yes**.
+2. Press the Windows key, type **Task Manager**, right-click it, choose **Run as administrator**. A Windows permission prompt (UAC) may or may not appear; if it does, click **Yes**.
 3. Click on a few things **inside** Task Manager (for example the **Performance** tab), then close it.
 4. Stop the recording (**Done**) and open it in **Review sessions**. Look at the steps for Task Manager.
-5. Export the package (Done reviewing, then Export package) and open it. In `PROCESS.md`, look for a note containing the words **"Not observed"** and **"administrator window"**. Open `gaps.jsonl` in Notepad and look for an entry about the administrator window.
+5. Export the package (Done reviewing, then Export package) and open it. In `PROCESS.md`, look for a note containing the words **"Not observed"** and **"administrator window"**. Open `gaps.jsonl` in Notepad and look for a line containing `"reason":"elevated_window"` (the words "administrator window" are in `PROCESS.md`, not in this file).
 
-What you should see: a clear note with those words in `PROCESS.md` and an entry in `gaps.jsonl`, not silence. Clicks inside the elevated window are still not recorded; that is expected. On 24 Nov there was no note at all.
+What you should see: a clear note with those words in `PROCESS.md` and a line with `"reason":"elevated_window"` in `gaps.jsonl`, not silence. Clicks inside the elevated window are still not recorded; that is expected. On 24 Nov there was no note at all.
 What happened: ____ (copy the whole note exactly as it reads)
+
+**Paused version.** Start another new recording. Click **Pause** on the floating bar, open Task Manager as administrator as above, leave it open for about 10 seconds, close it, click **Resume**, click once or twice on the desktop, and finish (**Done**). Review, export and open `PROCESS.md` as before.
+
+What you should see: **no** "Not observed" line for the paused stretch, because you were not recording then.
+What happened: ____
 
 ## Check E: uninstall leaves no installer copy
 
@@ -88,7 +93,8 @@ Mark each check **pass**, **fail** or **partly**. "What happened" can be one lin
 | B: answer to the question (opened `reviewed.json` before the second Done, yes or no) | | | |
 | C: zip name starts with `handover-` (exact name) | | | |
 | D: "Not observed" and "administrator window" note in `PROCESS.md` | | | |
-| D: entry in `gaps.jsonl` | | | |
+| D: line with `"reason":"elevated_window"` in `gaps.jsonl` | | | |
+| D: paused version, no "Not observed" line for the paused stretch | | | |
 | E: no `handover-updater` folder after uninstall | | | |
 
 Anything else you noticed is welcome too. Thank you.

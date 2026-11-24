@@ -29,7 +29,7 @@
 What the first run on real Windows hardware (24 Nov 2026, Windows 11, two monitors) showed:
 - **The click helper names real controls on Windows 11**, for example the Save button in a Save as window, the File name box, and the Edge address bar.
 - **Taskbar clicks come back unnamed**, because the taskbar does not describe its buttons to the helper.
-- **Clicks inside an administrator window are not seen.** Windows does not let a normal program watch an elevated window. The next build shows a clear "not observed" note for that stretch instead of staying silent.
+- **Clicks inside an administrator window cannot be seen.** Windows does not allow a normal program to watch an elevated window. When this happens, the write-up now says "Not observed", with how long it lasted and which app, instead of leaving it out. Nothing is noted for time you had paused. This is new in this build and not yet proven on a real PC.
 - **Transcription is slow and slows the PC.** It took about 62 seconds for a 5 minute recording, and the computer lagged while it ran.
 - **An empty recording still has one step**, the desktop.
 - **There is no audio playback in the review screen.** You read the transcript, you cannot listen to it.
