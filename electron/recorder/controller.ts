@@ -27,6 +27,7 @@ import {
   type NarrationLanguage,
 } from "../../common/narration";
 import type { RecEvent, RecorderState, SessionMeta } from "../../common/types";
+import { isOwnAppEvent } from "./own-events";
 import {
   SYSTEM_DEFAULT_MICROPHONE_ID,
   type MicrophoneDevice,
@@ -177,9 +178,10 @@ export class RecorderController {
 
   constructor(private readonly deps: RecorderDeps) {
     this.host = new CollectorHost(this.bus);
-    this.bus.setFilter((input) =>
-      input.type === EventType.PointerClick ? (this.deps.isOwnWindowClick?.(input.payload) ?? false) : false,
-    );
+    this.bus.setFilter((input) => {
+      if (input.type === EventType.PointerClick) return this.deps.isOwnWindowClick?.(input.payload) ?? false;
+      return isOwnAppEvent(input);
+    });
     // Every persisted event refreshes live status (event count, etc.).
     this.bus.subscribe(() => this.emit());
   }

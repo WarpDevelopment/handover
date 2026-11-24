@@ -7,10 +7,14 @@ export type EventListener = (ev: RecEvent) => void;
 /**
  * Events the collectors produce about the user's work. While the recording is paused, or the screen
  * is frozen for an explanation, none of them are recorded: the user is not doing the task, and the
- * clicks and focus changes of Handover's own overlay are not steps.
+ * focus changes of Handover's own overlay are not steps.
+ *
+ * `pointer.click` is deliberately NOT here (PKG-11): the helper reports a click up to 300 ms after
+ * the mouse-down, so a click made just before a freeze or pause can arrive just after it began, and
+ * a report-time drop here would lose a real step. The package builder judges clicks by when the
+ * user acted (`withoutFrozenCollectorEvents`), so it decides which ones are inside a freeze or pause.
  */
 export const PAUSE_BLOCKED_TYPES: ReadonlySet<string> = new Set([
-  "pointer.click",
   "app.activate",
   "app.title-change",
   "browser.url",

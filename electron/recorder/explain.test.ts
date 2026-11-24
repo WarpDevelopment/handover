@@ -110,8 +110,8 @@ test("pause writes an open gap{user_paused}, drops collector events, and resume 
     hand.click(1, 1); // recorded
     assert.equal((await controller.pause()).ok, true);
     assert.equal(controller.status().paused, true);
-    hand.click(2, 2); // dropped: paused
-    hand.emit("app.activate", { app: "Mail", title: "Inbox" }); // dropped
+    hand.click(2, 2); // PKG-11: reaches the log (the builder judges it by acted time)
+    hand.emit("app.activate", { app: "Mail", title: "Inbox" }); // dropped: paused
     await delay(30);
     assert.equal((await controller.resume()).ok, true);
     assert.equal(controller.status().paused, false);
@@ -120,7 +120,7 @@ test("pause writes an open gap{user_paused}, drops collector events, and resume 
 
     const events = await readEvents(root, started.sessionId!);
     const clicks = events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x);
-    assert.deepEqual(clicks, [1, 3]);
+    assert.deepEqual(clicks, [1, 2, 3]);
     assert.ok(!events.some((e) => e.type === "app.activate"));
     const gaps = events.filter((e) => e.type === "gap");
     assert.equal(gaps.length, 2);
@@ -240,16 +240,11 @@ test("clicks and app switches between explain.start and explain.end are never re
     await controller.stop();
 
     const events = await readEvents(root, started.sessionId!);
-    assert.deepEqual(events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x), [1, 2]);
+    // PKG-11: the bus lets clicks through; the builder's acted-time filter drops the one in the freeze.
+    assert.deepEqual(events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x), [1, 500, 2]);
     assert.ok(!events.some((e) => e.type === "app.activate" || e.type === "clipboard.change"));
-    // Defence in depth: the builder also drops anything inside a freeze, whatever wrote it.
-    const freezeStart = events.find((e) => e.type === "explain.start")!.t;
-    const freezeEnd = events.find((e) => e.type === "explain.end")!.t;
-    const noisy = [
-      ...events,
-      { seq: 999, t: (freezeStart + freezeEnd) / 2, epoch: 0, type: "pointer.click", source: "x", payload: { button: "left", clickCount: 1, space: "macos_global_points", x: 7, y: 7 } },
-    ];
-    assert.equal(withoutFrozenCollectorEvents(noisy).filter((e) => e.type === "pointer.click").length, 2);
+    const kept = withoutFrozenCollectorEvents(events).filter((e) => e.type === "pointer.click");
+    assert.deepEqual(kept.map((e) => e.payload.x), [1, 2], "the overlay click is not a step");
   });
 });
 
