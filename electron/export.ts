@@ -4,7 +4,7 @@
 
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -15,6 +15,10 @@ import { isoWithOffset, slugify, ulid } from "../common/handover/canonical";
 import { readSessionInput } from "../common/handover/read-session";
 import type { BuildContext, HelperStatus, SessionEnvironment } from "../common/handover/types";
 import { validatePackage } from "../common/handover/validate";
+import { createLogger } from "./logger";
+import { readReviewedMarker } from "./reviewed-marker";
+
+const log = createLogger("Export");
 
 export interface ExportOptions {
   /** The recorded session folder. */
@@ -32,6 +36,8 @@ export interface ExportOptions {
   validate?: typeof validatePackage;
   /** Injected for tests. */
   fsOps?: Partial<MoveOps>;
+  /** Injected for tests: removes the scratch folder. */
+  removeScratch?: (p: string) => Promise<void>;
 }
 
 export interface ExportResult {
@@ -78,20 +84,6 @@ async function writeZip(
     }
     void archive.finalize();
   });
-}
-
-/** `reviewed_at` from the session's `reviewed.json` marker (only that field), when there is one. */
-async function readReviewedAt(sessionDir: string): Promise<{ reviewed_at?: string }> {
-  try {
-    const marker = JSON.parse(await readFile(path.join(sessionDir, "reviewed.json"), "utf8")) as {
-      reviewed_at?: unknown;
-    };
-    return typeof marker.reviewed_at === "string" && marker.reviewed_at !== ""
-      ? { reviewed_at: marker.reviewed_at }
-      : {};
-  } catch {
-    return {};
-  }
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -152,18 +144,27 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
   try {
     const now = (opts.now ?? (() => new Date()))();
     const random = opts.random ?? (() => randomBytes(10));
-    const { session, edits } = await readSessionInput(opts.sessionDir, {
+    const { session, edits, narrationSha256 } = await readSessionInput(opts.sessionDir, {
       environment: currentEnvironment(),
       helper: opts.helper ?? { present: false },
       captureBackend: opts.captureBackend ?? "electron-desktop-capturer",
     });
+    // The transcript is part of the package. If the bytes used for this build are not the ones the
+    // user reviewed, refuse (the check in the IPC and this read are separate moments).
+    const marker = await readReviewedMarker(opts.sessionDir);
+    if (marker && marker.narration_sha256 !== narrationSha256) {
+      return {
+        ok: false,
+        error: "The narration changed after you finished reviewing. Review the steps again, then export.",
+      };
+    }
     const timezone = opts.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     const ctx: BuildContext = {
       package_id: `pkg_${ulid(now.getTime(), random())}`,
       exported_at: isoWithOffset(now.getTime(), timezone),
       timezone,
       tool_version: opts.toolVersion,
-      ...(await readReviewedAt(opts.sessionDir)),
+      ...(marker ? { reviewed_at: marker.reviewed_at } : {}),
     };
     const files = await buildPackage(session, edits, ctx);
 
@@ -178,6 +179,7 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
     const scratch = path.join(parent, `.handover-export-${randomBytes(6).toString("hex")}`);
     const scratchFolder = path.join(scratch, folderName);
     const scratchZip = path.join(scratch, path.basename(zip));
+    let keepScratch = false;
     try {
       for (const [p, bytes] of files) {
         await mkdir(path.dirname(path.join(scratchFolder, p)), { recursive: true });
@@ -196,6 +198,7 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
       // The new package is complete. Anything already at the destination is moved aside (and only
       // deleted with the scratch folder at the end), so a failure to place the new one can put it back.
       const aside: { from: string; to: string }[] = [];
+      const placed: string[] = []; // only what THIS run put at the destination
       try {
         for (const [dest, label] of [[folder, "old-folder"], [zip, "old-zip"]] as const) {
           if (await exists(dest)) {
@@ -205,15 +208,33 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
           }
         }
         await moveWithRetry(scratchFolder, folder, opts.fsOps);
+        placed.push(folder);
         await moveWithRetry(scratchZip, zip, opts.fsOps);
+        placed.push(zip);
       } catch (err) {
-        await rm(folder, { recursive: true, force: true }).catch(() => undefined);
-        await rm(zip, { force: true }).catch(() => undefined);
-        for (const a of aside) await moveWithRetry(a.from, a.to, opts.fsOps).catch(() => undefined);
+        for (const p of placed) await rm(p, { recursive: true, force: true }).catch(() => undefined);
+        for (const a of aside) {
+          try {
+            await moveWithRetry(a.from, a.to, opts.fsOps);
+          } catch {
+            // Never delete the only copy of an earlier export: keep the scratch folder and say where it is.
+            keepScratch = true;
+            throw new Error(
+              `${err instanceof Error ? err.message : String(err)} Your earlier export was kept at ${a.from}.`,
+            );
+          }
+        }
         throw err;
       }
     } finally {
-      await rm(scratch, { recursive: true, force: true });
+      // Cleanup never changes the result: on Windows an indexer can hold a file for a moment.
+      if (!keepScratch) {
+        await (opts.removeScratch ?? ((p) => rm(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })))(
+          scratch,
+        ).catch((e: unknown) =>
+          log.warn("could not remove the export scratch folder:", e instanceof Error ? e.message : String(e)),
+        );
+      }
     }
 
     const manifest = JSON.parse(new TextDecoder().decode(files.get("manifest.json"))) as {
