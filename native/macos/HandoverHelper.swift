@@ -124,18 +124,17 @@ let manualLock = NSLock()
 
 /// Electron apps only expose their tree once AXManualAccessibility is set. Harmless for other apps.
 /// Returns true when the attribute was newly set by this call, so the caller can retry its hit test once.
-/// A pid is marked done only after the set succeeded (NAT-9).
+/// A pid is marked done for every result except `.cannotComplete` (the app did not answer: try again on the
+/// next click). `.attributeUnsupported` and the like are final answers: asking again every click would only
+/// cost time (N3). The caller's hit-test retry happens only when the set succeeded.
 func enableManualAccessibility(pid: pid_t) -> Bool {
     manualLock.lock()
     defer { manualLock.unlock() }
     if manualAccessibilityDone.contains(pid) { return false }
     let app = AXUIElementCreateApplication(pid)
     let result = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-    if result == .success {
-        manualAccessibilityDone.insert(pid)
-        return true
-    }
-    return false
+    if result != .cannotComplete { manualAccessibilityDone.insert(pid) }
+    return result == .success
 }
 
 /// Puts every app back the way we found it: the attribute is switched off again on exit (NAT-9).

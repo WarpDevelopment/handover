@@ -73,6 +73,20 @@ Build succeeded.
 - Windows: whether a normal-integrity `WH_MOUSE_LL` hook gets callbacks while the cursor or foreground window is a higher-integrity one. The watchdog skips its check there (`CursorOrForegroundHigherIntegrity`) and reports `hook_lost` once per no-callback streak (repeat reinstalls are quiet), so it cannot spam gaps if UIPI withholds callbacks. Untested on a device.
 - Privacy floors (`tester-package.md` §1) checked: no keyboard hook added. `GetLastInputInfo` returns a tick count only, never which input. `CGWindowListCopyWindowInfo` reads each window's pid and bounds only, never names. The Windows image path is read in-process but only the file name without folder is emitted.
 
+## Delta review minors (N1, N2, N3)
+
+Merged `origin/task/workflow-recording-assistant` (bd74e1a) into the branch first; the merge was clean.
+
+| Id | Fix | Test |
+|---|---|---|
+| N1 | `HandoverHelper.cs`: the heartbeat is a `volatile int` counter incremented in the hook callback and compared between checks (no `Environment.TickCount`). The watchdog needs TWO consecutive lost-looking checks (cursor moved, input changed, counter unchanged, not over a higher-integrity window) before `hook_lost` and the reinstall | Native-only: compile-checked, not runnable in Node |
+| N2 | `Reinstall()` on the hook thread only stores the result (`hookInstalled`, `reinstallDone`, both volatile). The watchdog thread writes the `capabilities` line; every stdout write is now off the hook thread. `reinstallPending` stops it posting a second reinstall while one is outstanding | Native-only: compile-checked |
+| N3 | `HandoverHelper.swift`: `enableManualAccessibility` marks the pid done for every result except `.cannotComplete`; it returns true, and so triggers the hit-test retry, only on `.success` | Native-only: built and selftest run |
+
+Checks after N1-N3: `dotnet build --no-incremental` of the throwaway `net48` / `LangVersion 5` project: `Build succeeded. 0 Warning(s) 0 Error(s)` (exe newer than the source). `npm run build:helper:mac` clean, `--selftest` prints hello, capabilities and selftest as before. `npm test`: 404 tests, 404 pass, 0 fail. `npm run build`: ok. The scratch project `fn-cs-check` points at this worktree's `native/windows/HandoverHelper.cs`.
+
+Still unproven on a device: that two consecutive checks are enough to avoid every false `hook_lost`, and the reinstall report arriving up to one second after the reinstall.
+
 ## Not done
 
 - UIA `TransactionTimeout` (NAT-11, Windows part), reason above.

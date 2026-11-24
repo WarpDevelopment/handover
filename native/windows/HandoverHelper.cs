@@ -174,12 +174,15 @@ namespace Handover
         private uint lastTime;
         private int lastX, lastY;
 
-        // Watchdog state. The hook callback only stores a tick (any mouse message, so a moving cursor is a heartbeat).
-        private volatile int lastCallbackTick = Environment.TickCount;
+        // Watchdog state. The hook callback only increments a counter (any mouse message, so a moving cursor is a
+        // heartbeat). A counter, not Environment.TickCount: a tick can repeat or wrap, a counter cannot look idle
+        // when callbacks did arrive (N1).
+        private volatile int heartbeat;
         private volatile bool hookInstalled;
         private volatile bool stopped;
-        private volatile bool lostStreak;      // hook_lost already reported and no callback seen since
-        private volatile bool reinstallQuiet;  // a repeat reinstall inside a streak: do not re-announce
+        // The hook thread only STORES the outcome of a reinstall; the watchdog thread reads it and does the I/O (N2).
+        private volatile bool reinstallPending; // a reinstall was posted and has not finished
+        private volatile bool reinstallDone;    // the hook thread finished one; hookInstalled holds the result
 
         public ClickHook() { proc = Callback; }
 
@@ -191,7 +194,6 @@ namespace Handover
             hookId = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
             if (hookId == IntPtr.Zero) return false;
             hookInstalled = true;
-            lastCallbackTick = Environment.TickCount;
 
             Thread worker = new Thread(Work);
             worker.IsBackground = true;
@@ -231,61 +233,86 @@ namespace Handover
             if (hookId != IntPtr.Zero) { Native.UnhookWindowsHookEx(hookId); hookId = IntPtr.Zero; }
             hookId = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
             hookInstalled = hookId != IntPtr.Zero;
-            // lastCallbackTick is NOT touched here: only a real callback proves the hook works, and it ends the streak.
-            bool quiet = reinstallQuiet;
-            reinstallQuiet = false;
-            // hook:true closes the helper_restart gap in the app; hook:false keeps it open and the watchdog retries.
-            // A repeat reinstall inside a streak that succeeded stays quiet, so a dead hook cannot spam gaps.
-            if (!quiet || !hookInstalled) Program.EmitCapabilities(hookInstalled);
+            // Store the result and nothing else: this is the hook thread, and a write to stdout can block on the
+            // output lock or a full pipe while the new hook is already installed (N2). The watchdog reports it.
+            // The heartbeat is NOT touched here: only a real callback proves the hook works.
+            reinstallDone = true;
+        }
+
+        private void PostReinstall()
+        {
+            reinstallPending = true;
+            Native.PostThreadMessage(loopThreadId, Native.WM_REINSTALL_HOOK, UIntPtr.Zero, IntPtr.Zero);
         }
 
         /// <summary>
-        /// About once a second: if the cursor moved and real input happened, but the hook has seen no mouse
-        /// message since the last check, Windows has silently removed it. Say so, then ask the hook thread to
-        /// reinstall. While the hook is not installed, keep retrying.
+        /// About once a second: if the cursor moved and real input happened, but the hook counted no mouse
+        /// message, the hook looks lost. Two such checks in a row are required before it is reported (N1): say
+        /// so once per streak, then ask the hook thread to reinstall and report the outcome. While the hook is not
+        /// installed, keep retrying. All stdout writes happen here, never on the hook thread.
         /// </summary>
         private void Watchdog()
         {
             Native.POINT prev;
             bool havePrev = Native.GetCursorPos(out prev);
-            int prevTick = lastCallbackTick;
+            int prevBeat = heartbeat;
             uint prevInput = LastInputTick();
+            int suspect = 0;           // consecutive checks that looked lost
+            bool lostStreak = false;   // hook_lost already reported and no callback counted since
+            bool quietNext = false;    // the next successful reinstall is a repeat inside a streak
             while (!stopped)
             {
                 Thread.Sleep(1000);
                 if (stopped) break;
-                if (!hookInstalled)
+
+                // Report a finished reinstall. hook:true closes the helper_restart gap in the app; hook:false keeps it
+                // open and the retry below runs. A repeat inside a streak that succeeded stays quiet.
+                if (reinstallDone)
                 {
-                    Native.PostThreadMessage(loopThreadId, Native.WM_REINSTALL_HOOK, UIntPtr.Zero, IntPtr.Zero);
-                    continue;
+                    reinstallDone = false;
+                    reinstallPending = false;
+                    bool ok = hookInstalled;
+                    if (!(quietNext && ok)) Program.EmitCapabilities(ok);
+                    quietNext = false;
                 }
+
                 Native.POINT cur;
                 bool haveCur = Native.GetCursorPos(out cur); // fails on the secure desktop (lock screen, UAC): skip then
                 uint input = LastInputTick();
-                int tick = lastCallbackTick;
-                bool moved = haveCur && havePrev && (cur.x != prev.x || cur.y != prev.y);
-                bool inputSince = input != prevInput;
-                if (tick != prevTick) lostStreak = false; // a callback arrived: the hook is alive
-                // UIPI may withhold hook callbacks while the cursor or the foreground window belongs to a
-                // higher-integrity process. Silence there is not a lost hook, so do not judge it (unproven on device).
-                bool overHigher = haveCur && Native.CursorOrForegroundHigherIntegrity(cur.x, cur.y);
-                if (moved && inputSince && tick == prevTick && !overHigher)
+                int beat = heartbeat;
+                if (beat != prevBeat) { lostStreak = false; suspect = 0; } // a callback was counted: the hook is alive
+
+                if (!hookInstalled)
                 {
-                    if (!lostStreak)
-                    {
-                        // Say so once per streak; later checks in the same streak reinstall quietly.
-                        lostStreak = true;
-                        hookInstalled = false;
-                        Program.Log("watchdog: no hook callback while the mouse moved; reinstalling");
-                        Program.Emit("{\"type\":\"hook_lost\"}");
-                    }
-                    else
-                    {
-                        reinstallQuiet = true;
-                    }
-                    Native.PostThreadMessage(loopThreadId, Native.WM_REINSTALL_HOOK, UIntPtr.Zero, IntPtr.Zero);
+                    if (!reinstallPending) PostReinstall();
                 }
-                prev = cur; havePrev = haveCur; prevTick = lastCallbackTick; prevInput = input;
+                else
+                {
+                    bool moved = haveCur && havePrev && (cur.x != prev.x || cur.y != prev.y);
+                    bool inputSince = input != prevInput;
+                    // UIPI may withhold hook callbacks while the cursor or the foreground window belongs to a
+                    // higher-integrity process. Silence there is not a lost hook, so do not judge it (unproven on device).
+                    bool overHigher = moved && Native.CursorOrForegroundHigherIntegrity(cur.x, cur.y);
+                    bool looksLost = moved && inputSince && beat == prevBeat && !overHigher;
+                    suspect = looksLost ? suspect + 1 : 0;
+                    if (suspect >= 2)
+                    {
+                        suspect = 0;
+                        hookInstalled = false; // no more judging until the reinstall reports
+                        if (!lostStreak)
+                        {
+                            lostStreak = true;
+                            Program.Log("watchdog: no hook callback while the mouse moved; reinstalling");
+                            Program.Emit("{\"type\":\"hook_lost\"}");
+                        }
+                        else
+                        {
+                            quietNext = true;
+                        }
+                        PostReinstall();
+                    }
+                }
+                prev = cur; havePrev = haveCur; prevBeat = beat; prevInput = input;
             }
         }
 
@@ -301,7 +328,7 @@ namespace Handover
         {
             if (nCode >= 0)
             {
-                lastCallbackTick = Environment.TickCount; // heartbeat for the watchdog: a tick and nothing else
+                heartbeat++; // heartbeat for the watchdog: a counter increment and nothing else (single writer: this thread)
                 int msg = wParam.ToInt32();
                 int button = -1;
                 if (msg == Native.WM_LBUTTONDOWN) button = 0;
