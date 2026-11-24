@@ -197,7 +197,12 @@ function overlayWindow(display: Electron.Display): OverlayWindow {
   const adapter = adaptOverlayWindow(win, {
     platform: process.platform,
     revealTimeoutMs: OVERLAY_REVEAL_TIMEOUT_MS,
-    onFailure: () => void freeze.cancel(),
+    onFailure: () => {
+      void freeze.cancel();
+      // Say why Explain vanished instead of leaving the user guessing.
+      const bar = recordingControlsWindow;
+      if (bar && !bar.isDestroyed()) bar.webContents.send(IPC.actionError, "Explain could not open. Try again.");
+    },
     log,
   });
   overlayReveal.set(senderId, adapter.ready);
@@ -711,17 +716,20 @@ app.whenReady().then(async () => {
   });
   recorderWindow = createRecorderWindow();
 
-  const handleDisplayChange = (reason: string) => {
+  const handleDisplayChange = (reason: string, affectsOverlay = true) => {
     log.info(`Display layout changed (${reason}), ${screen.getAllDisplays().length} display(s)`);
     // Overlay windows sized for the old layout are wrong: end the freeze, unsaved (APP-7, APP-4).
-    freeze.displaysChanged();
+    // A work-area-only change (taskbar moved) does not move or resize a full-screen overlay.
+    if (affectsOverlay) freeze.displaysChanged();
     clampControlsToDisplay();
     void screens.refresh();
     recorder.publishDisplays();
   };
   screen.on("display-added", () => handleDisplayChange("added"));
   screen.on("display-removed", () => handleDisplayChange("removed"));
-  screen.on("display-metrics-changed", () => handleDisplayChange("metrics"));
+  screen.on("display-metrics-changed", (_event, _display, changed) =>
+    handleDisplayChange("metrics", changed.includes("bounds") || changed.includes("scaleFactor")),
+  );
 
   try {
     createTray(

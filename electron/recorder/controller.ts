@@ -597,7 +597,12 @@ export class RecorderController {
           if (video.onEvent) {
             // The sidecar learns the layout first, then sees every later event.
             if (this.lastDisplaysEvent) video.onEvent(this.lastDisplaysEvent);
-            this.videoUnsubscribe = this.bus.subscribe((ev) => video.onEvent?.(ev));
+            this.videoUnsubscribe = this.bus.subscribe((ev) => {
+              // A click now reaches the log while paused or frozen (PKG-11), but it must not take
+              // before/after frames of the screen: the user paused so nothing would be captured.
+              if (ev.type === EventType.PointerClick && (this.paused || this.explain !== null)) return;
+              video.onEvent?.(ev);
+            });
           }
         } catch (error) {
           log.warn("video start failed:", error instanceof Error ? error.message : error);

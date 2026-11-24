@@ -55,9 +55,12 @@ function makeController(opts: {
   controller: RecorderController;
   hand: HandCollector;
   snapshots: number[];
+  /** x of every pointer.click the video sidecar was fed (it takes before/after frames for each). */
+  fedClicks: number[];
 } {
   const hand = new HandCollector();
   const snapshots: number[] = [];
+  const fedClicks: number[] = [];
   const controller = new RecorderController({
     resolveConfig: () => ({ ...FULL_CAPTURE }),
     buildCollectors: () => [hand],
@@ -67,6 +70,9 @@ function makeController(opts: {
           createVideoRecorder: () => ({
             start: async () => undefined,
             stop: async () => null,
+            onEvent: (ev: RecEvent) => {
+              if (ev.type === "pointer.click") fedClicks.push(ev.payload.x as number);
+            },
             snapshot: async () => {
               snapshots.push(Date.now());
               return FRAMES;
@@ -79,7 +85,7 @@ function makeController(opts: {
     isOwnWindowClick: opts.isOwnWindowClick,
     pointerDisplayId: opts.pointerDisplayId,
   });
-  return { controller, hand, snapshots };
+  return { controller, hand, snapshots, fedClicks };
 }
 
 async function readEvents(root: string, id: string): Promise<RecEvent[]> {
@@ -245,6 +251,30 @@ test("clicks and app switches between explain.start and explain.end are never re
     assert.ok(!events.some((e) => e.type === "app.activate" || e.type === "clipboard.change"));
     const kept = withoutFrozenCollectorEvents(events).filter((e) => e.type === "pointer.click");
     assert.deepEqual(kept.map((e) => e.payload.x), [1, 2], "the overlay click is not a step");
+  });
+});
+
+test("PKG-11: a click made while paused or frozen is logged but takes no frames; the builder drops it", async () => {
+  await withSessionsRoot(async (root) => {
+    const { controller, hand, fedClicks } = makeController();
+    const started = await controller.start();
+    hand.click(1, 1); // a step: frames
+    await controller.pause();
+    hand.click(2, 2); // paused: logged for the builder to judge, but no before/after frames
+    await delay(30); // the gap's end time is rounded; keep the click clearly inside it
+    await controller.resume();
+    await controller.beginExplain();
+    hand.click(3, 3); // frozen: the same
+    await delay(30);
+    await controller.endExplain({ cancelled: true });
+    hand.click(4, 4); // a step again
+    await controller.stop();
+    assert.deepEqual(fedClicks, [1, 4], "no frame was captured for a click while paused or frozen");
+
+    const events = await readEvents(root, started.sessionId!);
+    assert.deepEqual(events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x), [1, 2, 3, 4]);
+    const kept = withoutFrozenCollectorEvents(events).filter((e) => e.type === "pointer.click");
+    assert.deepEqual(kept.map((e) => e.payload.x), [1, 4], "the builder drops both by acted time (pause gap and freeze)");
   });
 });
 
