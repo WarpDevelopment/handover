@@ -25,25 +25,40 @@
 - The full review editor.
 - Process-spec generation by Claude.
 
-## Known limits (not proven on real hardware yet)
-- **A real click through the Windows click helper has not been seen.** The build servers prove it compiles, installs its hook and reads a desktop control, but they have no mouse. Tuesday's run is the first real proof. Elevated (administrator) windows, Remote Desktop clients and laptops with mixed display scales are also unproven.
+## Known limits
+What the first run on real Windows hardware (24 Nov 2026, Windows 11, two monitors) showed:
+- **The click helper names real controls on Windows 11**, for example the Save button in a Save as window, the File name box, and the Edge address bar.
+- **Taskbar clicks come back unnamed**, because the taskbar does not describe its buttons to the helper.
+- **Clicks inside an administrator window are not seen.** Windows does not let a normal program watch an elevated window. The next build shows a clear "not observed" note for that stretch instead of staying silent.
+- **Transcription is slow and slows the PC.** It took about 62 seconds for a 5 minute recording, and the computer lagged while it ran.
+- **An empty recording still has one step**, the desktop.
+- **There is no audio playback in the review screen.** You read the transcript, you cannot listen to it.
+- Remote Desktop clients and laptops with mixed display scales are still unproven.
+
+Other known limits:
 - **The first click or two after the helper starts** (about the first second) may come back without a control name, because Windows' accessibility service starts slowly.
 - **Electron-based apps on macOS** may give a weaker description on the first click.
 - **A step in the first second of a recording** can have no screenshot, because screen capture takes about 0.8 s to start.
 - **Very small changes** (a single typed character) can be missing from a step's screenshot for up to a second.
 - **Blank window titles on macOS** until Accessibility is granted.
-- **Narration:** tested offline on the Mac with synthetic speech only. A real microphone on Windows has not been tried. The first narration in a recording may take several seconds to appear.
-- **The export dialog and Record button** were not clicked by a person before this build, only exercised by tests and scripts.
-- Screenshots are captured as JPEG and saved as PNG, so file sizes can be large. Windows installer is about 500 MB because it includes the speech model.
-- The Explain overlay and review screen are new and have not run on Windows. Labels in the test script marked "label may differ slightly" may not match exactly.
+- **Narration:** the first narration in a recording may take several seconds to appear.
+- Screenshots are captured as JPEG and saved as PNG, so file sizes can be large. The Windows installer is 627 MB because it includes the speech model.
+- Labels in the test script marked "label may differ slightly" may not match exactly.
 - The Library window does not show the test banner.
 
 ## Privacy, in plain words
 - It does **not** record what you type. There is no keyboard capture.
+- But **window titles are recorded**, and some apps put what you typed, or a document or client name, in the title. Notepad names an unsaved note after its first line, so that line can end up in the write-up.
+- Clicking on a piece of page or document text can store that text as the name of the thing you clicked.
+- **Screenshots show everything visible on every monitor**, including notifications, chat and email previews, desktop icons, and other windows. Close or hide anything private before you record.
 - It does **not** read what is inside text fields, and it does **not** read your clipboard.
 - On a password field it keeps the field's label but not its content, and covers the field with a blur in that step's screenshot.
 - Web addresses are cut down to the site and page path. Anything after a `?` or `#` is dropped.
 - It does **not** send anything over the internet: no telemetry, no sign-in, no AI service, no update check.
-- The package has **no audio and no video**, only the text transcript of your narration.
+- The package has **no audio and no video**, only the text transcript of your narration. The raw narration audio does stay on your computer, in `%LOCALAPPDATA%\Handover\sessions\...\audio`. It is never put in the package.
+- **Uninstalling does not remove your recordings, settings or logs.** These three folders stay until you delete them yourself:
+  1. `%LOCALAPPDATA%\Handover`: your recordings, including the narration audio;
+  2. `%APPDATA%\Handover`: your settings;
+  3. `%APPDATA%\Handover\logs`: the app logs (inside the settings folder).
 - Every window and the README carry the "TEST BUILD" banner.
 - The diagnostics zip holds the app log and technical details only. You can open it before sending.

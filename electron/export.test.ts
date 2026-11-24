@@ -13,7 +13,7 @@ import { validatePackage } from "../common/handover/validate";
 import { buildPackage } from "../common/handover/build-package";
 import { assertEdit, parseEdits } from "../common/handover/edits";
 import { readSessionInput } from "../common/handover/read-session";
-import { exportPackage, moveWithRetry, suggestedZipName } from "./export";
+import { exportPackage, moveWithRetry, newPackageId, packageZipName, suggestedZipName } from "./export";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(here, "../test/fixtures/session-synthetic");
@@ -34,6 +34,8 @@ test("exports a validating folder and a zip with the same content", async () => 
     assert.equal(result.stepCount, 7); // six recorded steps and the Explain step
     assert.match(path.basename(result.folder!), /^save-the-budget-and-open-mail__pkg_[0-9A-Z]{26}\.handover$/);
     assert.deepEqual((await validatePackage(result.folder!)).errors, []);
+    assert.match(path.basename(result.zip!), /^handover-save-the-budget-and-open-mail__pkg_[0-9A-Z]{26}\.zip$/);
+    assert.equal(packageZipName("a__pkg_X.handover"), "handover-a__pkg_X.zip");
 
     const zip = new AdmZip(result.zip!);
     const names = zip.getEntries().map((e) => e.entryName);
@@ -328,6 +330,19 @@ test("an unreadable session reports an error instead of throwing", async () => {
   }
 });
 
-test("the suggested name is the slug", () => {
-  assert.equal(suggestedZipName("Save the Budget"), "save-the-budget.zip");
+test("the suggested name is exactly the zip name that is written for the same package id", async () => {
+  const id = newPackageId(new Date("2026-11-24T10:00:00Z"), new Uint8Array(10).fill(3));
+  assert.match(id, /^pkg_[0-9A-HJKMNP-TV-Z]{26}$/);
+  assert.equal(suggestedZipName("Save the Budget", id), `handover-save-the-budget__${id}.zip`);
+
+  const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-name-"));
+  try {
+    const title = "Save the budget and open mail"; // the fixture's process title
+    const result = await exportPackage({ sessionDir: FIXTURE, destZip: path.join(out, "typed-name.zip"), toolVersion: "0.1.0", packageId: id });
+    assert.equal(result.ok, true, JSON.stringify(result.validationErrors ?? result.error));
+    assert.equal(result.packageId, id);
+    assert.equal(path.basename(result.zip!), suggestedZipName(title, id));
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
 });

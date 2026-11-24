@@ -12,6 +12,8 @@ import { UnsupportedEditError } from "../common/handover/edits";
 import { finishReview, reviewDataFrom } from "../common/handover/review";
 import { exportPackage } from "./export";
 import { ReviewService } from "./review";
+import { EXPORT_NOT_REVIEWED_MESSAGE, exportBlockedReason } from "./review-gate";
+import { isReviewed, markReviewed, readReviewedMarker } from "./reviewed-marker";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(here, "../test/fixtures/session-synthetic");
@@ -239,4 +241,36 @@ test("reviewDataFrom falls back to the output id when no pre-edit ids are given"
   const d = reviewDataFrom({ files, stepIds: [], sessionId: "s", title: "t", editCount: 0 });
   assert.equal(d.steps[0].preEditId, "S01");
   assert.equal(d.steps[0].image, null);
+});
+
+test("G2 item 2: edits made in the review make the marker stale; Done reviewing rewrites it; only then export is allowed", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    await svc.load(dir, "s1");
+    // The tester pressed Done reviewing before editing anything (12:45): the marker says 0 edits.
+    const first = await markReviewed(dir, () => new Date("2026-11-24T12:45:00Z"));
+    assert.equal(first.edit_count, 0);
+    const gate = {
+      isRecording: () => false,
+      isTranscribing: () => false,
+      isReviewed: () => isReviewed(dir),
+    };
+    assert.equal(await exportBlockedReason("s1", gate), null, "reviewed, nothing edited: export allowed");
+
+    // Then four edits (12:47 to 12:51): two deletes, a wording change and a blur, all through the review service.
+    await svc.applyEdit(dir, "s1", { op: "delete_step", preEditId: "S02" });
+    await svc.applyEdit(dir, "s1", { op: "delete_step", preEditId: "S03" });
+    await svc.applyEdit(dir, "s1", { op: "edit_summary", preEditId: "S04", text: "Save the budget" });
+    await svc.applyEdit(dir, "s1", { op: "blur_rect", preEditId: "S04", rectFpx: [100, 100, 200, 100] });
+    assert.equal((await edits(dir)).length, 4, "every edit, blur and delete included, lands in edits.jsonl");
+    assert.equal(await isReviewed(dir), false, "the 0-edit marker no longer vouches for the session");
+    assert.equal(await exportBlockedReason("s1", gate), EXPORT_NOT_REVIEWED_MESSAGE, "export is blocked until Done reviewing again");
+
+    // Done reviewing again rewrites reviewed.json with the new time and count; now export is allowed.
+    const second = await markReviewed(dir, () => new Date("2026-11-24T12:52:00Z"));
+    assert.equal(second.edit_count, 4);
+    assert.equal(second.reviewed_at, "2026-11-24T12:52:00.000Z");
+    assert.deepEqual(await readReviewedMarker(dir), second, "reviewed.json on disk is the new one");
+    assert.equal(await exportBlockedReason("s1", gate), null);
+  });
 });

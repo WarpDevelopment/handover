@@ -29,7 +29,7 @@ Build lanes implement **this** document. Use the full spec only to look up a fie
     ├── S02_before_full_annotated.png    only when the step has highlights
     └── S05_after_full.png               last step only
 ```
-The export also writes `<slug>__<package_id>.zip` holding the same folder. `<slug>` is the process title in lower kebab case, at most 40 characters. `package_id` is `pkg_` + a ULID.
+The export also writes `handover-<slug>__<package_id>.zip` (it starts with `handover-` so it is easy to find) holding the same folder. `<slug>` is the process title in lower kebab case, at most 40 characters. `package_id` is `pkg_` + a ULID.
 
 All JSON is UTF-8 with sorted keys and LF line endings. `jsonl` files have one object per line in id order. Images are PNG with metadata stripped, and blurs are burned into the pixels.
 
