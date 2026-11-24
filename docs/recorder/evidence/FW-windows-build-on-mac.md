@@ -82,3 +82,41 @@ Merged `origin/task/workflow-recording-assistant` (7bf0ff4; fast-forward). `pack
 - `~/Desktop/Handover-0.1.0-macos-arm64-7bf0ff4.zip`, 668,921,977 bytes, sha256 `f3aefa4d96ac3543689e16b471f9f23f5d5696ea0715ba2130c31c78a49a428e`.
 
 `node_modules` now holds the darwin natives and the win32 packages are moved out again (back in `node_modules` after this step).
+
+## Rebuild at aafc378
+
+Merged `origin/task/workflow-recording-assistant` (aafc378) into this lane: clean merge, merge commit `967b320`. Node 24.19.0 (`/opt/homebrew/opt/node@24/bin` first on PATH). `package.json` changed only in the `test` script (adds `electron/narration/no-narration.test.ts`); `package-lock.json` unchanged, so the win32-x64 packages already in `node_modules` (`@img/sharp-win32-x64@0.35.3`, `@koromix/koffi-win32-x64@3.1.1`) are the lockfile versions checked earlier.
+
+**Gates:** `npm run typecheck` exit 0. `npm test` exit 0: 468 tests, 468 pass, 0 fail, 0 skipped.
+
+**Commands** (same route as above):
+1. Helper: throwaway `helper.csproj` (net48, x64, `LangVersion 5`, `native/windows/app.manifest`), `~/.dotnet/dotnet build helper.csproj -c Release`, 0 warnings, 0 errors, copied to `native/build/HandoverHelper.exe` (git-ignored). The old output was deleted first, so this is a fresh build of the changed `HandoverHelper.cs`.
+   - PE signature OK, machine `0x8664`, magic `0x20b` (PE32+), `PerMonitorV2` and `asInvoker` present in the bytes.
+   - **25,600 bytes**, sha256 `b04a1fa8b7460866d0e1f846a06a25b2b9670e92bfd9d12753e0fa20069b10f8` (the earlier helper was 25,088 bytes).
+   - `--selftest` not run (needs Windows).
+2. Darwin natives moved out of `node_modules` (`@img/sharp-darwin-arm64`, `@img/sharp-libvips-darwin-arm64`, `@koromix/koffi-darwin-arm64`), restored afterwards.
+3. `npm run models:fetch` (7 files, SHA-256 pins verified). `node --import spoof-win.mjs scripts/prepare-compliance.mjs` ("Prepared 281 package licenses and 49 source materials"). `npm run build` exit 0.
+4. `CSC_IDENTITY_AUTO_DISCOVERY=false DEBUG=electron-builder npx electron-builder --config.npmRebuild=false --publish never --win nsis --x64`, exit 0.
+5. `node scripts/verify-windows-package.mjs x64` passes: "Verified helper payload: .../release/win-unpacked/resources/helper/HandoverHelper.exe (25600 bytes)" and "Verified native x64 package, compliance sources, notices, and no standalone FFmpeg: release/win-unpacked".
+
+**Difference from the earlier runs (found and fixed in this run).** The first build at aafc378 listed 32 `.node`/`.dll` files, not 31: an extra Mach-O `node_modules/node-pty/build/Release/pty.node`. It was left in `node_modules` by the native macOS build at 7bf0ff4 (`build/` dated 09:42 that day). node-pty tries `build/Release` before `prebuilds/<platform>-<arch>`, and a CI Windows tree never has a `build/` folder. I moved `node_modules/node-pty/build` aside (to the scratchpad), re-ran compliance and electron-builder, and restored the folder afterwards. The installer below is the second build. The first build was 657,089,533 bytes and was not kept. No check was weakened.
+
+**PE check of every `.node` and `.dll` under `app.asar.unpacked` (final build): 31 files**, the same split as before: 15 PE x64, 11 PE arm64, 3 Mach-O (`node-pty/prebuilds/darwin-arm64|darwin-x64`, `onnxruntime-node/.../darwin/arm64`), 2 ELF (`onnxruntime-node/.../linux/x64|arm64`). The 16 non-x64 files are the other-platform folders shipped inside npm packages, as explained above.
+
+**Helper in the installer.** `release/win-unpacked/resources/helper/HandoverHelper.exe` is 25,600 bytes with sha256 `b04a1fa8b7460866d0e1f846a06a25b2b9670e92bfd9d12753e0fa20069b10f8`, identical to `native/build/HandoverHelper.exe`. `win-unpacked` is the tree electron-builder packs into the installer. I did not extract the helper from the finished installer (no 7-Zip on this Mac), so the packaged copy is checked in `win-unpacked`, not inside the `.exe` itself.
+
+**`build/installer.nsh`.** `electron-builder` logged `include: build/installer.nsh`, and makensis ran with `-WX` (warnings are errors) in both passes (uninstaller and installer). The output contains no warning or error lines (0 matches for "warning" in the debug log). Quoted from the log:
+- `Processed 1 file, 10 command line commands, writing output (x86-unicode):` (uninstaller pass) and again for the installer pass.
+- `Uninstall: 4 pages (320 bytes), 1 section (32792 bytes), 2107 instructions (58996 bytes), 8562 strings (110040 bytes), 26 language tables (8788 bytes).`
+- `Install: 4 pages (256 bytes), 1 section (32792 bytes), 2289 instructions (64092 bytes), 10310 strings (123544 bytes), 26 language tables (9412 bytes).`
+- `Total size: 657070008 / 657536094 bytes (99.9%)`
+
+That shows the file compiled. It does not show that the `RMDir /r "$LOCALAPPDATA\handover-updater"` lines behave correctly on Windows.
+
+**Outputs** (the 7bf0ff4 files on the Desktop were not touched):
+- `~/Desktop/Handover-0.1.0-windows-x64-aafc378.exe`: 657,070,008 bytes, sha256 `e00f118301bc0acc459be7b685ced10e45c8961693b9420d0166738046e97a5d`. Unsigned.
+- `~/Desktop/Handover-retest-pack-aafc378.zip`: 656,930,472 bytes, sha256 `ac3319414fa6107bf4617ec00b89920f9c19231fcc9e8f710cb9203d86b39001`. One folder `Handover-retest-pack-aafc378/` with the installer (same name, byte-identical to the file above), `1-Windows-retest-script.md` (from `docs/recorder/windows-retest-script.md`) and `2-Release-notes.md` (from `docs/recorder/release-notes-0.1.0-tester.md`). The retest script refers to "the build you were sent with this script" and names no pack files, so there is no name mismatch.
+
+`node_modules` is back to the darwin-arm64 layout, with the win32-x64 packages also present.
+
+**This installer has not been run on Windows.** Only the package structure, the binaries' PE headers and the NSIS compile were checked.
