@@ -28,6 +28,7 @@ import {
   buildNativeSourceSpecs,
   buildOnnxRemoteMaterialSpecs,
   buildStaticRemoteMaterialSpecs,
+  narrationModelLicenseFiles,
   buildTesseractNoticeSpecs,
   buildTesseractSourceSpecs,
   deterministicGitConfigArgs,
@@ -939,10 +940,17 @@ test("licenses-only bundles cannot pass release verification", async () => {
       "LICENSE",
       "NATIVE-COMPONENTS.json",
       "NATIVE-THIRD-PARTY-NOTICES.md",
+      "NOTICE",
       "RELINKING.md",
       "THIRD-PARTY-NOTICES.md",
     ];
     await Promise.all(files.map((file) => writeFile(path.join(root, file), `${file}\n`)));
+    await mkdir(path.join(root, "narration-model"));
+    await Promise.all(
+      narrationModelLicenseFiles().map((file) =>
+        writeFile(path.join(root, "narration-model", file), `${file}\n`),
+      ),
+    );
     await writeFile(path.join(root, "THIRD-PARTY-LICENSES.txt"), "x".repeat(1_100));
     await writeFile(
       path.join(root, "LICENSE-INVENTORY.json"),
@@ -961,6 +969,26 @@ test("licenses-only bundles cannot pass release verification", async () => {
       requireSources: false,
       requireRemoteMaterials: false,
     });
+    // REL-1: the bundled Whisper model's licence texts are required.
+    await rm(path.join(root, "narration-model", "Whisper-MIT.txt"));
+    await assert.rejects(
+      verifyComplianceDirectory(root, {
+        requireSources: false,
+        requireRemoteMaterials: false,
+      }),
+      /missing narration-model\/Whisper-MIT\.txt/,
+    );
+    await writeFile(path.join(root, "narration-model", "Whisper-MIT.txt"), "x\n");
+    // REL-3: NOTICE is required.
+    await rm(path.join(root, "NOTICE"));
+    await assert.rejects(
+      verifyComplianceDirectory(root, {
+        requireSources: false,
+        requireRemoteMaterials: false,
+      }),
+      /missing NOTICE/,
+    );
+    await writeFile(path.join(root, "NOTICE"), "x\n");
     await assert.rejects(
       verifyComplianceDirectory(root, {
         requireSources: true,
@@ -1014,4 +1042,34 @@ test("release workflow and reviewed Electron installer remain compliance-preserv
     /actions\/upload-artifact@[0-9a-f]{40}[\s\S]*handover-windows-x64/,
   );
   assert.doesNotMatch(windowsWorkflow, /windows-11-arm|install\.ps1|test:ai:runtime/);
+});
+
+test("release config ships NOTICE and the Whisper licences, installs per-user (REL-1/2/3/5/6/7)", async () => {
+  const manifest = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
+  assert.ok(manifest.build.files.includes("NOTICE"));
+  assert.ok(manifest.build.win.files.includes("NOTICE"));
+  assert.match(manifest.scripts["dist:win:x64"], /build:helper:win/);
+  assert.match(manifest.scripts["dist:mac"], /build:helper:mac/);
+  assert.match(manifest.scripts.dist, /build:helper:mac/);
+
+  const nsh = await readFile(path.join(repoRoot, "build", "installer.nsh"), "utf8");
+  assert.match(nsh, /!macro customInstallMode\s+StrCpy \$isForceCurrentInstall "1"/);
+
+  for (const file of narrationModelLicenseFiles()) {
+    const text = await readFile(path.join(repoRoot, "third_party", "narration-model", file), "utf8");
+    assert.ok(text.length > 100, `${file} is empty`);
+  }
+  const whisper = await readFile(
+    path.join(repoRoot, "third_party", "narration-model", "Whisper-MIT.txt"),
+    "utf8",
+  );
+  assert.match(whisper, /^MIT License\s+Copyright \(c\) 2022 OpenAI/);
+
+  const notices = await readFile(path.join(repoRoot, "THIRD-PARTY-NOTICES.md"), "utf8");
+  assert.match(notices, /## Bundled narration model/);
+  assert.match(notices, /2d67713f236afa48a18992566e7647f6ca848e13/);
+  assert.doesNotMatch(notices, /weights are not bundled/);
+  const css = await readFile(path.join(repoRoot, "src", "App.css"), "utf8");
+  assert.doesNotMatch(css, /scout/i);
+  assert.equal(existsSync(path.join(repoRoot, ".github", "copilot-instructions.md")), false);
 });

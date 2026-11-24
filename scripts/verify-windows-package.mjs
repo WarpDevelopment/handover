@@ -130,7 +130,7 @@ for (const notice of ["LICENSE.electron.txt", "LICENSES.chromium.html"]) {
     throw new Error(`Packaged application is missing Electron license notice ${notice}.`);
   }
 }
-for (const notice of ["third-party-notices.md", "license"]) {
+for (const notice of ["third-party-notices.md", "license", "notice"]) {
   if (!normalizedFiles.some((file) => file.endsWith(`app.asar!${notice}`))) {
     throw new Error(`Packaged application is missing application notice ${notice}.`);
   }

@@ -60,12 +60,20 @@ const requiredComplianceFiles = [
   "LICENSE-INVENTORY.json",
   "NATIVE-COMPONENTS.json",
   "NATIVE-THIRD-PARTY-NOTICES.md",
+  "NOTICE",
   "RELINKING.md",
   "REMOTE-MATERIALS.json",
   "SOURCE-MANIFEST.json",
   "THIRD-PARTY-LICENSES.txt",
   "THIRD-PARTY-NOTICES.md",
+  ...narrationModelLicenseFiles().map((file) => `narration-model/${file}`),
 ];
+
+// Licence material for the Whisper model that ships inside the Windows installer
+// (REL-1). Vendored under third_party/narration-model/ and copied into the bundle.
+export function narrationModelLicenseFiles() {
+  return ["Apache-2.0.txt", "Whisper-MIT.txt", "model-card-README.md"];
+}
 
 export const legalTextSpecs = [
   {
@@ -856,7 +864,15 @@ export async function prepareCompliance({
   await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
 
+  await mkdir(path.join(outputDir, "narration-model"), { recursive: true });
   await Promise.all([
+    copyFile(path.join(rootDir, "NOTICE"), path.join(outputDir, "NOTICE")),
+    ...narrationModelLicenseFiles().map((file) =>
+      copyFile(
+        path.join(rootDir, "third_party", "narration-model", file),
+        path.join(outputDir, "narration-model", file),
+      ),
+    ),
     copyFile(path.join(rootDir, "LICENSE"), path.join(outputDir, "LICENSE")),
     copyFile(
       path.join(rootDir, "THIRD-PARTY-NOTICES.md"),
@@ -1418,8 +1434,8 @@ function renderLicenseInventory(inventory, lock, rootDir) {
   return [
     "HANDOVER THIRD-PARTY LICENSES",
     "",
-    "These terms apply to the identified third-party components, not to Skill",
-    "Recorder's own MIT-licensed code.",
+    "These terms apply to the identified third-party components, not to",
+    "Handover's own MIT-licensed code.",
     "",
     `Platform: ${process.platform}-${process.arch}`,
     `package-lock.json SHA-256: ${packageLockHash}`,

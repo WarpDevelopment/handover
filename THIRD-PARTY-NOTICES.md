@@ -18,21 +18,28 @@ Artistic-2.0, BlueOak-1.0.0) and compatible with distributing this application u
 Those components remain under their own terms; the generated
 `THIRD-PARTY-LICENSES.txt` preserves their license and attribution text.
 
-## Optional downloaded model
+## Bundled narration model
 
 ### OpenAI Whisper small — `Xenova/whisper-small`
-- The multilingual model is downloaded from
-  [`Xenova/whisper-small`](https://huggingface.co/Xenova/whisper-small) only
-  after explicit user approval; its weights are not bundled with Handover.
+- The Windows installer **bundles** the quantized (q8) multilingual model from
+  [`Xenova/whisper-small`](https://huggingface.co/Xenova/whisper-small) at the
+  pinned revision
+  [`2d67713f236afa48a18992566e7647f6ca848e13`](https://huggingface.co/Xenova/whisper-small/tree/2d67713f236afa48a18992566e7647f6ca848e13).
+  The seven files and their SHA-256 values are listed in
+  `scripts/narration-models.json`, and the build fails if a file differs.
 - The Transformers.js-compatible ONNX conversion is published by Xenova
   (Joshua Lochner) from OpenAI's
   [`openai/whisper-small`](https://huggingface.co/openai/whisper-small)
   checkpoint.
-- The Hugging Face model metadata declares **Apache-2.0**. OpenAI's
-  [Whisper repository](https://github.com/openai/whisper) also states that its
-  code and model weights are released under the **MIT License**. The downloaded
-  model remains subject to its publisher's applicable terms and does not change
-  Handover's MIT license.
+- The Hugging Face model card declares **Apache-2.0**. OpenAI's
+  [Whisper repository](https://github.com/openai/whisper) states that its code
+  and model weights are released under the **MIT License**. Both texts, and the
+  model card's front matter, are shipped in
+  `resources/compliance/narration-model/` (`Apache-2.0.txt`, `Whisper-MIT.txt`,
+  `model-card-README.md`). The model remains under its publisher's terms and does
+  not change Handover's MIT license.
+
+## Optional downloaded data
 
 ### Tesseract English language data — `tessdata_fast/eng.traineddata`
 - Advanced protection downloads the English OCR data directly from
