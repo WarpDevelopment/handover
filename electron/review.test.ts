@@ -1,6 +1,7 @@
 // L4: the review backend appends edits to edits.jsonl and the export applies them.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -84,6 +85,21 @@ test("APP-9: only the latest session's pictures are kept, and they can be evicte
       await svc.evict();
       assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "evict() with no id clears everything");
     });
+  });
+});
+
+test("N3: the review remembers the narration hash it was built from", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    assert.equal(svc.currentNarrationSha256("s1"), null, "nothing loaded");
+    await svc.load(dir, "s1");
+    const want = `sha256:${createHash("sha256").update(await readFile(path.join(dir, "narration.json"))).digest("hex")}`;
+    assert.equal(svc.currentNarrationSha256("s1"), want);
+    assert.equal(svc.currentNarrationSha256("other"), null);
+    await svc.applyEdit(dir, "s1", { op: "edit_summary", preEditId: "S02", text: "x" });
+    assert.equal(svc.currentNarrationSha256("s1"), want, "kept across edits");
+    await svc.evict("s1");
+    assert.equal(svc.currentNarrationSha256("s1"), null);
   });
 });
 

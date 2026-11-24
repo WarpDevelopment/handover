@@ -27,6 +27,8 @@ interface Built {
   data: ReviewData;
   /** Small previews of the step pictures, as data URLs, keyed by the package path of the full image. */
   thumbs: Map<string, string>;
+  /** Hash of the narration.json bytes this build used (`sha256:<hex>` or `absent`). */
+  narrationSha256: string;
 }
 
 /** The long edge of a filmstrip preview. The full picture is only sent when a step is opened. */
@@ -51,7 +53,7 @@ export class ReviewService {
   }
 
   private async build(sessionDir: string, sessionId: string, extra: Edit[]): Promise<Built> {
-    const { session, edits } = await readSessionInput(sessionDir, {
+    const { session, edits, narrationSha256 } = await readSessionInput(sessionDir, {
       environment: currentEnvironment(),
       helper: { present: false },
       captureBackend: "electron-desktop-capturer",
@@ -83,7 +85,7 @@ export class ReviewService {
         .toBuffer();
       thumbs.set(p, `data:image/png;base64,${small.toString("base64")}`);
     }
-    return { files: built.files, data, thumbs };
+    return { files: built.files, data, thumbs, narrationSha256 };
   }
 
   /** Build the session with its stored edits and remember the result for {@link image}. */
@@ -108,6 +110,15 @@ export class ReviewService {
     if (wantThumb) return built.thumbs.get(p) ?? null;
     const bytes = built.files.get(p);
     return bytes ? `data:image/png;base64,${Buffer.from(bytes).toString("base64")}` : null;
+  }
+
+  /**
+   * The narration hash the review of this session was built from, or null when it is not the loaded
+   * session. The mark-reviewed handler compares it with the file on disk: if they differ, the user
+   * reviewed a transcript that is no longer the one that would be exported.
+   */
+  currentNarrationSha256(sessionId: string): string | null {
+    return this.current?.sessionId === sessionId ? this.current.built.narrationSha256 : null;
   }
 
   /** Forget a session's pictures (it was deleted, or its library window closed). */
