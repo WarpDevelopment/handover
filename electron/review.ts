@@ -111,8 +111,11 @@ export class ReviewService {
   }
 
   /** Forget a session's pictures (it was deleted, or its library window closed). */
-  evict(sessionId?: string): void {
-    if (sessionId === undefined || this.current?.sessionId === sessionId) this.current = null;
+  evict(sessionId?: string): Promise<void> {
+    // Serial with load and edits: a load still in flight must not put the session back afterwards.
+    return this.serial(async () => {
+      if (sessionId === undefined || this.current?.sessionId === sessionId) this.current = null;
+    });
   }
 
   /**

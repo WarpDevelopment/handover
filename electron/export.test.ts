@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { createHash } from "node:crypto";
+
 import AdmZip from "adm-zip";
 
 import { validatePackage } from "../common/handover/validate";
@@ -153,7 +155,7 @@ test("N4: the manifest carries the reviewed_at of the session's reviewed.json, n
   try {
     const session = path.join(root, "session");
     await cp(FIXTURE, session, { recursive: true });
-    await writeFile(path.join(session, "reviewed.json"), JSON.stringify({ reviewed_at: "2026-11-23T08:15:00.000Z", edit_count: 0, narration_hash: "x" }));
+    await writeFile(path.join(session, "reviewed.json"), JSON.stringify({ reviewed_at: "2026-11-23T08:15:00.000Z", edit_count: 0, narration_sha256: await narrationSha(session) }));
     const result = await exportPackage({
       sessionDir: session,
       destZip: path.join(root, "out", "x.zip"),
@@ -168,6 +170,99 @@ test("N4: the manifest carries the reviewed_at of the session's reviewed.json, n
     assert.match(manifest.created_at, /^2026-11-24T/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+const EXPORT_OPTS = {
+  toolVersion: "0.1.0",
+  timezone: "Africa/Johannesburg",
+  now: () => new Date(Date.UTC(2026, 10, 24, 7, 30, 0)),
+  random: () => new Uint8Array(10).fill(7),
+};
+
+async function narrationSha(dir: string): Promise<string> {
+  return `sha256:${createHash("sha256").update(await readFile(path.join(dir, "narration.json"))).digest("hex")}`;
+}
+
+test("D1: a scratch folder that cannot be removed does not turn a finished export into a failure", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
+  try {
+    const result = await exportPackage({
+      ...EXPORT_OPTS,
+      sessionDir: FIXTURE,
+      destZip: path.join(out, "x.zip"),
+      removeScratch: async () => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); },
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.ok(result.folder && result.zip);
+    assert.deepEqual((await validatePackage(result.folder!)).errors, []);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("D2: an export is refused when the narration bytes are not the ones the user reviewed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
+  try {
+    const session = path.join(root, "session");
+    await cp(FIXTURE, session, { recursive: true });
+    const marker = { reviewed_at: "2026-11-23T08:15:00.000Z", edit_count: 0, narration_sha256: await narrationSha(session) };
+    await writeFile(path.join(session, "reviewed.json"), JSON.stringify(marker));
+    const ok = await exportPackage({ ...EXPORT_OPTS, sessionDir: session, destZip: path.join(root, "out", "a.zip") });
+    assert.equal(ok.ok, true, ok.error);
+    // The narration is changed after review.
+    await writeFile(path.join(session, "narration.json"), JSON.stringify({ segments: [{ atMs: 0, endMs: 1, text: "changed" }] }));
+    const refused = await exportPackage({ ...EXPORT_OPTS, sessionDir: session, destZip: path.join(root, "out2", "b.zip") });
+    assert.equal(refused.ok, false);
+    assert.match(refused.error ?? "", /narration changed after you finished reviewing/);
+    assert.deepEqual(await readdir(root), ["out", "session"], "nothing was written for the refused export");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("D3: a failed export removes only what it placed and never an earlier export it did not move", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
+  try {
+    const opts = { ...EXPORT_OPTS, sessionDir: FIXTURE, destZip: path.join(out, "x.zip") };
+    const first = await exportPackage(opts);
+    assert.equal(first.ok, true);
+    const before = await readdir(out);
+    const { rename: realRename } = await import("node:fs/promises");
+    // Moving the earlier zip aside fails: the earlier folder was already moved aside, the zip never was.
+    const failed = await exportPackage({
+      ...opts,
+      fsOps: { rename: async (from, to) => { if (from === first.zip) throw new Error("locked"); await realRename(from, to); } },
+    });
+    assert.equal(failed.ok, false);
+    assert.deepEqual(await readdir(out), before, "earlier folder restored, earlier zip untouched");
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("D3: when the earlier export cannot be put back, its copy is kept and its path reported", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "handover-export-"));
+  try {
+    const opts = { ...EXPORT_OPTS, sessionDir: FIXTURE, destZip: path.join(out, "x.zip") };
+    const first = await exportPackage(opts);
+    const { rename: realRename } = await import("node:fs/promises");
+    const failed = await exportPackage({
+      ...opts,
+      fsOps: {
+        rename: async (from, to) => {
+          if (path.basename(from) === path.basename(first.zip!) && from.includes(".handover-export-") && !from.includes("old-")) throw new Error("disk full");
+          if (from.includes("old-folder")) throw new Error("cannot restore");
+          await realRename(from, to);
+        },
+      },
+    });
+    assert.equal(failed.ok, false);
+    const kept = /kept at (.+old-folder)\./.exec(failed.error ?? "");
+    assert.ok(kept, failed.error);
+    assert.ok((await readdir(kept![1])).includes("manifest.json"), "the earlier folder is still there");
+  } finally {
+    await rm(out, { recursive: true, force: true });
   }
 });
 

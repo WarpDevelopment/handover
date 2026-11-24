@@ -6,7 +6,7 @@ import path from "node:path";
 
 import type { NarrationTranscript } from "../narration";
 import type { RecEvent, SessionMeta } from "../types";
-import { slugify } from "./canonical";
+import { sha256Hex, slugify } from "./canonical";
 import { parseEdits } from "./edits";
 import { HELPER_FILE, parseHelperStatus } from "./helper";
 import type {
@@ -67,7 +67,7 @@ export async function readSessionInput(
     helper: HelperStatus;
     captureBackend: string;
   },
-): Promise<{ session: SessionInput; edits: Edit[] }> {
+): Promise<{ session: SessionInput; edits: Edit[]; narrationSha256: string }> {
   const meta = JSON.parse(await readFile(path.join(dir, "session.json"), "utf8")) as SessionMeta;
   const eventsRaw = (await readOptional(path.join(dir, "events.jsonl"))) ?? "";
   const events = eventsRaw
@@ -85,7 +85,15 @@ export async function readSessionInput(
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
   }
-  const narrationRaw = await readOptional(path.join(dir, "narration.json"));
+  // The exact bytes the build uses are hashed, so the export can check them against what the user reviewed.
+  let narrationBytes: Buffer | null = null;
+  try {
+    narrationBytes = await readFile(path.join(dir, "narration.json"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  const narrationRaw = narrationBytes ? narrationBytes.toString("utf8") : null;
+  const narrationSha256 = narrationBytes ? `sha256:${sha256Hex(narrationBytes)}` : "absent";
   const narration = narrationRaw
     ? ((JSON.parse(narrationRaw) as NarrationTranscript).segments ?? [])
     : [];
@@ -97,6 +105,7 @@ export async function readSessionInput(
   return {
     session: { meta, events, shots, files, narration, process, ...extras, helper },
     edits,
+    narrationSha256,
   };
 }
 

@@ -76,14 +76,24 @@ test("APP-9: only the latest session's pictures are kept, and they can be evicte
       await svc.load(other, "s2");
       assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "the earlier session was dropped");
       assert.ok(svc.image("s2", "media/S02_before_full.png"));
-      svc.evict("s1"); // not the current one: nothing happens
+      await svc.evict("s1"); // not the current one: nothing happens
       assert.ok(svc.image("s2", "media/S02_before_full.png"));
-      svc.evict("s2");
+      await svc.evict("s2");
       assert.equal(svc.image("s2", "media/S02_before_full.png"), null, "evicted when it is deleted or the library closes");
       await svc.load(dir, "s1");
-      svc.evict();
+      await svc.evict();
       assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "evict() with no id clears everything");
     });
+  });
+});
+
+test("D7: an evict issued while a load is still running wins, so a deleted session is not cached again", async () => {
+  await withCopy(async (dir) => {
+    const svc = service();
+    const loading = svc.load(dir, "s1");
+    const evicting = svc.evict("s1"); // the session is deleted while its build is in flight
+    await Promise.all([loading, evicting]);
+    assert.equal(svc.image("s1", "media/S02_before_full.png"), null);
   });
 });
 

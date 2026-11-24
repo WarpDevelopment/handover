@@ -44,3 +44,10 @@ Regenerated with `UPDATE_GOLDEN=1`. Only `steps.jsonl` and the manifest hash of 
 - **N6** (`electron/export.ts`): `moveWithRetry` retries `rename` on EPERM/EACCES/EBUSY with 50/100/200/400/800 ms waits, then copies and deletes. An earlier export at the destination is moved aside and deleted only with the scratch folder, and is put back if placing the new one fails. Tests: "N6…" (two).
 - **N4 (FP half)** (`export.ts`, `build-package.ts`, `types.ts`): `BuildContext.reviewed_at` is read from `reviewed.json` (that field only); the manifest's `privacy.reviewed_at` uses it, else the export time. Test: "N4…".
 - `npm test` 408 pass, `npm run build` exits 0.
+
+## Final delta (after merging `7ba2310`)
+- **D1** (`electron/export.ts`): scratch cleanup is `rm(..., {maxRetries: 5, retryDelay: 100})` with the error logged, never thrown, so it cannot change the result. Test: "D1…" (removeScratch throws EBUSY, export still ok).
+- **D2** (`read-session.ts`, `export.ts`): `readSessionInput` returns `narrationSha256` of the exact bytes the build uses (`sha256:<hex>` or `absent`, same format as FA's marker); `exportPackage` reads `readReviewedMarker` and refuses with "The narration changed after you finished reviewing…" on a mismatch. `reviewed_at` now also comes from that marker. Test: "D2…".
+- **D3** (`export.ts`): rollback removes only the destinations this run placed; if an earlier export cannot be restored, the scratch folder is kept and the error names its path. Tests: two "D3…".
+- **D7** (`review.ts`): `evict()` runs through the serial queue (now returns a Promise). Test: "D7…".
+- Fixture field renamed to `narration_sha256`.
