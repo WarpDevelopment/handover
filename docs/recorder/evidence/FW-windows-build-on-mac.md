@@ -48,3 +48,20 @@ Also present: `resources/helper/HandoverHelper.exe`, `resources/models/Xenova/**
 - `assert-native-windows-arch.mjs` was bypassed (see 7). Compliance was prepared with a spoofed platform (see 6).
 - Not signed. Windows SmartScreen will warn.
 - The installer is a Mac-built artefact: do not treat it as a release build.
+
+## Rebuild at b3bd188
+
+Merged `origin/task/workflow-recording-assistant` (b3bd188; fast-forward) and repeated the procedure above unchanged: dotnet helper (25,088 bytes, rebuilt), win32-x64 tarballs extracted, darwin natives moved aside, `models:fetch`, compliance under the win32 shim, `npm run build`, `electron-builder --win nsis --x64`.
+
+- `verify-windows-package.mjs x64` passes (helper payload 25,088 bytes; "Verified native x64 package ...").
+- PE check: same 31 files, 15 PE x64, 11 PE arm64, 3 Mach-O, 2 ELF (the other-platform folders shipped inside npm packages, as before).
+- `resources/helper`, `resources/models`, `resources/compliance` present.
+- Installer copied over `~/Desktop/Handover-0.1.0-windows-x64-MAC-BUILT.exe`.
+  - size 657,068,521 bytes
+  - sha256 `b7abdf9d0c947c125a4f004823a40692ccb3857c9f0bc0905ccf2b2ef488c2f4`
+- Darwin natives restored in `node_modules` afterwards.
+
+**Tarball integrity (closes the open item above).** `package-lock.json` records **sha1** integrity for these two entries, not sha512, so I compared sha1 (read-only on the lockfile):
+- `@img/sharp-win32-x64@0.35.3`: `iiXKzcdajCYHfAf7pR6AVqrkdPE=` matches the lockfile.
+- `@koromix/koffi-win32-x64@3.1.1`: `WERVlSEG4mSqtpoHIFEdzoGK6cs=` matches the lockfile.
+- A sha512 comparison cannot be made from the lockfile. The registry's sha512 for koffi (`KqHPmvj6...`) equals my downloaded file's sha512, so the download is the registry's file.
