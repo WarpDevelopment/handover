@@ -58,6 +58,14 @@ export function currentEnvironment(): SessionEnvironment {
   };
 }
 
+/**
+ * The zip beside the package folder: `handover-<slug>__<package_id>.zip`. It starts with "handover-" so a
+ * tester can find it on a busy Desktop; the folder keeps its `.handover` suffix.
+ */
+export function packageZipName(folderName: string): string {
+  return `handover-${folderName.replace(/\.handover$/, "")}.zip`;
+}
+
 /** Suggested file name for the save dialog; the package id is chosen at export. */
 export function suggestedZipName(title: string): string {
   return `${slugify(title)}.zip`;
@@ -169,7 +177,7 @@ export async function exportPackage(opts: ExportOptions): Promise<ExportResult> 
     const folderName = packageFolderName(session.process.title, ctx.package_id);
     const parent = path.dirname(opts.destZip);
     const folder = path.join(parent, folderName);
-    const zip = path.join(parent, folderName.replace(/\.handover$/, ".zip"));
+    const zip = path.join(parent, packageZipName(folderName));
     await mkdir(parent, { recursive: true });
 
     // Build and validate in a scratch folder next to the destination, and move the result into

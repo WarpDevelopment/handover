@@ -13,7 +13,7 @@ import { validatePackage } from "../common/handover/validate";
 import { buildPackage } from "../common/handover/build-package";
 import { assertEdit, parseEdits } from "../common/handover/edits";
 import { readSessionInput } from "../common/handover/read-session";
-import { exportPackage, moveWithRetry, suggestedZipName } from "./export";
+import { exportPackage, moveWithRetry, packageZipName, suggestedZipName } from "./export";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(here, "../test/fixtures/session-synthetic");
@@ -34,6 +34,8 @@ test("exports a validating folder and a zip with the same content", async () => 
     assert.equal(result.stepCount, 7); // six recorded steps and the Explain step
     assert.match(path.basename(result.folder!), /^save-the-budget-and-open-mail__pkg_[0-9A-Z]{26}\.handover$/);
     assert.deepEqual((await validatePackage(result.folder!)).errors, []);
+    assert.match(path.basename(result.zip!), /^handover-save-the-budget-and-open-mail__pkg_[0-9A-Z]{26}\.zip$/);
+    assert.equal(packageZipName("a__pkg_X.handover"), "handover-a__pkg_X.zip");
 
     const zip = new AdmZip(result.zip!);
     const names = zip.getEntries().map((e) => e.entryName);
