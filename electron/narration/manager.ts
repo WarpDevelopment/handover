@@ -22,6 +22,7 @@ import type { SessionMeta } from "../../common/types";
 import { createLogger } from "../logger";
 import { isValidSessionId, sessionDir } from "../recorder/session-store";
 import { shouldTranscribeBeforeAnalyze } from "./analyze-gate";
+import { NO_NARRATION_ERROR, shouldWarnCachedTranscriptionFailure } from "./no-narration";
 import { transcribeNarration } from "./transcribe";
 import { getAsrPipeline, isNarrationModelCached } from "./whisper";
 
@@ -148,7 +149,7 @@ export class NarrationManager {
     const id = path.basename(dir);
     if (!isValidSessionId(id)) return;
     const result = await this.transcribeSessionWithDownload(id);
-    if (!result.ok && result.outcome !== "model-missing") {
+    if (shouldWarnCachedTranscriptionFailure(result)) {
       log.warn("cached narration transcription failed:", result.error);
     }
   }
@@ -188,7 +189,7 @@ export class NarrationManager {
     await rm(narrationFile, { force: true });
 
     const audioJson = path.join(dir, "audio.json");
-    if (!existsSync(audioJson)) return { ok: false, error: "This recording has no saved narration." };
+    if (!existsSync(audioJson)) return { ok: false, error: NO_NARRATION_ERROR };
 
     let meta: SessionMeta;
     let audioSources: AudioSource[];
@@ -203,7 +204,7 @@ export class NarrationManager {
     }
 
     if (audioSources.length === 0) {
-      return { ok: false, error: "This recording has no saved narration." };
+      return { ok: false, error: NO_NARRATION_ERROR };
     }
     let sourceFiles: Array<AudioSource & { audioPath: string }>;
     try {
