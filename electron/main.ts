@@ -565,6 +565,7 @@ app.whenReady().then(async () => {
     },
     (sender) => Boolean(libraryWindow && !libraryWindow.isDestroyed() && sender === libraryWindow.webContents),
     (sessionId) => review.evict(sessionId),
+    (sessionId) => review.currentNarrationSha256(sessionId),
   );
   sensitiveModels.initialize();
   ipcMain.handle(IPC.start, () => requestStartRecording());
