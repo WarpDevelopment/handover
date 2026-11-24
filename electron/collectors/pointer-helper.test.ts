@@ -498,16 +498,16 @@ const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Hands the collector one helper line directly, as if the helper had printed it, so the order of a pause and a
  * blind line is exact and no test sleeps for a child process. The helper is the silent fake: it says nothing.
  */
-function silentCollector(now: () => number, resumeGraceMs = 40) {
-  const { ctx, events } = fakeContext(now);
+function silentCollector(now: () => number, resumeGraceMs = 40, extra: { maxRestarts?: number } = {}) {
+  const { ctx, events, logs } = fakeContext(now);
   const tracker = new HelperTracker(launch("silent"));
   const collector = new PointerHelperCollector({
-    platform: "win32", resolve: launch("silent"), tracker, helloTimeoutMs: 60_000, resumeGraceMs,
+    platform: "win32", resolve: launch("silent"), tracker, helloTimeoutMs: 60_000, resumeGraceMs, ...extra,
   });
   const feed = (msg: Record<string, unknown>) =>
     (collector as unknown as { onLine(line: string): void }).onLine(JSON.stringify({ type: "blind", reason: "elevated_window", ...msg }));
   collector.start(ctx);
-  return { collector, events, feed };
+  return { collector, events, feed, logs };
 }
 const START = { state: "start", process: "Taskmgr" };
 const END = { state: "end" };
@@ -555,6 +555,81 @@ test("G1 D1: resume with no end opens one gap, stamped at the resume time and no
     await waitFor(() => elevatedGaps(events).length >= 1, "the gap");
     await settle(100);
     assert.deepEqual(elevatedGaps(events), [{ reason: "elevated_window", process: "Taskmgr", tStartMs: 500 }]);
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("G1 E3: pause, resume, pause, resume inside one grace window writes nothing for the first resume and one gap stamped at the second", async () => {
+  let now = 100;
+  const { collector, events, feed } = silentCollector(() => now, 150);
+  try {
+    collector.setPaused(true);
+    feed(START);
+    now = 200;
+    collector.setPaused(false); // first resume, pending
+    now = 250;
+    collector.setPaused(true); // cancels it
+    now = 300;
+    collector.setPaused(false); // second resume
+    now = 900;
+    await waitFor(() => elevatedGaps(events).length >= 1, "the gap");
+    await settle(300); // room for a wrongly written second one
+    assert.deepEqual(elevatedGaps(events), [{ reason: "elevated_window", process: "Taskmgr", tStartMs: 300 }]);
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("G1 E3: the helper exiting while a resume is pending writes nothing for the elevated window", async () => {
+  const { collector, events, feed } = silentCollector(() => 100, 120, { maxRestarts: 0 });
+  try {
+    collector.setPaused(true);
+    feed(START);
+    collector.setPaused(false);
+    const inner = collector as unknown as { onExit(reason: string): void; child: { kill(): void } | null };
+    const child = inner.child; // onExit forgets the child, so keep it to kill: the silent fake would otherwise live on
+    inner.onExit("helper exited (code 1)");
+    child?.kill();
+    await settle(300);
+    assert.deepEqual(elevatedGaps(events), []);
+    assert.equal(JSON.stringify(events).includes("Taskmgr"), false);
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("G1 E4: each blind transition logs its state only, never the process name", async () => {
+  const { collector, events, feed, logs } = silentCollector(() => 100, 30);
+  try {
+    feed(START);
+    feed(END);
+    collector.setPaused(true);
+    feed(START);
+    collector.setPaused(false);
+    await waitFor(() => elevatedGaps(events).length >= 3, "open, close, reopened after resume");
+    collector.setPaused(true);
+    collector.setPaused(false);
+    feed(END);
+    const text = logs.join("\n");
+    for (const line of ["helper: blind start", "helper: blind end", "resume: elevated gap opened"]) {
+      assert.ok(text.includes(line), `logged "${line}"`);
+    }
+    assert.equal(text.toLowerCase().includes("taskmgr"), false, "no process name in the app log");
+    assert.equal(text.toLowerCase().includes("task manager"), false, "no window title either");
+  } finally {
+    await collector.stop();
+  }
+});
+
+test("G1 E4: a resume that the helper's end cancels is logged as cancelled", async () => {
+  const { collector, feed, logs } = silentCollector(() => 100, 200);
+  try {
+    collector.setPaused(true);
+    feed(START);
+    collector.setPaused(false);
+    feed(END);
+    assert.ok(logs.join("\n").includes("resume: cancelled"));
   } finally {
     await collector.stop();
   }

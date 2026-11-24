@@ -1156,8 +1156,11 @@ export async function buildPackageDetailed(
     const wanted = blind && g.process ? processKey(g.process) : "";
     for (const s of stepRecords) {
       const t = s.t_start_ms;
+      // A switch-in counts only while it is before the gap's end and the step after the gap is not chosen yet.
+      // Otherwise a quick out-and-in visit would take the NEXT visit's switch-in as this gap's after_step.
       const switchIn =
-        wanted !== "" && t > start && t <= start + BLIND_EDGE_TOLERANCE_MS && isSwitchTo(s, wanted);
+        wanted !== "" && beforeStep === undefined && t > start && t < end &&
+        t <= start + BLIND_EDGE_TOLERANCE_MS && isSwitchTo(s, wanted);
       if (t <= start || switchIn) {
         after = s.step_id;
         afterT = t;
@@ -1170,10 +1173,12 @@ export async function buildPackageDetailed(
     // the two steps it sits between, so no named step lies inside it (CLAUDE_HANDOFF.md says none does).
     let outStart = start;
     let outEnd = end;
-    if (blind) {
+    if (blind && !(afterT !== undefined && beforeT !== undefined && afterT >= beforeT)) {
       if (afterT !== undefined) outStart = Math.max(outStart, afterT);
       if (beforeT !== undefined) outEnd = Math.min(outEnd, beforeT);
     }
+    // A blind spot that rounds to no time at all is not a stretch the reader needs told about.
+    if (blind && Math.max(outStart, outEnd) <= outStart) continue;
     gaps.push({
       gap_id: `gap_${pad(gaps.length + 1, 4)}`,
       t_start_ms: outStart,
