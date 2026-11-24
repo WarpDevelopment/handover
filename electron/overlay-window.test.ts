@@ -157,13 +157,64 @@ test("APP-2: no retry when the window has the keyboard, and none off Windows", (
   ok.c.fire(100);
   assert.deepEqual(ok.win.calls, []);
 
+  // D4: macOS also checks and retries focus, but there is no always-on-top toggle off Windows.
   const mac = make("darwin");
   mac.win.acceptFocus = false;
   mac.adapter.overlay.focus();
   mac.adapter.ready();
   mac.win.calls.length = 0;
   mac.c.fire(100);
-  assert.deepEqual(mac.win.calls, []);
+  assert.deepEqual(mac.win.calls, ["focus"]);
+  mac.c.fire(100);
+  assert.deepEqual(mac.focusFailed, [1], "D4: the banner can now appear on macOS too");
+});
+
+test("D4: a primary overlay that loses focus later flags focusFailed; a secondary one does not", () => {
+  const primary = make("win32");
+  primary.adapter.overlay.focus();
+  primary.adapter.ready();
+  primary.win.emit("blur");
+  assert.deepEqual(primary.focusFailed, [1]);
+
+  const secondary = make("win32");
+  secondary.adapter.ready(); // never asked to take the keyboard
+  secondary.win.emit("blur");
+  assert.deepEqual(secondary.focusFailed, []);
+
+  const hidden = make("win32");
+  hidden.adapter.overlay.focus();
+  hidden.win.emit("blur"); // not revealed yet
+  assert.deepEqual(hidden.focusFailed, []);
+});
+
+function makeWithSecondary() {
+  const win = new FakeWin();
+  const out = { failures: [] as string[], secondary: [] as string[] };
+  const c = clock();
+  const adapter = adaptOverlayWindow(win as unknown as OverlayBrowserWindowLike, {
+    platform: "win32",
+    revealTimeoutMs: 8000,
+    onFailure: (r) => out.failures.push(r),
+    onSecondaryFailure: (r) => out.secondary.push(r),
+    setTimer: c.setTimer,
+    clearTimer: c.clearTimer,
+  });
+  return { win, c, adapter, ...out };
+}
+
+test("D5: a secondary overlay that fails or times out is dropped alone; the primary failing cancels the freeze", () => {
+  const timeout = makeWithSecondary();
+  timeout.c.fire(8000);
+  assert.deepEqual([timeout.failures.length, timeout.secondary.length], [0, 1], "the freeze is kept");
+
+  const crashed = makeWithSecondary();
+  crashed.win.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+  assert.deepEqual([crashed.failures.length, crashed.secondary.length], [0, 1]);
+
+  const primary = makeWithSecondary();
+  primary.adapter.overlay.focus(); // the primary is the one that takes the keyboard
+  primary.c.fire(8000);
+  assert.deepEqual([primary.failures.length, primary.secondary.length], [1, 0], "the freeze is cancelled");
 });
 
 test("Escape on the overlay page calls back and is swallowed", () => {

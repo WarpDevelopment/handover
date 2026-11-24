@@ -34,8 +34,10 @@ export interface OverlayAdapterOptions {
   revealTimeoutMs: number;
   /** After a reveal on Windows, how long before checking that the window really has the keyboard. */
   focusCheckMs?: number;
-  /** The freeze must end: the overlay cannot be shown or has died. */
+  /** The freeze must end: the primary overlay cannot be shown or has died. */
   onFailure(reason: string): void;
+  /** A secondary display's overlay failed: drop just that window and keep the freeze (D5). */
+  onSecondaryFailure?(reason: string): void;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   log?: { warn(...a: unknown[]): void; info?(...a: unknown[]): void };
@@ -76,18 +78,25 @@ export function adaptOverlayWindow(win: OverlayBrowserWindowLike, opts: OverlayA
     if (failed) return;
     failed = true;
     opts.log?.warn(`freeze overlay failed: ${reason}`);
-    opts.onFailure(reason);
+    // D5: a secondary display's overlay (one that was never asked to take the keyboard) is dropped on its
+    // own; cancelling the whole freeze would discard what was drawn on the primary. Only the primary
+    // failing ends the freeze.
+    if (!wantFocus && opts.onSecondaryFailure) opts.onSecondaryFailure(reason);
+    else opts.onFailure(reason);
   };
 
-  // Windows can refuse focus() while another app holds the foreground lock; typed text would then go to
-  // the app underneath. Check shortly after the reveal and retry once with an always-on-top toggle.
+  // The primary overlay must really hold the keyboard, or typed text goes to the app underneath. Check
+  // shortly after the reveal, on every platform (D4). Windows can refuse focus() while another app holds the
+  // foreground lock, so only there is the retry an always-on-top toggle plus focus().
   const ensureFocus = () => {
-    if (opts.platform !== "win32" || win.isDestroyed()) return;
+    if (win.isDestroyed()) return;
     focusTimer = setTimer(() => {
       focusTimer = null;
       if (win.isDestroyed() || win.isFocused()) return;
-      win.setAlwaysOnTop(false);
-      win.setAlwaysOnTop(true, "screen-saver");
+      if (opts.platform === "win32") {
+        win.setAlwaysOnTop(false);
+        win.setAlwaysOnTop(true, "screen-saver");
+      }
       win.focus();
       // One more look after the retry: only a window that still has no keyboard needs the banner (N5).
       focusTimer = setTimer(() => {
@@ -127,6 +136,11 @@ export function adaptOverlayWindow(win: OverlayBrowserWindowLike, opts: OverlayA
   });
   win.on("unresponsive", () => fail("the overlay is not responding"));
   win.webContents.on("unresponsive", () => fail("the overlay is not responding"));
+
+  // Focus lost later (another app grabbed it, or the user clicked away): the banner comes back (D4).
+  win.on("blur", () => {
+    if (revealed && wantFocus && !win.isDestroyed()) opts.onFocusFailed?.();
+  });
 
   win.once("closed", () => {
     clearTimer(timer);

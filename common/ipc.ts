@@ -508,5 +508,5 @@ export interface HandoverApi {
   /** Recording bar: an action started from a hotkey failed (APP-5); the bar shows the message. */
   onActionError(cb: (message: string) => void): () => void;
   /** Library: the user finished reviewing; export stays disabled until this is recorded (SEC-2). */
-  markReviewed(sessionId: string): Promise<{ ok: boolean }>;
+  markReviewed(sessionId: string): Promise<{ ok: boolean; error?: string }>;
 }

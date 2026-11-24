@@ -196,6 +196,9 @@ function overlayWindow(display: Electron.Display): OverlayWindow {
     platform: process.platform,
     // Hidden until the page says it drew the frame; this is only the kill switch for a dead page (N1).
     revealTimeoutMs: OVERLAY_READY_TIMEOUT_MS,
+    onSecondaryFailure: () => {
+      if (!win.isDestroyed()) win.destroy(); // the freeze goes on with the other displays
+    },
     onFocusFailed: () => {
       if (!win.isDestroyed()) win.webContents.send(IPC.freezeFocusFailed);
     },
