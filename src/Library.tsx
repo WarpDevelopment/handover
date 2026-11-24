@@ -253,7 +253,15 @@ function SessionDetail({
   }, [summary.id, onChanged]);
 
   if (reviewing) {
-    return <StepReview sessionId={summary.id} onClose={() => setReviewing(false)} />;
+    return (
+      <StepReview
+        sessionId={summary.id}
+        onClose={() => {
+          setReviewing(false);
+          void onChanged(); // the review may have been marked done: refresh the Export gate
+        }}
+      />
+    );
   }
 
   return (
@@ -266,7 +274,7 @@ function SessionDetail({
         <button className="record-cta" onClick={() => setReviewing(true)}>
           Review steps
         </button>
-        <ExportPackageButton sessionId={summary.id} />
+        <ExportPackageButton sessionId={summary.id} reviewed={summary.reviewed} />
         <DebugDownload sessionId={summary.id} />
       </header>
       <dl className="detail-facts">
@@ -335,7 +343,7 @@ const SavedGlyph = () => (
 );
 
 /** Exports a recording as a Handover package (a folder and a zip) and reports whether it validated. */
-function ExportPackageButton({ sessionId }: { sessionId: string }) {
+function ExportPackageButton({ sessionId, reviewed }: { sessionId: string; reviewed: boolean }) {
   const [phase, setPhase] = useState<"idle" | "working" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
 
@@ -361,7 +369,12 @@ function ExportPackageButton({ sessionId }: { sessionId: string }) {
           {phase === "done" ? message : "Couldn't export"}
         </span>
       )}
-      <button className="linky" onClick={() => void run()} disabled={phase === "working"}>
+      <button
+        className="linky"
+        onClick={() => void run()}
+        disabled={phase === "working" || !reviewed}
+        title={reviewed ? undefined : "Review the steps and choose Done reviewing before exporting."}
+      >
         {phase === "working" ? "Exporting…" : "Export package"}
       </button>
     </div>

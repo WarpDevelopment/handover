@@ -12,6 +12,7 @@ import {
 import { overlayBounds } from "../common/handover/overlay-geometry";
 import { RECORDER_WINDOW_WIDTH } from "./recorder-window-sizing";
 import { windowIcon } from "./icons";
+import { windowPreferences } from "./web-preferences";
 export { fitRecorderHeight } from "./recorder-window-sizing";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,12 +58,7 @@ export function createRecorderWindow(): BrowserWindow {
     title: "Handover",
     icon: windowIcon(),
     backgroundColor: "#faf8f5",
-    webPreferences: {
-      preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+    webPreferences: windowPreferences({ preload: path.join(dirname, "preload.cjs") }),
   });
   registerDevelopmentDevToolsShortcut(win);
   loadRoute(win);
@@ -99,13 +95,7 @@ export function createRecordingControlsWindow(): BrowserWindow {
     closable: false,
     skipTaskbar: true,
     title: "Handover: Recording controls",
-    webPreferences: {
-      preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      backgroundThrottling: false,
-    },
+    webPreferences: windowPreferences({ preload: path.join(dirname, "preload.cjs"), backgroundThrottling: false }),
   });
   win.setAlwaysOnTop(true, "floating");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -146,13 +136,11 @@ export function createFreezeOverlay(display: Electron.Display): BrowserWindow {
     hasShadow: false,
     enableLargerThanScreen: true,
     title: "Handover: Explain",
-    webPreferences: {
+    webPreferences: windowPreferences({
       preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
       backgroundThrottling: false,
-    },
+      kind: "freeze",
+    }),
   });
   win.setAlwaysOnTop(true, "screen-saver");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -179,13 +167,7 @@ export function createTerminalWindow(): BrowserWindow {
     title: "Handover: Recorded terminal",
     icon: windowIcon(),
     backgroundColor: "#211f1e",
-    webPreferences: {
-      preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-      backgroundThrottling: false,
-    },
+    webPreferences: windowPreferences({ preload: path.join(dirname, "preload.cjs"), backgroundThrottling: false }),
   });
   registerDevelopmentDevToolsShortcut(win);
   win.setContentProtection(true);
@@ -262,12 +244,7 @@ export function createLibraryWindow(recorder: BrowserWindow): BrowserWindow {
     title: "Handover: Sessions",
     icon: windowIcon(),
     backgroundColor: "#faf8f5",
-    webPreferences: {
-      preload: path.join(dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+    webPreferences: windowPreferences({ preload: path.join(dirname, "preload.cjs") }),
   });
   registerDevelopmentDevToolsShortcut(win);
   // Move the recorder and reveal the library together so the pair appears docked.

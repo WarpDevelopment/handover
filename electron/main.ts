@@ -490,6 +490,8 @@ app.whenReady().then(async () => {
     installWebRequestDeny(session.defaultSession.webRequest, (m) => log.warn(m));
     log.warn("HANDOVER_DENY_NETWORK=1: all non-local network access is blocked");
   }
+  // SEC-3: no dictionary downloads from Google, no spell-checking of typed notes.
+  session.defaultSession.setSpellCheckerEnabled(false);
   if (process.platform === "win32") Menu.setApplicationMenu(null);
   if (dock && app.dock) app.dock.setIcon(dock);
 
@@ -523,6 +525,7 @@ app.whenReady().then(async () => {
         controls && !controls.isDestroyed() && sender === controls.webContents,
       );
     },
+    (sender) => Boolean(libraryWindow && !libraryWindow.isDestroyed() && sender === libraryWindow.webContents),
   );
   sensitiveModels.initialize();
   ipcMain.handle(IPC.start, () => requestStartRecording());

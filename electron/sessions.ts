@@ -10,6 +10,7 @@ import {
 } from "../common/narration";
 import type { SessionMeta } from "../common/types";
 import { createLogger } from "./logger";
+import { isReviewed } from "./reviewed-marker";
 import { isValidSessionId, sessionDir, sessionsRoot } from "./recorder/session-store";
 
 const log = createLogger("Sessions");
@@ -116,8 +117,9 @@ async function summarize(root: string, name: string): Promise<SessionSummary | n
   }
   if (!meta?.id) return null;
 
-  const [processed, hasVideo, narrationLanguage, narration, sizeBytes] = await Promise.all([
+  const [processed, reviewed, hasVideo, narrationLanguage, narration, sizeBytes] = await Promise.all([
       exists(path.join(dir, "bundle.json")),
+      isReviewed(dir),
       exists(path.join(dir, "video.json")),
       loadAudioLanguage(dir),
       loadNarration(dir),
@@ -137,6 +139,7 @@ async function summarize(root: string, name: string): Promise<SessionSummary | n
     durationMs: meta.startedAt && meta.stoppedAt ? meta.stoppedAt - meta.startedAt : null,
     sizeBytes,
     processed,
+    reviewed,
     hasVideo,
     hasAudio: narrationLanguage !== null,
     narrationLanguage,
