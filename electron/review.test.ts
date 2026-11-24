@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { UnsupportedEditError } from "../common/handover/edits";
-import { reviewDataFrom } from "../common/handover/review";
+import { finishReview, reviewDataFrom } from "../common/handover/review";
 import { exportPackage } from "./export";
 import { ReviewService } from "./review";
 
@@ -85,6 +85,25 @@ test("APP-9: only the latest session's pictures are kept, and they can be evicte
       assert.equal(svc.image("s1", "media/S02_before_full.png"), null, "evict() with no id clears everything");
     });
   });
+});
+
+test("Done reviewing: closes only on ok; otherwise the app's reason is shown and the review stays open", async () => {
+  assert.deepEqual(await finishReview(async () => ({ ok: true }), "s1"), { done: true });
+  assert.deepEqual(
+    await finishReview(async () => ({ ok: false, error: "The narration is still being transcribed." }), "s1"),
+    { done: false, error: "The narration is still being transcribed." },
+  );
+  assert.deepEqual(await finishReview(async () => ({ ok: false }), "s1"), {
+    done: false,
+    error: "Could not record that the review is done.",
+  });
+  assert.deepEqual(
+    await finishReview(async () => { throw new Error("ipc"); }, "s1"),
+    { done: false, error: "Could not record that the review is done." },
+  );
+  let asked = "";
+  await finishReview(async (id) => { asked = id; return { ok: true }; }, "s9");
+  assert.equal(asked, "s9");
 });
 
 test("D7: an evict issued while a load is still running wins, so a deleted session is not cached again", async () => {

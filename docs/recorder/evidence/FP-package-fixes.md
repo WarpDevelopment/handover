@@ -51,3 +51,5 @@ Regenerated with `UPDATE_GOLDEN=1`. Only `steps.jsonl` and the manifest hash of 
 - **D3** (`export.ts`): rollback removes only the destinations this run placed; if an earlier export cannot be restored, the scratch folder is kept and the error names its path. Tests: two "D3…".
 - **D7** (`review.ts`): `evict()` runs through the serial queue (now returns a Promise). Test: "D7…".
 - Fixture field renamed to `narration_sha256`.
+
+- **Done reviewing errors:** the handler logic is `finishReview` (`common/handover/review.ts`): the review closes only on `ok`; otherwise `error` (for example "still being transcribed") is shown above the steps and the review stays open. Test: `review.test.ts` "Done reviewing…". The component wiring itself is not rendered in a test.
