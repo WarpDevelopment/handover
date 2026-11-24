@@ -17,6 +17,8 @@ export interface PointerHelperOptions {
   helloTimeoutMs?: number;
   /** A helper that ran this long before exiting gets its restart allowance back (NAT-8). */
   stableMs?: number;
+  /** After a resume, how long to wait for the helper to confirm an administrator window is still in front. */
+  resumeGraceMs?: number;
   now?: () => number;
 }
 
@@ -56,6 +58,8 @@ export class PointerHelperCollector implements Collector {
   private elevatedNow = false;
   private elevatedProcess: string | undefined;
   private paused = false;
+  private resumeTimer: NodeJS.Timeout | null = null;
+  private readonly resumeGraceMs: number;
   private restartTimer: NodeJS.Timeout | null = null;
   private helloTimer: NodeJS.Timeout | null = null;
 
@@ -67,6 +71,7 @@ export class PointerHelperCollector implements Collector {
     this.restartDelayMs = options.restartDelayMs ?? 500;
     this.helloTimeoutMs = options.helloTimeoutMs ?? 5000;
     this.stableMs = options.stableMs ?? 60_000;
+    this.resumeGraceMs = options.resumeGraceMs ?? 1200;
     this.now = options.now ?? Date.now;
   }
 
@@ -238,8 +243,23 @@ export class PointerHelperCollector implements Collector {
    */
   setPaused(paused: boolean): void {
     this.paused = paused;
-    if (paused) this.endElevated();
-    else this.beginElevated();
+    if (paused) {
+      this.endElevated();
+      return;
+    }
+    // The helper's state can be a second old, and the Resume click itself moves the foreground to Handover's
+    // bar, so do not trust it at once: wait, and open only if the helper has not said the window left. The gap
+    // is stamped with the resume time, not the time the timer fires.
+    if (!this.ctx || !this.elevatedNow || this.elevatedOpen || this.resumeTimer) return;
+    const tStartMs = Math.max(0, Math.round(this.elapsed()));
+    this.resumeTimer = setTimeout(() => {
+      this.resumeTimer = null;
+      this.beginElevated(tStartMs);
+    }, this.resumeGraceMs);
+  }
+
+  private elapsed(): number {
+    return this.ctx?.elapsedMs ? this.ctx.elapsedMs() : this.now() - this.startedAt;
   }
 
   /**
@@ -248,16 +268,20 @@ export class PointerHelperCollector implements Collector {
    * while paused. Tracked apart from `openGap` (one reason at a time there) because it can overlap a
    * helper_restart.
    */
-  private beginElevated(): void {
-    if (!this.ctx || this.paused || !this.elevatedNow || this.elevatedOpen) return;
+  private beginElevated(tStartMs?: number): void {
+    if (!this.ctx || this.paused || !this.elevatedNow || this.elevatedOpen || this.resumeTimer) return;
     this.elevatedOpen = true;
     this.ctx.publish("gap", {
       reason: "elevated_window",
       ...(this.elevatedProcess ? { process: this.elevatedProcess } : {}),
+      ...(tStartMs !== undefined ? { tStartMs } : {}),
     });
   }
 
   private endElevated(): void {
+    // A pause, stop, helper exit or the helper's own end cancels a resume that is still waiting.
+    if (this.resumeTimer) clearTimeout(this.resumeTimer);
+    this.resumeTimer = null;
     if (!this.ctx || !this.elevatedOpen) return;
     this.elevatedOpen = false;
     const tEndMs = this.ctx.elapsedMs ? this.ctx.elapsedMs() : this.now() - this.startedAt;
