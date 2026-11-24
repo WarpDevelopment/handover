@@ -241,7 +241,19 @@ async function startExplain(): Promise<ActionResult> {
 /** The Explain hotkey, or null when it could not be registered (the bar's button still works). */
 const EXPLAIN_HOTKEY = "CommandOrControl+Shift+E";
 /** Held system-wide only while recording (APP-8); see ExplainHotkey. */
-const explainHotkey = new ExplainHotkey(globalShortcut, EXPLAIN_HOTKEY, () => void startExplain(), log);
+const explainHotkey = new ExplainHotkey(
+  globalShortcut,
+  EXPLAIN_HOTKEY,
+  () => {
+    // A hotkey has no button to show a failure on, so the bar does (APP-5).
+    void startExplain().then((result) => {
+      if (result.ok) return;
+      const bar = recordingControlsWindow;
+      if (bar && !bar.isDestroyed()) bar.webContents.send(IPC.actionError, result.error ?? "Explain did not start.");
+    });
+  },
+  log,
+);
 
 async function startRecording(): Promise<StartResult> {
   if (recordingStartPending) {

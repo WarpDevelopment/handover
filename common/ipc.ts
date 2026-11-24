@@ -392,6 +392,7 @@ export const IPC = {
   reviewImage: "review:image",
   reviewEdit: "review:edit",
   markReviewed: "sessions:mark-reviewed",
+  actionError: "recorder:action-error",
 } as const;
 
 /** Shape exposed on `window.handover` by the preload bridge. */
@@ -501,6 +502,8 @@ export interface HandoverApi {
     sessionId: string,
     edit: import("./handover/review").ReviewEditInput,
   ): Promise<ReviewLoadResult>;
+  /** Recording bar: an action started from a hotkey failed (APP-5); the bar shows the message. */
+  onActionError(cb: (message: string) => void): () => void;
   /** Library: the user finished reviewing; export stays disabled until this is recorded (SEC-2). */
   markReviewed(sessionId: string): Promise<{ ok: boolean }>;
 }

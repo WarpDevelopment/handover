@@ -10,6 +10,7 @@ import {
   narrationLanguageLabel,
 } from "../common/narration";
 import { FULL_CAPTURE } from "../common/config";
+import { shortBarError } from "./bar-error";
 import { formatMs } from "./format";
 import { TestBanner } from "./TestBanner";
 
@@ -50,15 +51,28 @@ export function RecordingControls() {
         setShowMicrophoneMenu(false);
         setTerminalConfirm("done");
       });
+    // A failure of something started from a hotkey, shown on the bar (APP-5).
+    const offActionError = window.handover.onActionError(setActionError);
     return () => {
       offStatus();
       offMicrophones();
       offTerminal();
       offTerminalFinish();
+      offActionError();
     };
   }, []);
 
   const recording = status?.state === "recording";
+  // The Explain hotkey is held only while recording (APP-8), so ask again when a recording starts.
+  useEffect(() => {
+    if (recording) void window.handover.explainHotkey().then(setExplainHotkey);
+  }, [recording]);
+  // A failure message on the bar clears itself, so it never hides the timer for good.
+  useEffect(() => {
+    if (!actionError) return;
+    const timer = setTimeout(() => setActionError(null), 8000);
+    return () => clearTimeout(timer);
+  }, [actionError]);
   const startedAt = status?.startedAt ?? null;
   useEffect(() => {
     if (!recording || startedAt == null) {
@@ -433,7 +447,14 @@ export function RecordingControls() {
           <div className="recording-live" role="status" aria-label={`${captureLabel} ${formatMs(elapsed)}`}>
             <span className="recording-live-dot" aria-hidden />
             <span className="recording-live-copy">
-              <strong>{captureLabel}</strong>
+              {actionError && !showMicrophoneMenu ? (
+                // A visible slot for a failed Explain or Pause (APP-5); the full text is the tooltip.
+                <strong role="alert" title={actionError} style={{ color: "#E5484D" }}>
+                  {shortBarError(actionError)}
+                </strong>
+              ) : (
+                <strong>{captureLabel}</strong>
+              )}
               <span>{formatMs(elapsed)}</span>
             </span>
           </div>

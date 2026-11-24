@@ -65,6 +65,7 @@ const IPC = {
   reviewImage: "review:image",
   reviewEdit: "review:edit",
   markReviewed: "sessions:mark-reviewed",
+  actionError: "recorder:action-error",
 };
 
 let recordingPrivacyWarningPending = false;
@@ -192,6 +193,11 @@ const api = {
   reviewImage: (sessionId, path) => ipcRenderer.invoke(IPC.reviewImage, sessionId, path),
   reviewEdit: (sessionId, edit) => ipcRenderer.invoke(IPC.reviewEdit, sessionId, edit),
   markReviewed: (sessionId) => ipcRenderer.invoke(IPC.markReviewed, sessionId),
+  onActionError: (cb) => {
+    const listener = (_event, message) => cb(message);
+    ipcRenderer.on(IPC.actionError, listener);
+    return () => ipcRenderer.removeListener(IPC.actionError, listener);
+  },
 };
 
 // SEC-10: the freeze overlay shows a screenshot of the user's screen, so its window gets only the
