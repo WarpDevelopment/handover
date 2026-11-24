@@ -71,7 +71,9 @@ export class PointerHelperCollector implements Collector {
     this.restartDelayMs = options.restartDelayMs ?? 500;
     this.helloTimeoutMs = options.helloTimeoutMs ?? 5000;
     this.stableMs = options.stableMs ?? 60_000;
-    this.resumeGraceMs = options.resumeGraceMs ?? 1200;
+    // The helper checks the foreground window once a second, plus its loop and pipe time, so its "left" line can
+    // reach us about 1.1 s after the window really left. 2 s leaves a real margin; 1.2 s left only ~200 ms.
+    this.resumeGraceMs = options.resumeGraceMs ?? 2000;
     this.now = options.now ?? Date.now;
   }
 
@@ -221,6 +223,8 @@ export class PointerHelperCollector implements Collector {
       }
       case "blind":
         // Not a helper fault and not a pause: other collectors keep running, only clicks are unseen.
+        // State only. Never the process name or a window title: the app log goes into the diagnostics zip.
+        ctx.log.info(`helper: blind ${message.state}`);
         if (message.state === "start") {
           this.elevatedNow = true;
           this.elevatedProcess = message.process;
@@ -255,6 +259,7 @@ export class PointerHelperCollector implements Collector {
     this.resumeTimer = setTimeout(() => {
       this.resumeTimer = null;
       this.beginElevated(tStartMs);
+      if (this.elevatedOpen) this.ctx?.log.info("resume: elevated gap opened");
     }, this.resumeGraceMs);
   }
 
@@ -280,7 +285,10 @@ export class PointerHelperCollector implements Collector {
 
   private endElevated(): void {
     // A pause, stop, helper exit or the helper's own end cancels a resume that is still waiting.
-    if (this.resumeTimer) clearTimeout(this.resumeTimer);
+    if (this.resumeTimer) {
+      clearTimeout(this.resumeTimer);
+      this.ctx?.log.info("resume: cancelled");
+    }
     this.resumeTimer = null;
     if (!this.ctx || !this.elevatedOpen) return;
     this.elevatedOpen = false;

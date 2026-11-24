@@ -222,10 +222,15 @@ export async function validatePackage(dir: string): Promise<ValidationResult> {
       if (!stepIds.has(id)) errors.push(`${String(a.annotation_id)}: step_ids refers to unknown ${id}`);
     }
   }
+  const stepNumber = (id: unknown) => Number(/^S(\d+)$/.exec(String(id))?.[1] ?? NaN);
   for (const g of gaps) {
     for (const key of ["after_step", "before_step"] as const) {
       const id = g[key] as string | undefined;
       if (id && !stepIds.has(id)) errors.push(`${String(g.gap_id)}: ${key} refers to unknown ${id}`);
+    }
+    // Step ids run S01, S02, ... in time order, so a gap cannot follow a step that comes later than the one after it.
+    if (g.after_step && g.before_step && stepNumber(g.after_step) > stepNumber(g.before_step)) {
+      errors.push(`${String(g.gap_id)}: after_step ${String(g.after_step)} comes later than before_step ${String(g.before_step)}`);
     }
   }
 

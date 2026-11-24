@@ -88,6 +88,23 @@ test("validatePackage catches holes in step ids, dangling references and a bad t
   });
 });
 
+test("G1 E1: validatePackage rejects a gap whose after_step comes later than its before_step", async () => {
+  await withPackage(async (dir) => {
+    const gapsPath = path.join(dir, "gaps.jsonl");
+    const gap = {
+      gap_id: "gap_0001", t_start_ms: 100, t_end_ms: 200, reason: "elevated_window",
+      after_step: "S05", before_step: "S02",
+    };
+    await writeFile(gapsPath, JSON.stringify(gap) + "\n");
+    const r = await validatePackage(dir);
+    assert.ok(r.errors.some((e) => e.includes("gap_0001") && e.includes("after_step") && e.includes("later")), r.errors.join("\n"));
+    // The same gap the right way round raises no such error.
+    await writeFile(gapsPath, JSON.stringify({ ...gap, after_step: "S02", before_step: "S05" }) + "\n");
+    const ok = await validatePackage(dir);
+    assert.equal(ok.errors.some((e) => e.includes("later than")), false);
+  });
+});
+
 test("validatePackage fails on a folder with no manifest", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "handover-empty-"));
   try {
