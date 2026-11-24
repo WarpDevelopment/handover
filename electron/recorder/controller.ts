@@ -576,7 +576,7 @@ export class RecorderController {
     this.lastDisplays = null;
     this.lastDisplaysEvent = null;
     this.publishDisplays();
-    log.info("Recording started:", store.meta.id, "->", store.dir);
+    log.info("Recording started:", store.meta.id); // the id only: the folder path names the OS user (SEC-8)
     this.emit();
 
     try {

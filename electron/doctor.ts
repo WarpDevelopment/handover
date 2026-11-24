@@ -11,6 +11,7 @@ import type {
 import { helperTracker } from "./collectors/helper-status";
 import { browserUrlProviderKind } from "./collectors/url-provider";
 import { sessionsRoot } from "./recorder/session-store";
+import { redactHome } from "./redact-paths";
 
 const require = createRequire(import.meta.url);
 
@@ -31,6 +32,14 @@ function checkActiveWindow(): ActiveWindowInfo {
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+function redactActiveWindow(info: ActiveWindowInfo): ActiveWindowInfo {
+  return {
+    ...info,
+    path: info.path === null ? null : redactHome(info.path),
+    ...(info.error ? { error: redactHome(info.error) } : {}),
+  };
 }
 
 function checkBrowserUrl(): BrowserUrlInfo {
@@ -58,9 +67,10 @@ export function runDoctor(): DoctorReport {
 
   return {
     platform: process.platform,
-    activeWindow: checkActiveWindow(),
+    activeWindow: redactActiveWindow(checkActiveWindow()),
     browserUrl,
-    sessionsDir: sessionsRoot(),
+    // The doctor report goes into the diagnostics zip: no path may name the OS user (SEC-8).
+    sessionsDir: redactHome(sessionsRoot()),
     activeSources,
     helper: helperTracker.report(),
   };

@@ -1,6 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 
+import { redactHome } from "./redact-paths";
+
 /** Rotate the active log once it reaches this size (the diagnostics zip carries it all). */
 export const LOG_MAX_BYTES = 5 * 1024 * 1024;
 /** Keep this many daily files (plus their single rotated `.1` sibling). */
@@ -85,7 +87,8 @@ function writeLine(level: Level, tag: string, args: readonly unknown[]): void {
       rmSync(rotated, { force: true });
       renameSync(file, rotated);
     }
-    appendFileSync(file, `${now.toISOString()} ${level} [${tag}] ${formatLogArgs(args)}\n`);
+    // The log goes into the diagnostics zip: no absolute path may name the OS user (SEC-8).
+    appendFileSync(file, `${now.toISOString()} ${level} [${tag}] ${redactHome(formatLogArgs(args))}\n`);
   } catch {
     // Logging must never break the app.
   }

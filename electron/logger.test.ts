@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -30,6 +30,23 @@ test("file sink writes handover-YYYYMMDD.log lines and never an object payload",
   assert.match(content, /WARN \[Test\] failed: Error: boom/);
   assert.ok(!content.includes("ACME") && !content.includes("secret clipboard text"));
   assert.match(content, /INFO \[Test\] event <object>/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("SEC-8: the home directory never reaches the log file", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "handover-log-home-"));
+  const stop = initFileLogging(dir, { now: () => new Date(2026, 10, 23) });
+  const quiet = console.log;
+  console.log = () => undefined;
+  try {
+    createLogger("Home").info(`could not open ${path.join(homedir(), "Documents", "x.txt")}`);
+  } finally {
+    console.log = quiet;
+    stop();
+  }
+  const content = await readFile(path.join(dir, "handover-20261123.log"), "utf8");
+  assert.ok(!content.includes(homedir()), content);
+  assert.match(content, /could not open ~/);
   await rm(dir, { recursive: true, force: true });
 });
 

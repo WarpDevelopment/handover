@@ -33,7 +33,7 @@ import { registerIpc } from "./ipc";
 import { isValidSessionId, sessionDir } from "./recorder/session-store";
 import { FreezeCoordinator, type OverlayWindow } from "./freeze";
 import { adaptOverlayWindow } from "./overlay-window";
-import { registerHotkey } from "./hotkeys";
+import { ExplainHotkey } from "./explain-hotkey";
 import { ReviewService } from "./review";
 import { saveDiagnosticsToDesktop } from "./diagnostics-info";
 import { createLogger, initFileLogging } from "./logger";
@@ -240,7 +240,8 @@ async function startExplain(): Promise<ActionResult> {
 
 /** The Explain hotkey, or null when it could not be registered (the bar's button still works). */
 const EXPLAIN_HOTKEY = "CommandOrControl+Shift+E";
-let explainHotkey: string | null = null;
+/** Held system-wide only while recording (APP-8); see ExplainHotkey. */
+const explainHotkey = new ExplainHotkey(globalShortcut, EXPLAIN_HOTKEY, () => void startExplain(), log);
 
 async function startRecording(): Promise<StartResult> {
   if (recordingStartPending) {
@@ -651,7 +652,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.pause, (event) => (fromControls(event.sender) ? recorder.pause() : notAllowed));
   ipcMain.handle(IPC.resume, (event) => (fromControls(event.sender) ? recorder.resume() : notAllowed));
   ipcMain.handle(IPC.explain, (event) => (fromControls(event.sender) ? startExplain() : notAllowed));
-  ipcMain.handle(IPC.explainHotkey, () => explainHotkey);
+  ipcMain.handle(IPC.explainHotkey, () => explainHotkey.current());
   // Freeze overlay windows only; the coordinator ignores any other sender.
   ipcMain.handle(IPC.freezeInit, (event) => freeze.init(event.sender.id));
   ipcMain.on(IPC.freezeState, (event, state: unknown) => freeze.setState(event.sender.id, state));
@@ -691,6 +692,8 @@ app.whenReady().then(async () => {
   });
 
   recorder.onStatusChanged((status) => {
+    // Before the bar is shown, so its Explain hotkey query already sees the registration.
+    explainHotkey.sync(status.state === "recording");
     broadcast(IPC.statusChanged, status);
     syncRecordingWindows(status);
   });
@@ -729,11 +732,6 @@ app.whenReady().then(async () => {
   if (!globalShortcut.register("CommandOrControl+Shift+R", toggle)) {
     log.warn("Global shortcut registration failed");
   }
-  // Explain: if another app owns the hotkey the recording bar's Explain button still works.
-  if (registerHotkey(globalShortcut, EXPLAIN_HOTKEY, () => void startExplain(), log)) {
-    explainHotkey = EXPLAIN_HOTKEY;
-  }
-
   instanceReady?.();
 });
 
