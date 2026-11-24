@@ -51,25 +51,38 @@ func axElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
     return (value as! AXUIElement)
 }
 
+/// Int(x) traps on NaN, infinity and huge values, and AX geometry can be any of them (NAT-10).
+func safeInt(_ value: CGFloat) -> Int? {
+    let d = Double(value)
+    guard d.isFinite, abs(d) < 1_000_000 else { return nil }
+    return Int(d.rounded())
+}
+
 func axBounds(_ element: AXUIElement) -> [String: Int]? {
     var posRef: CFTypeRef?
     var sizeRef: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
           AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
-          let p = posRef, let s = sizeRef else { return nil }
+          let p = posRef, let s = sizeRef,
+          CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
     var point = CGPoint.zero
     var size = CGSize.zero
     guard AXValueGetValue(p as! AXValue, .cgPoint, &point),
-          AXValueGetValue(s as! AXValue, .cgSize, &size) else { return nil }
-    return ["x": Int(point.x.rounded()), "y": Int(point.y.rounded()),
-            "width": Int(size.width.rounded()), "height": Int(size.height.rounded())]
+          AXValueGetValue(s as! AXValue, .cgSize, &size),
+          let x = safeInt(point.x), let y = safeInt(point.y),
+          let w = safeInt(size.width), let h = safeInt(size.height) else { return nil }
+    return ["x": x, "y": y, "width": w, "height": h]
 }
 
+/// Control and line-separator characters become a space: U+0085, U+2028 and U+2029 split a line in some
+/// readers (NAT-3).
 func clean(_ s: String?) -> String {
     guard let s = s else { return "" }
     var out = ""
     for scalar in s.unicodeScalars {
-        out.unicodeScalars.append(scalar.value < 0x20 || scalar.value == 0x7f ? " " : scalar)
+        let v = scalar.value
+        let blank = v < 0x20 || v == 0x7f || v == 0x85 || v == 0x2028 || v == 0x2029
+        out.unicodeScalars.append(blank ? " " : scalar)
         if out.count >= 200 { break }
     }
     return out
@@ -105,14 +118,42 @@ func elementName(_ element: AXUIElement) -> String {
     return clean(axString(element, kAXDescriptionAttribute as String))
 }
 
+/// pids we switched AXManualAccessibility on for. Lookups run on a concurrent queue, so every access holds the lock.
 var manualAccessibilityDone = Set<pid_t>()
+let manualLock = NSLock()
 
 /// Electron apps only expose their tree once AXManualAccessibility is set. Harmless for other apps.
-func enableManualAccessibility(pid: pid_t) {
-    if manualAccessibilityDone.contains(pid) { return }
-    manualAccessibilityDone.insert(pid)
+/// Returns true when the attribute was newly set by this call, so the caller can retry its hit test once.
+/// A pid is marked done only after the set succeeded (NAT-9).
+func enableManualAccessibility(pid: pid_t) -> Bool {
+    manualLock.lock()
+    defer { manualLock.unlock() }
+    if manualAccessibilityDone.contains(pid) { return false }
     let app = AXUIElementCreateApplication(pid)
-    _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    let result = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    if result == .success {
+        manualAccessibilityDone.insert(pid)
+        return true
+    }
+    return false
+}
+
+/// Puts every app back the way we found it: the attribute is switched off again on exit (NAT-9).
+func disableManualAccessibility() {
+    manualLock.lock()
+    let pids = manualAccessibilityDone
+    manualAccessibilityDone.removeAll()
+    manualLock.unlock()
+    for pid in pids {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.2)
+        _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanFalse)
+    }
+}
+
+func shutdown() -> Never {
+    disableManualAccessibility()
+    exit(0)
 }
 
 struct LookupOutcome {
@@ -120,18 +161,34 @@ struct LookupOutcome {
     var reason: String?
 }
 
-func lookupAtPoint(x: Double, y: Double) -> LookupOutcome {
+/// The ancestry walk may use this much of a lookup; what it collected by then is kept (NAT-5).
+let ancestryBudgetSeconds = 0.2
+
+/// `publish` is called as soon as the element itself is resolved, before the ancestry walk, so a timeout
+/// during the walk still returns the control instead of losing the click.
+func lookupAtPoint(x: Double, y: Double, started: Date = Date(),
+                   publish: (LookupOutcome) -> Void = { _ in }) -> LookupOutcome {
     let system = AXUIElementCreateSystemWide()
     AXUIElementSetMessagingTimeout(system, Float(lookupTimeoutSeconds))
     var found: AXUIElement?
-    let err = AXUIElementCopyElementAtPosition(system, Float(x), Float(y), &found)
-    guard err == .success, let element = found else {
+    var err = AXUIElementCopyElementAtPosition(system, Float(x), Float(y), &found)
+    guard err == .success, var element = found else {
         return LookupOutcome(target: nil, reason: err == .cannotComplete ? "timeout" : "opaque_toolkit")
     }
 
     var pid: pid_t = 0
     AXUIElementGetPid(element, &pid)
-    if pid != 0 { enableManualAccessibility(pid: pid) }
+    if pid != 0, enableManualAccessibility(pid: pid) {
+        // The app only starts exposing its tree after the attribute is set: hit-test once more.
+        var retried: AXUIElement?
+        err = AXUIElementCopyElementAtPosition(system, Float(x), Float(y), &retried)
+        if err == .success, let again = retried {
+            element = again
+            var p2: pid_t = 0
+            AXUIElementGetPid(again, &p2)
+            if p2 != 0 { pid = p2 }
+        }
+    }
 
     let rawRole = axString(element, kAXRoleAttribute as String) ?? ""
     let subrole = axString(element, kAXSubroleAttribute as String)
@@ -144,73 +201,127 @@ func lookupAtPoint(x: Double, y: Double) -> LookupOutcome {
     var parents: [(String, String)] = []
     var windowTitle = ""
     var windowBounds: [String: Int]?
+    let identifier = axString(element, kAXIdentifierAttribute as String)
+    var appInfo: [String: Any]?
+    if pid != 0, let app = NSRunningApplication(processIdentifier: pid) {
+        var info: [String: Any] = ["name": clean(app.localizedName)]
+        if let bundle = app.bundleIdentifier { info["bundleId"] = bundle }
+        appInfo = info
+    }
+
+    /// The outcome from what has been collected so far.
+    func build() -> LookupOutcome {
+        var shown = Array(parents.reversed())
+        if shown.count > 6 { shown = [shown[0]] + Array(shown.suffix(5)) }
+
+        var weak = name.isEmpty || role == "other"
+        if !weak, role != "window", let b = bounds, let w = windowBounds,
+           let bw = b["width"], let bh = b["height"], let ww = w["width"], let wh = w["height"] {
+            // Doubles: the product of two Ints can overflow (NAT-10).
+            let winArea = Double(ww) * Double(wh)
+            if winArea > 0, Double(bw) * Double(bh) / winArea > 0.6 { weak = true }
+        }
+
+        var target: [String: Any] = [
+            "grounding": weak ? "accessibility_weak" : "accessibility",
+            "source": "ax",
+            "role": role,
+            "nativeRole": subrole != nil && !(subrole ?? "").isEmpty ? "\(rawRole)/\(subrole!)" : rawRole,
+            "name": name,
+            "isPassword": isPassword,
+        ]
+        if let id = identifier, !id.isEmpty { target["axIdentifier"] = clean(id) }
+        if let b = bounds { target["bounds"] = b }
+        if !shown.isEmpty { target["ancestry"] = shown.map { ["role": $0.0, "name": $0.1] } }
+        if let info = appInfo { target["app"] = info }
+        if !windowTitle.isEmpty { target["windowTitle"] = windowTitle }
+        return LookupOutcome(target: target, reason: weak ? "opaque_toolkit" : nil)
+    }
+
+    // The element is resolved: hand it over now. Everything below only adds detail.
+    publish(build())
+
     var current = element
     for _ in 0..<24 {
+        if Date().timeIntervalSince(started) >= ancestryBudgetSeconds { break }
         guard let parent = axElement(current, kAXParentAttribute as String) else { break }
         let pRaw = axString(parent, kAXRoleAttribute as String) ?? ""
         if pRaw == "AXApplication" { break }
         let pRole = normalisedRole(role: pRaw, subrole: axString(parent, kAXSubroleAttribute as String))
         let pName = elementName(parent)
         parents.append((pRole, pName))
-        if pRaw == "AXWindow" { windowTitle = pName; windowBounds = axBounds(parent) }
+        if pRaw == "AXWindow" {
+            windowTitle = pName
+            windowBounds = axBounds(parent)
+            break // the first window parent ends the walk
+        }
         current = parent
     }
-    parents.reverse()
-    if parents.count > 6 { parents = [parents[0]] + Array(parents.suffix(5)) }
-
-    var weak = name.isEmpty || role == "other"
-    if !weak, role != "window", let b = bounds, let w = windowBounds {
-        let winArea = Double(w["width"]! * w["height"]!)
-        if winArea > 0, Double(b["width"]! * b["height"]!) / winArea > 0.6 { weak = true }
-    }
-
-    var target: [String: Any] = [
-        "grounding": weak ? "accessibility_weak" : "accessibility",
-        "source": "ax",
-        "role": role,
-        "nativeRole": subrole != nil && !(subrole ?? "").isEmpty ? "\(rawRole)/\(subrole!)" : rawRole,
-        "name": name,
-        "isPassword": isPassword,
-    ]
-    if let id = axString(element, kAXIdentifierAttribute as String), !id.isEmpty {
-        target["axIdentifier"] = clean(id)
-    }
-    if let b = bounds { target["bounds"] = b }
-    if !parents.isEmpty { target["ancestry"] = parents.map { ["role": $0.0, "name": $0.1] } }
-    if pid != 0, let app = NSRunningApplication(processIdentifier: pid) {
-        var appInfo: [String: Any] = ["name": clean(app.localizedName)]
-        if let bundle = app.bundleIdentifier { appInfo["bundleId"] = bundle }
-        target["app"] = appInfo
-    }
-    if !windowTitle.isEmpty { target["windowTitle"] = windowTitle }
-    return LookupOutcome(target: target, reason: weak ? "opaque_toolkit" : nil)
+    return build()
 }
 
 /// Runs the AX lookup on a background queue and gives up after 300 ms.
 let axQueue = DispatchQueue(label: "handover.ax-lookup", attributes: .concurrent)
-var stuckLookups = 0
+/// Lookups still blocked inside AX, in total and per owning process (NAT-11): one hung app stops lookups
+/// against that app only, not against every other window.
+var stuckTotal = 0
+var stuckByPid = [pid_t: Int]()
 let stuckLock = NSLock()
+let maxStuckTotal = 8
+let maxStuckPerPid = 2
+
+/// The process that owns the topmost normal window at the point, or 0. Only the pid and the bounds of each
+/// window are read; window names (which would need Screen Recording permission) never are.
+func windowOwnerPid(x: Double, y: Double) -> pid_t {
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return 0 }
+    for window in list {
+        guard (window[kCGWindowLayer as String] as? Int) == 0,
+              let boundsDict = window[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+              rect.contains(CGPoint(x: x, y: y)),
+              let owner = window[kCGWindowOwnerPID as String] as? Int else { continue }
+        return pid_t(owner)
+    }
+    return 0
+}
 
 func lookupWithTimeout(x: Double, y: Double) -> LookupOutcome {
+    let owner = windowOwnerPid(x: x, y: y)
     stuckLock.lock()
-    let stuck = stuckLookups
-    stuckLock.unlock()
-    if stuck >= 4 { return LookupOutcome(target: nil, reason: "timeout") }
-
-    final class Box { var value: LookupOutcome? }
-    let box = Box()
-    let done = DispatchSemaphore(value: 0)
-    stuckLock.lock(); stuckLookups += 1; stuckLock.unlock()
-    axQueue.async {
-        let result = lookupAtPoint(x: x, y: y)
-        box.value = result
-        stuckLock.lock(); stuckLookups -= 1; stuckLock.unlock()
-        done.signal()
-    }
-    if done.wait(timeout: .now() + lookupTimeoutSeconds) == .timedOut {
+    if stuckTotal >= maxStuckTotal || (stuckByPid[owner] ?? 0) >= maxStuckPerPid {
+        stuckLock.unlock()
         return LookupOutcome(target: nil, reason: "timeout")
     }
-    return box.value ?? LookupOutcome(target: nil, reason: "opaque_toolkit")
+    stuckTotal += 1
+    stuckByPid[owner, default: 0] += 1
+    stuckLock.unlock()
+
+    /// The latest outcome the lookup published; read under the lock after a timeout.
+    final class Box { var latest: LookupOutcome?; var final: LookupOutcome? }
+    let box = Box()
+    let boxLock = NSLock()
+    let done = DispatchSemaphore(value: 0)
+    let started = Date()
+    axQueue.async {
+        let result = lookupAtPoint(x: x, y: y, started: started) { partial in
+            boxLock.lock(); box.latest = partial; boxLock.unlock()
+        }
+        boxLock.lock(); box.final = result; boxLock.unlock()
+        stuckLock.lock()
+        stuckTotal -= 1
+        let n = (stuckByPid[owner] ?? 1) - 1
+        if n <= 0 { stuckByPid.removeValue(forKey: owner) } else { stuckByPid[owner] = n }
+        stuckLock.unlock()
+        done.signal()
+    }
+    let timedOut = done.wait(timeout: .now() + lookupTimeoutSeconds) == .timedOut
+    boxLock.lock()
+    defer { boxLock.unlock() }
+    if let final = box.final { return final }
+    // Timed out: an element that was already resolved is returned without its full ancestry (NAT-5).
+    if let partial = box.latest, partial.target != nil { return partial }
+    return LookupOutcome(target: nil, reason: timedOut ? "timeout" : "opaque_toolkit")
 }
 
 // MARK: - Click pipeline (serial, off the tap callback)
@@ -240,8 +351,8 @@ func handleClick(button: String, count: Int, x: Double, y: Double) {
             "type": "click",
             "button": button,
             "clickCount": min(max(count, 1), 2),
-            "x": Int(x.rounded()),
-            "y": Int(y.rounded()),
+            "x": safeInt(CGFloat(x)) ?? 0,
+            "y": safeInt(CGFloat(y)) ?? 0,
             "lookupMs": Int(Date().timeIntervalSince(started) * 1000),
         ]
         if let target = outcome.target { message["target"] = target }
@@ -258,8 +369,8 @@ var tapSource: CFRunLoopSource?
 let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     switch type {
     case .tapDisabledByTimeout, .tapDisabledByUserInput:
-        // Only re-enable while still allowed; the poll below tears it down if trust is gone.
-        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+        // Only re-enable while still allowed; the poll below tears the tap down when trust is gone (NAT-1).
+        if AXIsProcessTrusted(), let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
     case .leftMouseDown, .rightMouseDown, .otherMouseDown:
         let button = type == .leftMouseDown ? "left" : (type == .rightMouseDown ? "right" : "middle")
         let count = Int(event.getIntegerValueField(.mouseEventClickState))
@@ -294,6 +405,36 @@ func installTap() -> Bool {
     return true
 }
 
+/// Disable, remove and invalidate the tap and forget it (NAT-1).
+func teardownTap() {
+    if let source = tapSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes) }
+    if let tap = eventTap {
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFMachPortInvalidate(tap)
+    }
+    eventTap = nil
+    tapSource = nil
+}
+
+/// True only when the tap exists, its port is valid and it is enabled: the one honest meaning of `hook`.
+func tapHealthy() -> Bool {
+    guard let tap = eventTap else { return false }
+    return CFMachPortIsValid(tap) && CGEvent.tapIsEnabled(tap: tap)
+}
+
+/// One pass of the poll: tear down when trust is gone or the tap died, (re)build when trusted and missing.
+/// Returns the trust and hook state to report.
+func reconcileTap() -> (trusted: Bool, hook: Bool) {
+    let trusted = AXIsProcessTrusted()
+    if !trusted {
+        teardownTap()
+    } else if eventTap != nil, !tapHealthy() {
+        teardownTap() // rebuilt just below
+    }
+    if trusted, eventTap == nil { _ = installTap() }
+    return (trusted, tapHealthy())
+}
+
 func capabilities(hook: Bool, trusted: Bool) -> [String: Any] {
     return ["type": "capabilities", "hook": hook, "accessibility": trusted, "uia": false,
             "interactive": true, "elevated": false, "space": "macos_global_points"]
@@ -321,6 +462,7 @@ func selftest() -> Int32 {
         report["reason"] = "permission_missing"
     }
     emit(report)
+    disableManualAccessibility()
     return 0
 }
 
@@ -329,25 +471,33 @@ func run() -> Int32 {
           "platform": "macos", "protocol": 1])
     if CommandLine.arguments.contains("--selftest") { return selftest() }
 
-    var lastTrusted = AXIsProcessTrusted()
-    var lastHook = installTap()
+    var (lastTrusted, lastHook) = reconcileTap()
     emit(capabilities(hook: lastHook, trusted: lastTrusted))
     if !lastHook {
         emit(["type": "error", "message": "event tap unavailable (permission not granted yet)"])
     }
 
-    // Exit when the parent closes our stdin.
+    // Exit when the parent closes our stdin, putting AXManualAccessibility back first.
     Thread.detachNewThread {
         while FileHandle.standardInput.availableData.count > 0 {}
-        exit(0)
+        shutdown()
+    }
+    // Same on SIGTERM and SIGINT.
+    var signalSources: [DispatchSourceSignal] = []
+    for sig in [SIGTERM, SIGINT] {
+        signal(sig, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+        source.setEventHandler { shutdown() }
+        source.resume()
+        signalSources.append(source)
     }
 
-    // Poll trust every 1.5 s: report changes, retry the tap until it can be created.
+    // Poll every 1.5 s: tear the tap down when trust is gone, rebuild it when it died or was never created,
+    // and report any change. `hook` is true only while the tap exists and is enabled (NAT-1).
     let timer = DispatchSource.makeTimerSource(queue: .main)
     timer.schedule(deadline: .now() + 1.5, repeating: 1.5)
     timer.setEventHandler {
-        let trusted = AXIsProcessTrusted()
-        let hook = installTap()
+        let (trusted, hook) = reconcileTap()
         if trusted != lastTrusted || hook != lastHook {
             lastTrusted = trusted
             lastHook = hook
