@@ -120,3 +120,20 @@ That shows the file compiled. It does not show that the `RMDir /r "$LOCALAPPDATA
 `node_modules` is back to the darwin-arm64 layout, with the win32-x64 packages also present.
 
 **This installer has not been run on Windows.** Only the package structure, the binaries' PE headers and the NSIS compile were checked.
+
+## Rebuild at 7e27551
+
+The task branch moved to 7e27551 (a review found a regression in the package builder; TypeScript only). Merged `origin/task/workflow-recording-assistant` (clean merge, `d342741`). `native/`, `build/`, `package.json`, `package-lock.json` and `scripts/` are unchanged since aafc378. Same route and checks as the aafc378 rebuild, Node 24.19.0.
+
+- `npm run typecheck` exit 0. `npm test` exit 0: 476 tests, 476 pass, 0 fail, 0 skipped.
+- Helper rebuilt (old output deleted first): 0 warnings, 0 errors, PE x64 (`0x8664`, PE32+), `PerMonitorV2` and `asInvoker` present, 25,600 bytes, sha256 `b04a1fa8b7460866d0e1f846a06a25b2b9670e92bfd9d12753e0fa20069b10f8` (same bytes as at aafc378, as expected: the C# did not change). `release/win-unpacked/resources/helper/HandoverHelper.exe` has the same size and hash. As before, it was checked in `win-unpacked`, not extracted from the finished `.exe`.
+- Before building, the darwin natives and the macOS-built `node-pty/build` folder were moved out of `node_modules` (restored afterwards), so the tree matches CI. `models:fetch` (7 files verified), compliance under the win32 shim (281 licenses, 49 sources), `npm run build`, then `electron-builder --win nsis --x64` with `DEBUG=electron-builder`, exit 0.
+- `verify-windows-package.mjs x64` passes (helper 25600 bytes; "Verified native x64 package, compliance sources, notices, and no standalone FFmpeg"). PE check: 31 files, 15 PE x64, 11 PE arm64, 3 Mach-O, 2 ELF, as before.
+- `build/installer.nsh`: log shows `include: build/installer.nsh`; makensis ran with `-WX` in both passes, 0 "warning" lines. Quoted: `Install: 4 pages (256 bytes), 1 section (32792 bytes), 2289 instructions (64092 bytes), 10318 strings (123544 bytes), 26 language tables (9412 bytes).` and `Total size: 657072496 / 657538606 bytes (99.9%)`.
+
+Outputs:
+- `~/Desktop/Handover-0.1.0-windows-x64-7e27551.exe`: 657,072,496 bytes, sha256 `d32128d34a881f9156db92fa479eefe71f014c51506764bb6dd7c81372a4ae9b`. Unsigned.
+- `~/Desktop/Handover-retest-pack-7e27551.zip`: 656,932,239 bytes, sha256 `f9d648cd97a2a94f922c812a501fd6e5230e0b6655797d0140f32c3b8e91ca5c`. Folder `Handover-retest-pack-7e27551/` with the installer (byte-identical to the file above), `1-Windows-retest-script.md`, `2-Release-notes.md`.
+- The two superseded aafc378 files (`...-aafc378.exe`, `...-aafc378.zip`) were deleted from the Desktop so the wrong build cannot be sent. Nothing else on the Desktop was touched.
+
+**This installer has not been run on Windows.**
