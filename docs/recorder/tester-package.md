@@ -29,7 +29,7 @@ Build lanes implement **this** document. Use the full spec only to look up a fie
     ├── S02_before_full_annotated.png    only when the step has highlights
     └── S05_after_full.png               last step only
 ```
-The export also writes `<slug>__<package_id>.zip` holding the same folder. `<slug>` is the process title in lower kebab case, at most 40 characters. `package_id` is `pkg_` + a ULID.
+The export also writes `handover-<slug>__<package_id>.zip` (it starts with `handover-` so it is easy to find) holding the same folder. `<slug>` is the process title in lower kebab case, at most 40 characters. `package_id` is `pkg_` + a ULID.
 
 All JSON is UTF-8 with sorted keys and LF line endings. `jsonl` files have one object per line in id order. Images are PNG with metadata stripped, and blurs are burned into the pixels.
 
@@ -130,7 +130,7 @@ Highlight render (fixed): rect and arrow 3 px `#E5484D`, arrow with a 12 px fill
 A narration segment attaches to the step whose `[t_start_ms − 3 s, t_end_ms + 1 s]` window it overlaps most; `anchor_confidence < 0.6` when it overlaps more than one step.
 
 ### 4.5 `gaps.jsonl`
-`{gap_id: "gap_0001", t_start_ms, t_end_ms, reason, after_step?, before_step?}` with reason ∈ `user_paused`, `helper_restart`, `capture_lost`, `permission_lost`. Freeze time is not a gap; it is `explain_ms`.
+`{gap_id: "gap_0001", t_start_ms, t_end_ms, reason, after_step?, before_step?}` with reason ∈ `user_paused`, `helper_restart`, `capture_lost`, `permission_lost`, `elevated_window` (an administrator window was in front; optional `process` names it). Freeze time is not a gap; it is `explain_ms`.
 
 ### 4.6 Redaction in the tester build
 The only redaction is the user's **blur** in review: a rectangle on a step's before frame, or, on the last step, on its after frame (`blur_rect` carries `frame: "before" | "after"`, default `before`; the rectangle is in that image's pixels). A before-frame rectangle also covers the after frame of the same step, since it is the same screen a moment later. A rectangle is burned into the full, annotated and crop images of that step and listed in `redacted_regions_fpx` of the frame it is on. The step then gets the flag `contains_redaction`. A password field on a step is blurred automatically in its before frame and, on the last step, in its after frame; the blurred rectangle is clamped to the frame first, and what is listed in `redacted_regions_fpx` is what was blurred. When the user edits a step's summary, the control's name is replaced by `[REDACTED]` in `target.element.name` (`redacted: true`, class `user_marked`), in `target.ancestry` and in the `role_name_path` locator, because the same words would otherwise survive there. A comment or summary can be edited by hand. There are no automatic detectors in the tester build.

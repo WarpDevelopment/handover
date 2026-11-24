@@ -369,6 +369,177 @@ test("gap convention: open without tEndMs, closed by a later gap with the same r
   assert.equal(JSON.parse(text(open, "manifest.json")).recording.paused_ms, 7000);
 });
 
+test("G1: an elevated_window gap reaches gaps.jsonl, validates, and PROCESS.md says it was not observed between the right steps", async () => {
+  const { session } = await load();
+  const base = session.events.filter((e) => e.type !== "gap");
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...base,
+    gap(60, 3100, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(61, 5100, { reason: "elevated_window", tEndMs: 5100 }),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(gaps.length, 1);
+  assert.equal(gaps[0].reason, "elevated_window");
+  assert.equal(gaps[0].process, "Taskmgr");
+  assert.deepEqual([gaps[0].t_start_ms, gaps[0].t_end_ms, gaps[0].after_step, gaps[0].before_step], [3100, 5100, "S02", "S03"]);
+
+  const md = text(files, "PROCESS.md");
+  const line =
+    "Not observed (2.0 s): an administrator window (Taskmgr) was in front. " +
+    "Windows does not let Handover see clicks there. Ask the author what was done.";
+  const at = md.indexOf(line);
+  assert.ok(at > md.indexOf("**S02."), "after step S02");
+  assert.ok(at < md.indexOf("**S03."), "before step S03");
+  assert.equal(md.split(line).length - 1, 1, "stated once in the step order");
+  assert.ok(md.slice(md.indexOf("## What the recorder could not see")).includes("gap_0001 (S02 → S03): an administrator window the recorder cannot see into, 2.0 s."));
+
+  // It is not a pause: no paused time, and the timing sum still holds.
+  const m = JSON.parse(text(files, "manifest.json"));
+  assert.equal(m.recording.paused_ms, 0);
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "g1-"));
+  try {
+    await writeTo(dir, files);
+    assert.deepEqual((await validatePackage(dir)).errors, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G1: an elevated_window gap with no process name still reads plainly", async () => {
+  const { session } = await load();
+  const base = session.events.filter((e) => e.type !== "gap");
+  const events = [
+    ...base,
+    { seq: 60, t: 3100, epoch: 1795500003100, type: "gap", source: "t", payload: { reason: "elevated_window", tEndMs: 5100 } },
+  ];
+  const md = text(await buildPackage({ ...session, events }, [], CTX), "PROCESS.md");
+  assert.match(md, /Not observed \(2\.0 s\): an administrator window was in front\. Windows does not let Handover see clicks there\. Ask the author what was done\./);
+});
+
+/** The synthetic session plus a switch to Task Manager and a switch away, around an elevated_window gap. */
+async function blindSession(opts: { start: number; end?: number; process?: string; switchIn: number; switchOut: number }) {
+  const { session } = await load();
+  const activate = (seq: number, t: number, app: string, file: string) => ({
+    seq, t, epoch: 1795500000000 + t, type: "app.activate", source: "t",
+    payload: { app, title: app, path: file, bounds: { x: 0, y: 0, width: 800, height: 600 } },
+  });
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    activate(70, opts.switchIn, "Task Manager", "C:\\Windows\\System32\\Taskmgr.exe"),
+    activate(71, opts.switchOut, "Notepad", "C:\\Windows\\System32\\notepad.exe"),
+    gap(72, opts.start, { reason: "elevated_window", ...(opts.process ? { process: opts.process } : {}) }),
+    ...(opts.end === undefined ? [] : [gap(73, opts.end, { reason: "elevated_window", tEndMs: opts.end })]),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const steps = text(files, "steps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const idOf = (summary: string) => steps.find((s) => s.summary === summary)?.step_id as string;
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  return { files, gaps, taskmgr: idOf("Switch to Task Manager"), notepad: idOf("Switch to Notepad"), md: text(files, "PROCESS.md") };
+}
+
+test("G1 F1: a switch to the admin window just AFTER the gap opened is the step the gap follows", async () => {
+  // The helper's tick reported the stretch at 3,100; the active-window poll saw the switch at 3,400.
+  const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  assert.ok(r.taskmgr && r.notepad, "both switch steps exist");
+  assert.equal(r.gaps[0].after_step, r.taskmgr);
+  // D2: the written interval starts no earlier than the step it follows (3,400, not 3,100).
+  assert.equal(r.gaps[0].t_start_ms, 3400);
+  const notObserved = r.md.indexOf("Not observed (1.4 s)");
+  assert.ok(notObserved > r.md.indexOf(`**${r.taskmgr}.`), "the notice is below 'Switch to Task Manager'");
+  assert.ok(notObserved < r.md.indexOf(`**${r.notepad}.`), "and above the step that leaves");
+});
+
+test("G1 F1: the step that leaves the admin window just BEFORE the gap closed is the step after the gap", async () => {
+  const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  assert.equal(r.gaps[0].before_step, r.notepad, "a step 300 ms before the end is not inside the gap");
+  // D2: the written interval ends no later than the step after it (4,800, not 5,100).
+  assert.equal(r.gaps[0].t_end_ms, 4800);
+});
+
+test("G1 D2: no named step lies inside the written interval of an elevated_window gap", async () => {
+  const r = await blindSession({ start: 3100, end: 5100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  const steps = text(r.files, "steps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const g = r.gaps[0];
+  const inside = steps.filter((s) => s.t_start_ms > g.t_start_ms && s.t_start_ms < g.t_end_ms);
+  assert.deepEqual(inside.map((s) => s.step_id), []);
+  assert.ok(g.t_end_ms >= g.t_start_ms);
+});
+
+test("G1 D1: an elevated_window open event with tStartMs starts the gap there, not at the event's own time", async () => {
+  const { session } = await load();
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    gap(60, 6400, { reason: "elevated_window", process: "Taskmgr", tStartMs: 6000 }), // written 400 ms after the resume
+    gap(61, 8000, { reason: "elevated_window", tEndMs: 8000 }),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const g = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l))[0];
+  assert.equal(g.t_start_ms, 6000);
+});
+
+test("G1 D3: the switch-in tolerance is 2.5 s (the poll runs every 1.6 s after a browser)", async () => {
+  // Placed after the session's own clicks and its freeze (6,000 to 9,000), which would otherwise absorb the switch.
+  const within = await blindSession({ start: 16200, end: 19600, process: "Taskmgr", switchIn: 18600, switchOut: 19400 });
+  assert.ok(within.taskmgr, "the switch step exists");
+  assert.equal(within.gaps[0].after_step, within.taskmgr, "2.4 s after the start still counts");
+  const beyond = await blindSession({ start: 16200, end: 19600, process: "Taskmgr", switchIn: 18800, switchOut: 19400 });
+  assert.ok(beyond.taskmgr, "the switch step exists");
+  assert.notEqual(beyond.gaps[0].after_step, beyond.taskmgr, "2.6 s after the start does not");
+});
+
+test("G1 F1: without a process name the tolerance does not apply to the switch-in", async () => {
+  const r = await blindSession({ start: 3100, end: 5100, switchIn: 3400, switchOut: 4800 });
+  assert.notEqual(r.gaps[0].after_step, r.taskmgr, "cannot match a switch to a process we were not told");
+});
+
+test("G1: an elevated_window gap that never closes runs to the end of the session", async () => {
+  const r = await blindSession({ start: 3100, process: "Taskmgr", switchIn: 3400, switchOut: 4800 });
+  const m = JSON.parse(text(r.files, "manifest.json"));
+  assert.equal(r.gaps[0].t_end_ms, m.recording.duration_ms);
+  assert.equal(m.recording.paused_ms, 0, "a blind spot is never paused time");
+});
+
+test("G1: an elevated_window gap overlapping a user_paused gap keeps both, and counts pause time once", async () => {
+  const { session } = await load();
+  const gap = (seq: number, t: number, payload: Record<string, unknown>) => ({
+    seq, t, epoch: 1795500000000 + t, type: "gap", source: "t", payload,
+  });
+  const events = [
+    ...session.events.filter((e) => e.type !== "gap"),
+    gap(60, 12000, { reason: "elevated_window", process: "Taskmgr" }),
+    gap(61, 13000, { reason: "user_paused" }),
+    gap(62, 15000, { reason: "user_paused", tEndMs: 15000 }),
+    gap(63, 16000, { reason: "elevated_window", tEndMs: 16000 }),
+  ];
+  const files = await buildPackage({ ...session, events }, [], CTX);
+  const gaps = text(files, "gaps.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(
+    gaps.map((g) => [g.reason, g.t_start_ms, g.t_end_ms]).sort(),
+    [["elevated_window", 12000, 16000], ["user_paused", 13000, 15000]],
+  );
+  const m = JSON.parse(text(files, "manifest.json"));
+  assert.equal(m.recording.paused_ms, 2000);
+  assert.equal(m.recording.task_ms + m.recording.explain_ms + m.recording.paused_ms, m.recording.duration_ms);
+  const dir = await mkdtemp(path.join(os.tmpdir(), "g1b-"));
+  try {
+    await writeTo(dir, files);
+    assert.deepEqual((await validatePackage(dir)).errors, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("deleting the last step leaves no after frame: a frame taken after the deleted action is not 'about 500 ms after' the new last step", async () => {
   const { session } = await load();
   const files = await buildPackage(session, [{ edit_id: "e1", at: "t", op: "delete_step", step_id: "S07" }], CTX);

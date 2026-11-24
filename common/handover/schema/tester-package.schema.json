@@ -242,7 +242,8 @@
         "gap_id": { "$ref": "#/$defs/id_gap" },
         "t_start_ms": { "$ref": "#/$defs/ms" },
         "t_end_ms": { "$ref": "#/$defs/ms" },
-        "reason": { "enum": ["user_paused", "helper_restart", "capture_lost", "permission_lost"] },
+        "reason": { "enum": ["user_paused", "helper_restart", "capture_lost", "permission_lost", "elevated_window"] },
+        "process": { "type": "string", "maxLength": 60 },
         "after_step": { "$ref": "#/$defs/id_step" },
         "before_step": { "$ref": "#/$defs/id_step" }
       }

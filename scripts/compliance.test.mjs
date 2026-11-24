@@ -1055,6 +1055,17 @@ test("release config ships NOTICE and the Whisper licences, installs per-user (R
   const nsh = await readFile(path.join(repoRoot, "build", "installer.nsh"), "utf8");
   assert.match(nsh, /!macro customInstallMode\s+StrCpy \$isForceCurrentInstall "1"/);
 
+  // G2: electron-builder copies the whole installer into %LOCALAPPDATA%\<name>-updater; this build has no
+  // auto-update, so the copy is deleted after install and again on uninstall. Recordings are never removed.
+  const updaterDir = `${manifest.name}-updater`;
+  assert.equal(updaterDir, "handover-updater");
+  const customInstall = /!macro customInstall\s[\s\S]*?!macroend/.exec(nsh)?.[0] ?? "";
+  const customUnInstall = /!macro customUnInstall\s[\s\S]*?!macroend/.exec(nsh)?.[0] ?? "";
+  for (const [name, body] of [["customInstall", customInstall], ["customUnInstall", customUnInstall]]) {
+    assert.match(body, /RMDir \/r "\$LOCALAPPDATA\\handover-updater"/, `${name} deletes the updater copy`);
+  }
+  assert.doesNotMatch(nsh, /RMDir[^\n]*\$(LOCALAPPDATA|APPDATA)\\Handover"/i, "recordings and settings are not removed");
+
   for (const file of narrationModelLicenseFiles()) {
     const text = await readFile(path.join(repoRoot, "third_party", "narration-model", file), "utf8");
     assert.ok(text.length > 100, `${file} is empty`);

@@ -112,3 +112,10 @@ test("the schema rejects a keyboard capability, a non-test build and bad ids", (
   assert.deepEqual(validateRecord("step", { ...good, future_field: 1 }, "s"), []);
   assert.ok(validateRecord("gap", { gap_id: "gap_0001", t_start_ms: 0, t_end_ms: 1, reason: "sleep" }, "g").length > 0);
 });
+
+test("G1: the gap schema enforces the 60-character limit on the elevated window's process name", () => {
+  const gap = { gap_id: "gap_0001", t_start_ms: 0, t_end_ms: 1, reason: "elevated_window" };
+  assert.deepEqual(validateRecord("gap", { ...gap, process: "Taskmgr" }, "g"), []);
+  assert.deepEqual(validateRecord("gap", { ...gap, process: "x".repeat(60) }, "g"), []);
+  assert.ok(validateRecord("gap", { ...gap, process: "x".repeat(61) }, "g").length > 0);
+});
