@@ -3,7 +3,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { enterShouldSave } from "./freeze-keys";
+import { enterShouldSave, showFocusBanner } from "./freeze-keys";
+
+test("N5: the focus banner shows only on the primary overlay, after the retry failed, while unfocused", () => {
+  const on = { primary: true, focusFailed: true, documentHasFocus: false };
+  assert.equal(showFocusBanner(on), true);
+  assert.equal(showFocusBanner({ ...on, primary: false }), false, "secondary displays never show it");
+  assert.equal(showFocusBanner({ ...on, focusFailed: false }), false, "not before the retry has failed");
+  assert.equal(showFocusBanner({ ...on, documentHasFocus: true }), false, "gone once the window has the keyboard");
+});
 
 const base = { key: "Enter", shiftKey: false, targetIsButton: false, documentHasFocus: true };
 

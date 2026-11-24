@@ -393,6 +393,7 @@ export const IPC = {
   reviewEdit: "review:edit",
   markReviewed: "sessions:mark-reviewed",
   actionError: "recorder:action-error",
+  freezeFocusFailed: "freeze:focus-failed",
 } as const;
 
 /** Shape exposed on `window.handover` by the preload bridge. */
@@ -489,6 +490,8 @@ export interface HandoverApi {
   freezeInit(): Promise<FreezeInit | null>;
   /** Freeze overlay only: report the shapes and comment drawn so far on this display. */
   freezeState(state: import("./handover/explain").ExplainResult): void;
+  /** Freeze overlay only: Windows refused this overlay the keyboard even after a retry. */
+  onFreezeFocusFailed(cb: () => void): () => void;
   /** Freeze overlay only: save everything drawn on every display and unfreeze. */
   freezeDone(): Promise<ActionResult>;
   /** Freeze overlay only: throw it all away and unfreeze. */

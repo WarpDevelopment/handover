@@ -116,7 +116,7 @@ test("pause writes an open gap{user_paused}, drops collector events, and resume 
     hand.click(1, 1); // recorded
     assert.equal((await controller.pause()).ok, true);
     assert.equal(controller.status().paused, true);
-    hand.click(2, 2); // PKG-11: reaches the log (the builder judges it by acted time)
+    hand.click(2, 2); // N7: acted inside the pause, so it never reaches the log
     hand.emit("app.activate", { app: "Mail", title: "Inbox" }); // dropped: paused
     await delay(30);
     assert.equal((await controller.resume()).ok, true);
@@ -126,7 +126,7 @@ test("pause writes an open gap{user_paused}, drops collector events, and resume 
 
     const events = await readEvents(root, started.sessionId!);
     const clicks = events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x);
-    assert.deepEqual(clicks, [1, 2, 3]);
+    assert.deepEqual(clicks, [1, 3]);
     assert.ok(!events.some((e) => e.type === "app.activate"));
     const gaps = events.filter((e) => e.type === "gap");
     assert.equal(gaps.length, 2);
@@ -246,21 +246,24 @@ test("clicks and app switches between explain.start and explain.end are never re
     await controller.stop();
 
     const events = await readEvents(root, started.sessionId!);
-    // PKG-11: the bus lets clicks through; the builder's acted-time filter drops the one in the freeze.
-    assert.deepEqual(events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x), [1, 500, 2]);
+    // N7: the click acted inside the freeze is dropped before it is stored.
+    assert.deepEqual(events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x), [1, 2]);
     assert.ok(!events.some((e) => e.type === "app.activate" || e.type === "clipboard.change"));
     const kept = withoutFrozenCollectorEvents(events).filter((e) => e.type === "pointer.click");
     assert.deepEqual(kept.map((e) => e.payload.x), [1, 2], "the overlay click is not a step");
   });
 });
 
-test("PKG-11: a click made while paused or frozen is logged but takes no frames; the builder drops it", async () => {
+test("N7: a click made while paused or frozen is dropped before it is stored; one made just before is kept", async () => {
   await withSessionsRoot(async (root) => {
     const { controller, hand, fedClicks } = makeController();
     const started = await controller.start();
     hand.click(1, 1); // a step: frames
+    await delay(40);
     await controller.pause();
-    hand.click(2, 2); // paused: logged for the builder to judge, but no before/after frames
+    // Reported just after the pause began, but the user acted 30 ms earlier: a real step.
+    hand.emit("pointer.click", { button: "left", clickCount: 1, space: "macos_global_points", x: 9, y: 9, lookupMs: 30 });
+    hand.click(2, 2); // paused: acted inside the pause, never stored
     await delay(30); // the gap's end time is rounded; keep the click clearly inside it
     await controller.resume();
     await controller.beginExplain();
@@ -272,9 +275,10 @@ test("PKG-11: a click made while paused or frozen is logged but takes no frames;
     assert.deepEqual(fedClicks, [1, 4], "no frame was captured for a click while paused or frozen");
 
     const events = await readEvents(root, started.sessionId!);
-    assert.deepEqual(events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x), [1, 2, 3, 4]);
+    assert.deepEqual(events.filter((e) => e.type === "pointer.click").map((e) => e.payload.x), [1, 9, 4]);
+    // The boundary click (9) acted before the pause began: the builder keeps it too.
     const kept = withoutFrozenCollectorEvents(events).filter((e) => e.type === "pointer.click");
-    assert.deepEqual(kept.map((e) => e.payload.x), [1, 4], "the builder drops both by acted time (pause gap and freeze)");
+    assert.deepEqual(kept.map((e) => e.payload.x), [1, 9, 4]);
   });
 });
 

@@ -10,6 +10,7 @@ import type { DisplaysPayload, PointerClickPayload, TerminalCommandPayload } fro
 import { layoutChanged } from "../../common/handover/displays";
 import { sanitizeExplainResult } from "../../common/handover/explain";
 import { HELPER_FILE } from "../../common/handover/helper";
+import { clickLookupMs } from "../../common/handover/steps";
 import type { HelperStatus } from "../../common/handover/types";
 import type {
   DiscardResult,
@@ -175,11 +176,35 @@ export class RecorderController {
   private paused = false;
   private explain: { frames: FrozenFrame[]; displaySizes: Map<number, [number, number]> } | null = null;
   private annotationCounter = 0;
+  /** Store-clock spans (ms) of every pause and freeze so far; `end` is null while one is open. */
+  private quiet: { start: number; end: number | null }[] = [];
+
+  private openQuiet(store: SessionStore): void {
+    this.quiet.push({ start: store.elapsedMs(), end: null });
+  }
+
+  private closeQuiet(store: SessionStore): void {
+    const last = this.quiet[this.quiet.length - 1];
+    if (last && last.end === null) last.end = store.elapsedMs();
+  }
+
+  private actedWhileQuiet(click: PointerClickPayload): boolean {
+    const store = this.store;
+    if (!store || this.quiet.length === 0) return false;
+    const acted = store.elapsedMs() - clickLookupMs(click);
+    return this.quiet.some((q) => acted >= q.start && (q.end === null || acted < q.end));
+  }
 
   constructor(private readonly deps: RecorderDeps) {
     this.host = new CollectorHost(this.bus);
     this.bus.setFilter((input) => {
-      if (input.type === EventType.PointerClick) return this.deps.isOwnWindowClick?.(input.payload) ?? false;
+      if (input.type === EventType.PointerClick) {
+        if (this.deps.isOwnWindowClick?.(input.payload) ?? false) return true;
+        // N7: a click is judged by when the user acted (report time minus the helper's lookup), so one
+        // made just before a pause or freeze still counts, and one made inside it never reaches disk
+        // (its control name could be private, and it is not a step).
+        return this.actedWhileQuiet(input.payload);
+      }
       return isOwnAppEvent(input);
     });
     // Every persisted event refreshes live status (event count, etc.).
@@ -388,6 +413,7 @@ export class RecorderController {
       if (!this.store || this.transition !== "none") return { ok: false, error: "Not recording" };
       if (this.paused) return { ok: true };
       if (this.explain) return { ok: false, error: "Finish the Explain step before pausing." };
+      this.openQuiet(this.store);
       this.bus.publish({ type: EventType.Gap, source: "user", payload: { reason: "user_paused" } });
       this.paused = true;
       this.bus.setBlocked(true);
@@ -408,6 +434,7 @@ export class RecorderController {
   }
 
   private closePauseGap(store: SessionStore): void {
+    this.closeQuiet(store);
     this.paused = false;
     this.bus.setBlocked(this.explain !== null);
     this.bus.publish({
@@ -442,6 +469,7 @@ export class RecorderController {
       const displaySizes = new Map<number, [number, number]>();
       for (const d of this.lastDisplays?.displays ?? []) displaySizes.set(d.id, d.sizeDpx);
       const pointer = this.deps.pointerDisplayId?.();
+      this.openQuiet(store);
       this.bus.publish({
         type: EventType.ExplainStart,
         source: "user",
@@ -501,6 +529,7 @@ export class RecorderController {
       source: "user",
       payload: { displayIds: ex.frames.map((f) => f.displayId) },
     });
+    if (this.store) this.closeQuiet(this.store);
     this.explain = null;
     this.bus.setBlocked(this.paused);
     this.emit();
@@ -567,6 +596,7 @@ export class RecorderController {
     this.bus.attach(store);
     this.paused = false;
     this.explain = null;
+    this.quiet = [];
     this.annotationCounter = 0;
     this.bus.publish({
       type: EventType.SessionStart,

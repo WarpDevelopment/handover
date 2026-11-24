@@ -68,6 +68,19 @@ test("APP-8: Ctrl+Shift+E is registered only while recording", () => {
   assert.equal(key.current(), null);
 });
 
+test("N2: a failed registration is tried once per recording, not on every status change", () => {
+  let attempts = 0;
+  const warnings: unknown[][] = [];
+  const shortcuts = { register: () => { attempts++; return false; }, unregister: () => {} };
+  const key = new ExplainHotkey(shortcuts, "X", () => {}, { warn: (...a) => warnings.push(a) });
+  for (let i = 0; i < 50; i++) key.sync(true); // a bus event each
+  assert.equal(attempts, 1);
+  assert.equal(warnings.length, 1);
+  key.sync(false);
+  key.sync(true); // the next recording tries again
+  assert.equal(attempts, 2);
+});
+
 test("APP-8: a hotkey another app owns is reported as unavailable and retried on the next recording", () => {
   let accept = false;
   const shortcuts = { register: () => accept, unregister: () => {} };

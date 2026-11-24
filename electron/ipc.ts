@@ -30,6 +30,7 @@ import type { RecorderController } from "./recorder/controller";
 import type { ScreenSourceService } from "./video/sources";
 import { exportPackage, suggestedZipName } from "./export";
 import { isReviewed, markReviewed } from "./reviewed-marker";
+import { deleteSessionFlow } from "./session-delete";
 import { isValidSessionId, sessionDir, sessionsRoot } from "./recorder/session-store";
 import type { SensitiveModelManager } from "./sensitive/model-manager";
 import { deleteSession, listSessions } from "./sessions";
@@ -59,6 +60,7 @@ export function registerIpc(
   isRecordingStartPending: () => boolean,
   canForceTerminalFinish: (sender: WebContents) => boolean,
   isLibrarySender: (sender: WebContents) => boolean,
+  onSessionDeleted: (sessionId: string) => void,
 ): void {
   const unavailable = { ok: false, error: "This action is only available from the Sessions window." } as const;
   ipcMain.handle(IPC.stop, (event, forceTerminal?: boolean) => {
@@ -185,22 +187,16 @@ export function registerIpc(
 
   ipcMain.handle(IPC.deleteSession, async (event, sessionId: string): Promise<DeleteSessionResult> => {
     if (!isLibrarySender(event.sender)) return unavailable;
-    if (!isValidSessionId(sessionId)) return { ok: false, error: "Unknown session." };
-    if (recorder.status().sessionId === sessionId) {
-      return { ok: false, error: "You can't delete a recording while it's still in progress." };
-    }
-    if (narration.isBusyWith(sessionId)) {
-      return { ok: false, error: "This recording is being transcribed. Wait for that to finish before deleting it." };
-    }
-    try {
-      await deleteSession(sessionId);
-      recorder.forgetSession(sessionId); // clear the "last completed" pointer if it was this one
-      return { ok: true };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      log.warn("delete failed:", error);
-      return { ok: false, error };
-    }
+    return deleteSessionFlow(sessionId, {
+      isRecording: (id) => recorder.status().sessionId === id,
+      isTranscribing: (id) => narration.isBusyWith(id),
+      deleteSession,
+      forget: [
+        (id) => recorder.forgetSession(id), // clear the "last completed" pointer if it was this one
+        onSessionDeleted, // and the review's cached pictures (APP-9)
+      ],
+      warn: (m) => log.warn(m),
+    });
   });
 
   ipcMain.handle(

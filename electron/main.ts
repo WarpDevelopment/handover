@@ -32,7 +32,7 @@ import { processSession } from "./pipeline";
 import { registerIpc } from "./ipc";
 import { isValidSessionId, sessionDir } from "./recorder/session-store";
 import { FreezeCoordinator, type OverlayWindow } from "./freeze";
-import { adaptOverlayWindow } from "./overlay-window";
+import { adaptOverlayWindow, OVERLAY_READY_TIMEOUT_MS } from "./overlay-window";
 import { ExplainHotkey } from "./explain-hotkey";
 import { ReviewService } from "./review";
 import { saveDiagnosticsToDesktop } from "./diagnostics-info";
@@ -185,8 +185,6 @@ const recorder = new RecorderController({
 
 const review = new ReviewService({ toolVersion: app.getVersion() });
 
-/** How long an overlay waits for its page to paint the frozen frame before it is shown anyway. */
-const OVERLAY_REVEAL_TIMEOUT_MS = 1500;
 const overlayReveal = new Map<number, () => void>();
 
 /** An overlay `BrowserWindow` as the freeze flow sees it. It is shown once its page has drawn the frame. */
@@ -196,7 +194,11 @@ function overlayWindow(display: Electron.Display): OverlayWindow {
   // A load failure, crash, hang, or a page that never became ready cancels the freeze (APP-1).
   const adapter = adaptOverlayWindow(win, {
     platform: process.platform,
-    revealTimeoutMs: OVERLAY_REVEAL_TIMEOUT_MS,
+    // Hidden until the page says it drew the frame; this is only the kill switch for a dead page (N1).
+    revealTimeoutMs: OVERLAY_READY_TIMEOUT_MS,
+    onFocusFailed: () => {
+      if (!win.isDestroyed()) win.webContents.send(IPC.freezeFocusFailed);
+    },
     onFailure: () => {
       void freeze.cancel();
       // Say why Explain vanished instead of leaving the user guessing.
@@ -546,6 +548,7 @@ app.whenReady().then(async () => {
       );
     },
     (sender) => Boolean(libraryWindow && !libraryWindow.isDestroyed() && sender === libraryWindow.webContents),
+    (sessionId) => review.evict(sessionId),
   );
   sensitiveModels.initialize();
   ipcMain.handle(IPC.start, () => requestStartRecording());
